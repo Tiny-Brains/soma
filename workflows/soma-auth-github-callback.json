@@ -1,0 +1,227 @@
+{
+  "workflow_id": "soma-auth-github-callback",
+  "name": "Complete GitHub sign-in",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "check_state",
+      "name": "State must match the cookie",
+      "function": {
+        "name": "validation",
+        "input": {
+          "rules": [
+            {
+              "logic": {
+                "and": [
+                  {
+                    "!!": {
+                      "var": "metadata.query.state"
+                    }
+                  },
+                  {
+                    "==": [
+                      {
+                        "var": "metadata.query.state"
+                      },
+                      {
+                        "var": "metadata.cookies.soma_oauth_state"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "message": "oauth state mismatch"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "verify_state",
+      "name": "State cookie must be one we signed",
+      "function": {
+        "name": "jwt_verify",
+        "input": {
+          "token": {
+            "var": "metadata.cookies.soma_oauth_state"
+          },
+          "algorithms": [
+            "HS256"
+          ],
+          "keys": [
+            {
+              "algorithm": "HS256",
+              "key": "env://SOMA_SESSION_SECRET"
+            }
+          ],
+          "issuer": "soma-oauth",
+          "output": "temp_data.state_claims"
+        }
+      }
+    },
+    {
+      "id": "exchange",
+      "name": "Exchange the code for a token",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "github",
+          "method": "POST",
+          "path": "/login/oauth/access_token",
+          "body_format": "form",
+          "body_logic": {
+            "grant_type": "authorization_code",
+            "client_id": {
+              "var": "metadata.vars.github_client_id"
+            },
+            "client_secret": {
+              "secret": "github_client_secret"
+            },
+            "redirect_uri": {
+              "var": "metadata.vars.oauth_redirect_uri"
+            },
+            "code": {
+              "var": "metadata.query.code"
+            }
+          },
+          "output": "temp_data.token"
+        }
+      }
+    },
+    {
+      "id": "identify",
+      "name": "Fetch the GitHub identity",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "github-api",
+          "method": "GET",
+          "path": "/user",
+          "headers": {
+            "authorization": {
+              "cat": [
+                "Bearer ",
+                {
+                  "var": "temp_data.token.access_token"
+                }
+              ]
+            }
+          },
+          "output": "temp_data.gh"
+        }
+      }
+    },
+    {
+      "id": "upsert",
+      "name": "Upsert the user",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO users (github_id, handle) VALUES (($1)::bigint, ($2)::text) ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle",
+          "params": [
+            {
+              "var": "temp_data.gh.id"
+            },
+            {
+              "var": "temp_data.gh.login"
+            }
+          ],
+          "output": "temp_data.upsert"
+        }
+      }
+    },
+    {
+      "id": "load_user",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT id::text AS body FROM users WHERE github_id = ($1)::bigint",
+          "params": [
+            {
+              "var": "temp_data.gh.id"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "session",
+      "name": "Mint the session token",
+      "function": {
+        "name": "jwt_sign",
+        "input": {
+          "algorithm": "HS256",
+          "key": "env://SOMA_SESSION_SECRET",
+          "claims": {
+            "sub": {
+              "var": "temp_data.rows.0.body"
+            },
+            "handle": {
+              "var": "temp_data.gh.login"
+            }
+          },
+          "issuer": "soma",
+          "expires_in": "30d",
+          "output": "temp_data.session"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {}
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 302,
+                "body_path": "data.body",
+                "headers": {
+                  "location": {
+                    "var": "metadata.vars.app_url"
+                  }
+                },
+                "cookies": [
+                  {
+                    "name": "soma_session",
+                    "value": {
+                      "var": "temp_data.session"
+                    },
+                    "path": "/",
+                    "http_only": true,
+                    "secure": true,
+                    "same_site": "Lax",
+                    "max_age": 2592000
+                  },
+                  {
+                    "name": "soma_oauth_state",
+                    "value": "",
+                    "path": "/",
+                    "http_only": true,
+                    "secure": true,
+                    "same_site": "Lax",
+                    "max_age": 0
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "description": "Sets the session cookie and clears the spent oauth-state cookie in one response -- two Set-Cookie headers, which needs Orion 1.5. The identify step's Authorization header is computed from the token obtained one task earlier, which needs 1.5's JSONLogic http_call headers. The exchange step keeps the legacy 'body_logic' spelling deliberately: under body_format 'form', a body written as 'body' is shape-checked as a literal at authoring time and a computed entry is refused. See orion-gaps.md N2. verify_state reads the state token from the COOKIE rather than the query parameter, deliberately: a `validation` task that fails only records a 400 and execution continues to the next task, so check_state alone would let a callback with no state cookie mint a session. jwt_verify does fail the task and halt the run, which is what makes the cookie mandatory."
+}

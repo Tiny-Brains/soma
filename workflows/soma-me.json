@@ -1,0 +1,62 @@
+{
+  "workflow_id": "soma-me",
+  "name": "The signed-in competitor",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('id', id, 'handle', handle, 'role', role)::text AS body FROM users WHERE id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse the body column",
+      "condition": {
+        "!!": {
+          "var": "temp_data.rows.0.body"
+        }
+      },
+      "function": {
+        "name": "parse_json",
+        "input": {
+          "source": "temp_data.rows.0.body",
+          "target": "body"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "description": "The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+}

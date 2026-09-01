@@ -1,0 +1,36 @@
+{
+  "channel_id": "soma-me",
+  "name": "soma-me",
+  "tags": [
+    "pkg:soma"
+  ],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": [
+    "GET"
+  ],
+  "route_pattern": "/v1/me",
+  "workflow_id": "soma-me",
+  "config": {
+    "response": {
+      "mode": "shaped"
+    },
+    "timeout_ms": 10000,
+    "auth": {
+      "mode": "jwt",
+      "algorithms": [
+        "HS256"
+      ],
+      "jwt_keys": [
+        {
+          "algorithm": "HS256",
+          "key": "env://SOMA_SESSION_SECRET"
+        }
+      ],
+      "issuer": "soma",
+      "source": {
+        "cookie": "soma_session"
+      }
+    }
+  }
+}

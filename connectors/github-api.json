@@ -1,0 +1,15 @@
+{
+  "id": "github-api",
+  "name": "github-api",
+  "connector_type": "http",
+  "tags": ["pkg:soma"],
+  "config": {
+    "type": "http",
+    "url": "https://api.github.com",
+    "headers": {
+      "accept": "application/vnd.github+json",
+      "user-agent": "soma"
+    },
+    "retry": { "max_retries": 2, "retry_delay_ms": 500 }
+  }
+}

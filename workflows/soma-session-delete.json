@@ -1,0 +1,46 @@
+{
+  "workflow_id": "soma-session-delete",
+  "name": "Sign out",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "ok": true
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body",
+                "cookies": [
+                  {
+                    "name": "soma_session",
+                    "value": "",
+                    "path": "/",
+                    "http_only": true,
+                    "secure": true,
+                    "same_site": "Lax",
+                    "max_age": 0
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "description": "Stateless sessions: this clears the cookie, it does not revoke the token. See orion-gaps.md G1."
+}

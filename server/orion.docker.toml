@@ -1,0 +1,36 @@
+# Orion server config for the Soma container.
+#
+# The __PLACEHOLDER__ values are rendered from environment variables by
+# docker-entrypoint.sh at boot, so one image serves every environment. Only
+# non-secret values are rendered: the GitHub client secret stays an env:// reference
+# and is resolved by the engine, which keeps it out of traces and responses.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+# Soma's channels declare route_pattern "/v1/...", and the full request path is
+# matched against the pattern -- so the "/v1" prefix appears in both places.
+data_mounts = ["/v1"]
+
+# Orion's own state: channels, workflows, connectors, traces. NOT Soma's data.
+# This value does not accept env:// -- it is parsed as a database URL -- which is
+# why the entrypoint renders it rather than referencing it.
+[storage]
+url = "__ORION_STATE_DB_URL__"
+
+[vars]
+github_client_id   = "__GITHUB_CLIENT_ID__"
+oauth_redirect_uri = "__OAUTH_REDIRECT_URI__"
+app_url            = "__APP_URL__"
+
+[secrets]
+github_client_secret = "env://GITHUB_CLIENT_SECRET"
+
+[query]
+default_limit = 50
+max_limit     = 200
+
+# Postgres-backed trace persistence; "sync" trades throughput for ordering.
+[trace_storage]
+mode = "async"

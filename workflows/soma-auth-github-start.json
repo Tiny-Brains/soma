@@ -1,0 +1,81 @@
+{
+  "workflow_id": "soma-auth-github-start",
+  "name": "Begin GitHub sign-in",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "state",
+      "name": "Mint a signed state token",
+      "function": {
+        "name": "jwt_sign",
+        "input": {
+          "algorithm": "HS256",
+          "key": "env://SOMA_SESSION_SECRET",
+          "claims": {
+            "purpose": "oauth-state"
+          },
+          "issuer": "soma-oauth",
+          "expires_in": "10m",
+          "output": "temp_data.state"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {}
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 302,
+                "body_path": "data.body",
+                "headers": {
+                  "location": {
+                    "cat": [
+                      "https://github.com/login/oauth/authorize?scope=read%3Auser&client_id=",
+                      {
+                        "var": "metadata.vars.github_client_id"
+                      },
+                      "&redirect_uri=",
+                      {
+                        "var": "metadata.vars.oauth_redirect_uri"
+                      },
+                      "&state=",
+                      {
+                        "var": "temp_data.state"
+                      }
+                    ]
+                  }
+                },
+                "cookies": [
+                  {
+                    "name": "soma_oauth_state",
+                    "value": {
+                      "var": "temp_data.state"
+                    },
+                    "path": "/",
+                    "http_only": true,
+                    "secure": true,
+                    "same_site": "Lax",
+                    "max_age": 600
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "description": "The state token is both the cookie and the query parameter; the callback compares them. This stands in for PKCE, which Orion cannot do -- see orion-gaps.md G1."
+}

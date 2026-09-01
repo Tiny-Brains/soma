@@ -1,0 +1,24 @@
+{
+  "channel_id": "soma-auth-github-start",
+  "name": "soma-auth-github-start",
+  "tags": [
+    "pkg:soma"
+  ],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": [
+    "GET"
+  ],
+  "route_pattern": "/v1/auth/github",
+  "workflow_id": "soma-auth-github-start",
+  "config": {
+    "response": {
+      "mode": "shaped",
+      "allowed_headers": [
+        "location"
+      ],
+      "cookies": true
+    },
+    "timeout_ms": 10000
+  }
+}

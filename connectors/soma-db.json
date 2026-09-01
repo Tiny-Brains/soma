@@ -1,0 +1,14 @@
+{
+  "id": "soma-db",
+  "name": "soma-db",
+  "connector_type": "db",
+  "tags": ["pkg:soma"],
+  "config": {
+    "type": "db",
+    "connection_string": "env://SOMA_DB_URL",
+    "max_connections": 10,
+    "connect_timeout_ms": 5000,
+    "query_timeout_ms": 15000,
+    "operations": { "delete": false }
+  }
+}

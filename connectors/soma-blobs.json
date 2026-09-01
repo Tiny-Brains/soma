@@ -1,0 +1,16 @@
+{
+  "id": "soma-blobs",
+  "name": "soma-blobs",
+  "connector_type": "storage",
+  "tags": ["pkg:soma"],
+  "config": {
+    "type": "storage",
+    "provider": "s3",
+    "endpoint": "env://R2_ENDPOINT",
+    "region": "auto",
+    "bucket": "env://R2_BUCKET",
+    "access_key": "env://R2_ACCESS_KEY",
+    "secret_key": "env://R2_SECRET_KEY",
+    "operations": { "presign_get": true, "presign_put": false, "head": false }
+  }
+}
