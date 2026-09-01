@@ -1,17 +1,20 @@
 # soma
 
-Platform backend for [TinyBrains](../DESIGN.md) — the system of record for competitors, model
+Platform backend for TinyBrains — the system of record for competitors, model
 submissions, ladders and replays.
 
 Soma is an **[Orion](https://github.com/GoPlasmatic/Orion) v1.5.1 package**: eleven REST channels
-over Postgres, declared as JSON. There is no application code. Scope is [`scope.md`](scope.md), the
-database is [`schema.md`](schema.md), and what Orion is still missing is
-[`orion-gaps.md`](orion-gaps.md).
+over Postgres, declared as JSON. There is no application code.
+
+The design and tracking documents — `scope.md` (the API), `schema.md` (the database),
+`orion-gaps.md` (what Orion still cannot do) and `DESIGN.md` — are **not in this repo**. They
+live in the private workspace this repo sits inside, alongside `devops/`, which holds the compose
+file and Soma's instance config. References to them below name the file without linking it.
 
 **Soma does not run matches.** A separate game manager service — not yet designed — owns the match
 loop, computes TrueSkill, and admits submitted models. It writes `matches`, `ratings` and the
 admission columns of `models` directly to the same database. Soma writes `users` and inserts one
-`models` row; everything else it reads. See [`scope.md`](scope.md) §3.
+`models` row; everything else it reads. See `scope.md` §3.
 
 ---
 
@@ -31,7 +34,7 @@ admission columns of `models` directly to the same database. Soma writes `users`
 | `GET` | `/v1/matches?model=&limit=` | — |
 | `GET` | `/v1/matches/{id}` | — |
 
-Nine reads, one insert, and a login. Response shapes are in [`scope.md`](scope.md) §2.
+Nine reads, one insert, and a login. Response shapes are in `scope.md` §2.
 
 ---
 
@@ -42,7 +45,8 @@ connectors/    4 · soma-db, soma-blobs (R2), github, github-api
 channels/     11 · one per endpoint
 workflows/    11 · one per channel
 migrations/    1 · 0001_init.sql
-server/           orion.toml.example
+scripts/          load-package.sh — installs the above into a running server
+Dockerfile        the image: upstream orion-server + this package
 ```
 
 Everything carries `tags: ["pkg:soma"]`, which is what `orion-server package export --tag pkg:soma`
@@ -66,6 +70,10 @@ it, and both fail loudly on an older server rather than misbehaving:
 ---
 
 ## Running it
+
+The short way is the compose stack in the workspace's `devops/` directory, which brings up Postgres,
+this package and the web shell together. What follows is the same thing by hand, against an
+`orion-server` on your PATH.
 
 **1. Database.**
 
@@ -97,28 +105,42 @@ database, no running instance.
 
 ```bash
 orion-server lint . --deny-warnings
-orion-server -c server/orion.toml validate-config
+orion-server -c ../devops/soma/orion.local.toml validate-config
 ```
 
 `lint` reads the directory as a **set**, so it resolves the references between the three kinds —
 every channel's `workflow_id`, every task's connector and its type, duplicate ids and routes. Those
 are the errors a per-file check cannot see. `--deny-warnings` matters more than it looks: the
 warning class it promotes, `[logic.unresolvable]`, is the one that passes every other gate and
-surfaces as wrong data. See [`orion-gaps.md`](orion-gaps.md) N1 for the four it caught here.
+surfaces as wrong data. See `orion-gaps.md` N1 for the four it caught here.
 
 **4. Load the package.** Order matters — connectors, then workflows, then channels, because channel
 activation requires an active workflow.
 
 ```bash
-./server/dev-load.sh
+./scripts/load-package.sh
 ```
 
 The script is idempotent — it deletes the package's objects before re-creating them, so it can be
 re-run after an edit. That matters because an *active* workflow is immutable: a second `POST` is a
 conflict, and `PUT` answers `404 No draft version found` until you `POST .../versions` first.
 
-It also sets `allow_private_urls` on the database connector, which `connectors/soma-db.json` does
-not carry. Orion's SSRF guard refuses to dial a host that resolves to a private address, and
+It reads two environment flags, both of which exist because a committed definition should not carry
+a loosened default:
+
+| | |
+|---|---|
+| `SOMA_ALLOW_PRIVATE_DB=1` | sets `allow_private_urls` on the database connector |
+| `SOMA_COOKIE_SECURE=0` | strips `Secure` from the session and oauth-state cookies |
+
+`SOMA_COOKIE_SECURE=0` is what makes sign-in work over plain `http://localhost`. Browsers refuse to
+store a `Secure` cookie from an `http://` origin, and the failure is silent: the callback completes,
+the user row is written, and the browser holds no session. It cannot be an instance variable —
+Orion requires a literal boolean for a cookie's `secure` field and drops the whole cookie with only
+a warning if handed JSONLogic — so the loader rewrites it. **Set it to 1 the moment there is TLS.**
+
+`SOMA_ALLOW_PRIVATE_DB=1` covers the other half: `connectors/soma-db.json` does not carry
+`allow_private_urls`. Orion's SSRF guard refuses to dial a host that resolves to a private address, and
 `localhost:5432` is one:
 
 ```
@@ -170,7 +192,7 @@ Postgres is on the other end. Testing against the running server is the only gat
 literal object. The leaderboard and match-history workflows each open with a `defaults` task for
 exactly this reason; it is not stylistic. This is the one place the general rule above — that raw
 SQL is safer than mappings — does not save you, because the parameter list is JSON either way.
-[`orion-gaps.md`](orion-gaps.md) N1.
+`orion-gaps.md` N1.
 
 **Cookies are declared, not assembled.** The three channels that set one carry
 `response.cookies: true` and their workflows write a `data._orion.response.cookies` array —
@@ -181,7 +203,7 @@ what lets the OAuth callback set the session and clear the spent state cookie in
 
 **Pagination is `OFFSET`.** The cursor is the offset as a string. Correct for a ladder of hundreds,
 and it drifts if rows move between pages. Keyset would need `(conservative, model_id)` compared
-row-wise across a join — see [`orion-gaps.md`](orion-gaps.md) G5.
+row-wise across a join — see `orion-gaps.md` G5.
 
 **`provisional` is `matches_played < 20`, hardcoded in SQL.** It belongs in policy (S13, deferred).
 Grep for `< 20` when that lands.
@@ -194,7 +216,7 @@ so it answers `409` on its own. See below.
 **The OAuth token exchange keeps the legacy `body_logic` spelling.** `body` is the modern name for
 the same field, but under `body_format: "form"` a body written as `body` is shape-checked as a
 literal at authoring time and a computed entry is refused. Renaming it breaks the package.
-[`orion-gaps.md`](orion-gaps.md) N2.
+`orion-gaps.md` N2.
 
 ---
 
@@ -215,7 +237,7 @@ climbs — but the health registry keeps the `failed` state it recorded, so `sta
 and nothing is actually lost.
 
 It matters for orchestration: a readiness probe must check that `/health` returns **200**, not that
-`status == "healthy"`, or the container never comes up. `Dockerfile`'s `HEALTHCHECK` does the
+`status == "healthy"`, or the container never comes up. the `Dockerfile`'s `HEALTHCHECK` does the
 former deliberately.
 
 ---
@@ -233,11 +255,11 @@ return, code exchange, `GET /user`, `jwt_sign` a 30-day session.
 partial unique indexes. Since 1.5.0 a violation arrives classified as `integrity_unique` and an
 uncaught one answers `409 CONFLICT` by itself, so `soma-submissions-create.json` catches nothing —
 the run halts at the insert and the platform states the conflict. The two indexes are
-indistinguishable to the workflow by design; [`scope.md`](scope.md) wants `409` either way.
+indistinguishable to the workflow by design; `scope.md` wants `409` either way.
 
 **Sessions cannot be revoked.** `DELETE /session` clears the cookie; the token stays valid until it
 expires. Stateless by necessity, and the fix is Soma's rather than Orion's — a `sessions` table and
-a lookup per authed request. [`orion-gaps.md`](orion-gaps.md) G1.
+a lookup per authed request. `orion-gaps.md` G1.
 
 **Nothing promotes a submission.** Rows land in `testing` and stay there until the game manager
 exists. Soma can be finished and tested without it — seed the tables by hand — but the loop does not

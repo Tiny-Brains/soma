@@ -1,7 +1,2 @@
-# Local instance config — contains client ids and points at local databases.
-# The committed template is server/orion.toml.example.
-server/orion.toml
-server/.env
-
 # Local run artifacts
 .run/

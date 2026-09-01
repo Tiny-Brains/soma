@@ -5,6 +5,8 @@
 # its state database and only accepts them over the admin API, so they go in once
 # the server is answering. That is why this runs the server in the background,
 # loads, and then hands the foreground back to it.
+#
+# See ../devops/ for the compose file and the config template this renders.
 set -eu
 
 : "${SOMA_DB_URL:?SOMA_DB_URL is required}"
@@ -16,7 +18,15 @@ GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID:?GITHUB_CLIENT_ID is required}"
 OAUTH_REDIRECT_URI="${OAUTH_REDIRECT_URI:-http://localhost:5173/v1/auth/github/callback}"
 APP_URL="${APP_URL:-http://localhost:5173/}"
 
+# Instance config template, mounted from the deployment repo rather than baked into
+# the image. Rendering it here is what keeps one image usable in every environment.
+TMPL="${ORION_CONFIG_TEMPLATE:-/etc/soma/orion.toml.tmpl}"
 CFG=/tmp/orion.toml
+
+if [ ! -r "$TMPL" ]; then
+  echo "config template not readable at $TMPL -- mount it, or set ORION_CONFIG_TEMPLATE" >&2
+  exit 1
+fi
 
 # '|' as the sed delimiter because every rendered value here is a URL.
 sed \
@@ -24,7 +34,7 @@ sed \
   -e "s|__GITHUB_CLIENT_ID__|${GITHUB_CLIENT_ID}|" \
   -e "s|__OAUTH_REDIRECT_URI__|${OAUTH_REDIRECT_URI}|" \
   -e "s|__APP_URL__|${APP_URL}|" \
-  /app/server/orion.docker.toml > "$CFG"
+  "$TMPL" > "$CFG"
 
 echo "==> waiting for postgres"
 # `migrate` connects to the state database and applies Orion's own schema, so it
@@ -57,7 +67,7 @@ done
 
 # Both localhost and a compose service name resolve to private addresses, which
 # Orion's SSRF guard refuses by default. See server/load-package.sh.
-SOMA_ALLOW_PRIVATE_DB="${SOMA_ALLOW_PRIVATE_DB:-1}" /app/server/load-package.sh
+SOMA_ALLOW_PRIVATE_DB="${SOMA_ALLOW_PRIVATE_DB:-1}" /app/scripts/load-package.sh
 
 echo "==> soma is up on :8080"
 wait "$ORION_PID"

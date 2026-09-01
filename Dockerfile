@@ -48,11 +48,13 @@ WORKDIR /app
 COPY connectors/ ./connectors/
 COPY channels/   ./channels/
 COPY workflows/  ./workflows/
-COPY server/orion.docker.toml ./server/orion.docker.toml
-COPY server/load-package.sh   ./server/load-package.sh
+COPY scripts/load-package.sh  ./scripts/load-package.sh
 COPY docker-entrypoint.sh     /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/server/load-package.sh \
+# The orion config template is NOT baked in -- it is instance configuration and
+# lives in the deployment repo, mounted at ORION_CONFIG_TEMPLATE (see the compose
+# file). The image is therefore the same in every environment.
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/scripts/load-package.sh \
  && chown -R soma:soma /app
 
 USER soma
