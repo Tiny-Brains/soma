@@ -7,20 +7,16 @@
   "condition": true,
   "tasks": [
     {
-      "id": "check_state",
-      "name": "State must match the cookie",
+      "id": "bind_state",
+      "name": "Bind the query state to the cookie",
       "function": {
-        "name": "validation",
+        "name": "map",
         "input": {
-          "rules": [
+          "mappings": [
             {
+              "path": "temp_data.state_token",
               "logic": {
-                "and": [
-                  {
-                    "!!": {
-                      "var": "metadata.query.state"
-                    }
-                  },
+                "if": [
                   {
                     "==": [
                       {
@@ -30,10 +26,13 @@
                         "var": "metadata.cookies.soma_oauth_state"
                       }
                     ]
-                  }
+                  },
+                  {
+                    "var": "metadata.cookies.soma_oauth_state"
+                  },
+                  null
                 ]
-              },
-              "message": "oauth state mismatch"
+              }
             }
           ]
         }
@@ -41,12 +40,12 @@
     },
     {
       "id": "verify_state",
-      "name": "State cookie must be one we signed",
+      "name": "The bound state must be one we signed",
       "function": {
         "name": "jwt_verify",
         "input": {
           "token": {
-            "var": "metadata.cookies.soma_oauth_state"
+            "var": "temp_data.state_token"
           },
           "algorithms": [
             "HS256"
@@ -223,5 +222,5 @@
       }
     }
   ],
-  "description": "Sets the session cookie and clears the spent oauth-state cookie in one response -- two Set-Cookie headers, which needs Orion 1.5. The identify step's Authorization header is computed from the token obtained one task earlier, which needs 1.5's JSONLogic http_call headers. The exchange step keeps the legacy 'body_logic' spelling deliberately: under body_format 'form', a body written as 'body' is shape-checked as a literal at authoring time and a computed entry is refused. See orion-gaps.md N2. verify_state reads the state token from the COOKIE rather than the query parameter, deliberately: a `validation` task that fails only records a 400 and execution continues to the next task, so check_state alone would let a callback with no state cookie mint a session. jwt_verify does fail the task and halt the run, which is what makes the cookie mandatory."
+  "description": "Sets the session cookie and clears the spent soma_oauth_state cookie in one response -- two Set-Cookie headers, which needs Orion 1.5. The identify step's Authorization header is computed from the token obtained one task earlier, which needs 1.5's JSONLogic http_call headers. The exchange step keeps the legacy 'body_logic' spelling deliberately: under body_format 'form', a body written as 'body' is shape-checked as a literal at authoring time and a computed entry is refused. See orion-gaps.md N2. bind_state and verify_state together are the CSRF check, and the shape is forced by orion-gaps.md G8: a failed `validation` task only records a 400 and execution continues, so a comparison expressed as a rule enforces nothing. bind_state instead yields the cookie only when the query parameter matches it and null otherwise, and jwt_verify -- which does fail its task and halt the run -- rejects the null. A mismatched or absent state therefore stops before the code is exchanged, which is the whole point of the state cookie."
 }

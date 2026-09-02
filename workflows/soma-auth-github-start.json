@@ -7,6 +7,25 @@
   "condition": true,
   "tasks": [
     {
+      "id": "nonce",
+      "name": "Mint a per-attempt nonce",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.nonce",
+              "logic": {
+                "random": [
+                  "uuid"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "state",
       "name": "Mint a signed state token",
       "function": {
@@ -15,7 +34,10 @@
           "algorithm": "HS256",
           "key": "env://SOMA_SESSION_SECRET",
           "claims": {
-            "purpose": "oauth-state"
+            "purpose": "oauth-state",
+            "nonce": {
+              "var": "temp_data.nonce"
+            }
           },
           "issuer": "soma-oauth",
           "expires_in": "10m",
@@ -77,5 +99,5 @@
       }
     }
   ],
-  "description": "The state token is both the cookie and the query parameter; the callback compares them. This stands in for PKCE, which Orion cannot do -- see orion-gaps.md G1."
+  "description": "The state token is both the cookie and the query parameter; the callback requires them to match. The nonce is what makes each token unique: jwt_sign's other claims are constant and iat/exp have one-second granularity, so without it two sign-ins starting in the same second produced byte-identical tokens and the state value identified nothing. It is computed in a map task because jwt_sign.claims folds {\"var\": ...} and no other operator -- see orion-gaps.md N1. This stands in for PKCE, which the shared-token design cannot express."
 }
