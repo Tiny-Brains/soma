@@ -222,8 +222,8 @@ literal at authoring time and a computed entry is refused. Renaming it breaks th
 
 ## Status
 
-**`/health` always says `degraded`, and it is lying.** On 1.5.1 the `trace_persistence`
-background task is logged as stopped *microseconds before* it starts:
+**`trace_storage.mode` must be `sync`, or `/health` lies for the life of the process.** On 1.5.1
+the background trace-persistence worker is logged as stopped *microseconds before* it starts:
 
 ```
 INFO  Audit-log writer started
@@ -231,14 +231,18 @@ ERROR Background task stopped before shutdown and cannot be restarted  task="tra
 INFO  Trace persistence queue started  mode=Async
 ```
 
-The task then runs and traces do land in the state database — `select count(*) from traces`
-climbs — but the health registry keeps the `failed` state it recorded, so `status` is stuck at
-`degraded` for the life of the process. It is a startup-ordering bug in Orion, not a Soma problem,
-and nothing is actually lost.
+The worker then runs and traces do land in the state database — `select count(*) from traces`
+climbs — but the health registry keeps the `failed` state it recorded, and the task is marked
+required, so `status` is pinned to `degraded` and every operations console shows the server as
+unhealthy. Nothing is actually lost; the report is simply wrong.
 
-It matters for orchestration: a readiness probe must check that `/health` returns **200**, not that
-`status == "healthy"`, or the container never comes up. the `Dockerfile`'s `HEALTHCHECK` does the
-former deliberately.
+**`async` and `batch` both spawn that worker and both reproduce it. `sync` does not, and reports
+`ok`.** So Soma configures `sync`, and pays for it by writing the trace inside the request path —
+2.1 ms median and 3.9 ms p95 on `GET /v1/games`, which is nothing at this volume. `orion-gaps.md`
+G11 has the mode-by-mode comparison.
+
+The `Dockerfile`'s `HEALTHCHECK` still tests for HTTP **200** rather than `status == "healthy"`.
+That is deliberate belt-and-braces: it keeps the image working if someone switches the mode back.
 
 ---
 
