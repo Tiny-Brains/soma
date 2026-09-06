@@ -1,21 +1,14 @@
 {
   "workflow_id": "soma-submissions-create",
   "name": "Enter a GitHub release",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. The one-in-flight and duplicate-release rules are partial unique indexes; since Orion 1.5.0 a violation is classified as integrity_unique and answers 409 CONFLICT on its own, so no task catches it -- the run halts at the insert and the platform states the conflict. The two indexes are indistinguishable to the workflow by design (the constraint name is not surfaced), which is fine here: the scope asks for 409 either way. Both statements join live_sessions, not just the insert: a revoked session must neither write nor read. Guarding only the insert would leave a hole -- re-posting a release already submitted inserts nothing, hits no unique index, and the read-back would then answer 201 with the existing row. The join makes Postgres enforce it, which matters more here than on a read: a JSONLogic `condition` guarding the write would fail open if it were ever wrong. `deny` shapes the 401 for the empty result, runs before the response and is `terminal: true`, so nothing can run past a rejection. Postgres builds the response: the `body` column is json_build_object, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body.",
+  "tags": ["pkg:soma"],
   "condition": true,
   "tasks": [
     {
       "id": "parse",
       "name": "Parse payload",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "insert",
@@ -24,20 +17,13 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, version, repo, release_tag) SELECT ($1)::uuid, g.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text FROM games g LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text GROUP BY g.id",
+          "query": "INSERT INTO models (owner_id, game_id, version, repo, release_tag) SELECT ($1)::uuid, g.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text FROM games g JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text GROUP BY g.id",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.repo"
-            },
-            {
-              "var": "data.req.release_tag"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.repo" },
+            { "var": "data.req.release_tag" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.insert"
         }
@@ -45,43 +31,35 @@
     },
     {
       "id": "fetch",
-      "name": "Query",
+      "name": "Read the row back",
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', m.id, 'version', m.version, 'status', m.status)::text AS body FROM models m JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid AND g.slug = ($2)::text   AND m.repo = ($3)::text AND m.release_tag = ($4)::text",
+          "query": "SELECT json_build_object('model_id', m.id, 'version', m.version, 'status', m.status) AS body FROM models m JOIN games g ON g.id = m.game_id JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = m.owner_id WHERE m.owner_id = ($1)::uuid AND g.slug = ($2)::text AND m.repo = ($3)::text AND m.release_tag = ($4)::text",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.repo"
-            },
-            {
-              "var": "data.req.release_tag"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.repo" },
+            { "var": "data.req.release_tag" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.rows"
         }
       }
     },
     {
-      "id": "parse_body",
-      "name": "Parse the body column",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": { "!": { "var": "temp_data.rows.0.body" } },
+      "terminal": true,
       "function": {
-        "name": "parse_json",
+        "name": "map",
         "input": {
-          "source": "temp_data.rows.0.body",
-          "target": "body"
+          "mappings": [
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
+          ]
         }
       }
     },
@@ -92,17 +70,11 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 201,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 201, "body_path": "data.body" } }
           ]
         }
       }
     }
-  ],
-  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. The one-in-flight and duplicate-release rules are partial unique indexes; since Orion 1.5.0 a violation is classified as integrity_unique and answers 409 CONFLICT on its own, so no task catches it -- the run halts at the insert and the platform states the conflict. The two indexes are indistinguishable to the workflow by design (the constraint name is not surfaced), which is fine here: the scope asks for 409 either way. See orion-gaps.md G2. The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+  ]
 }

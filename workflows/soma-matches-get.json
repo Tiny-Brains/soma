@@ -1,9 +1,8 @@
 {
   "workflow_id": "soma-matches-get",
   "name": "One match with its replay",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "Postgres builds the response: the `body` column is json_build_object, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body and then adds the presigned replay URL, which is the one field SQL cannot produce. The presign task is conditioned on replay_key so a match without a stored replay answers with replay_url null rather than failing.",
+  "tags": ["pkg:soma"],
   "condition": true,
   "tasks": [
     {
@@ -13,48 +12,22 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT mt.replay_key, json_build_object(  'id', mt.id, 'game', g.slug, 'seed', mt.seed, 'preset', mt.preset,  'reason', mt.reason, 'played_at', mt.played_at,  'players', (SELECT coalesce(json_agg(json_build_object(       'seat', s.ord - 1, 'model_id', s.model_id, 'owner', u.handle,       'model_version', md.version, 'rank', s.rank, 'score', s.score)       ORDER BY s.ord), '[]'::json)     FROM unnest(mt.model_ids, mt.ranks, mt.scores)          WITH ORDINALITY AS s(model_id, rank, score, ord)     LEFT JOIN models md ON md.id = s.model_id     LEFT JOIN users u ON u.id = md.owner_id))::text AS body FROM matches mt JOIN games g ON g.id = mt.game_id WHERE mt.id = ($1)::uuid",
-          "params": [
-            {
-              "var": "metadata.params.id"
-            }
-          ],
+          "query": "SELECT mt.replay_key, json_build_object(  'id', mt.id, 'game', g.slug, 'seed', mt.seed, 'preset', mt.preset,  'reason', mt.reason, 'played_at', mt.played_at,  'players', (SELECT coalesce(json_agg(json_build_object(       'seat', s.ord - 1, 'model_id', s.model_id, 'owner', u.handle,       'model_version', md.version, 'rank', s.rank, 'score', s.score)       ORDER BY s.ord), '[]'::json)     FROM unnest(mt.model_ids, mt.ranks, mt.scores)          WITH ORDINALITY AS s(model_id, rank, score, ord)     LEFT JOIN models md ON md.id = s.model_id     LEFT JOIN users u ON u.id = md.owner_id)) AS body FROM matches mt JOIN games g ON g.id = mt.game_id WHERE mt.id = ($1)::uuid",
+          "params": [{ "var": "metadata.params.id" }],
           "output": "temp_data.rows"
-        }
-      }
-    },
-    {
-      "id": "parse",
-      "name": "Parse the body column",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "temp_data.rows.0.body",
-          "target": "body"
         }
       }
     },
     {
       "id": "presign",
       "name": "Sign the replay URL",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.replay_key"
-        }
-      },
+      "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
       "function": {
         "name": "storage_presign",
         "input": {
           "connector": "soma-blobs",
           "method": "GET",
-          "key": {
-            "var": "temp_data.rows.0.replay_key"
-          },
+          "key": { "var": "temp_data.rows.0.replay_key" },
           "expires_in": "1h",
           "output": "temp_data.replay_url"
         }
@@ -67,23 +40,12 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body.replay_url",
-              "logic": {
-                "var": "temp_data.replay_url"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }
     }
-  ],
-  "description": "The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+  ]
 }

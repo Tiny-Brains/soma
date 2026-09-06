@@ -1,9 +1,8 @@
 {
   "workflow_id": "soma-leaderboard",
   "name": "Game leaderboard",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "Query defaults are computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only, so an 'or' written directly in params reaches Postgres as a literal object. See orion-gaps.md N1. The defaults are the strings \"50\" and \"0\" because that is what the query string delivers; the placeholder's declared type converts, so the spelling no longer matters (orion-gaps.md N6). Postgres builds the response: the one `body` column is json_build_object over the page, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. Pagination is OFFSET on purpose, the cursor being the offset as a string: the sort key is a live rating that every match rewrites, so a keyset position would drift exactly as an offset does, and `rank` is a position in the whole ladder either way. See orion-gaps.md G5.",
+  "tags": ["pkg:soma"],
   "condition": true,
   "tasks": [
     {
@@ -15,36 +14,15 @@
           "mappings": [
             {
               "path": "temp_data.q.ladder",
-              "logic": {
-                "or": [
-                  {
-                    "var": "metadata.query.ladder"
-                  },
-                  "open"
-                ]
-              }
+              "logic": { "or": [{ "var": "metadata.query.ladder" }, "open"] }
             },
             {
               "path": "temp_data.q.limit",
-              "logic": {
-                "or": [
-                  {
-                    "var": "metadata.query.limit"
-                  },
-                  50
-                ]
-              }
+              "logic": { "or": [{ "var": "metadata.query.limit" }, "50"] }
             },
             {
               "path": "temp_data.q.cursor",
-              "logic": {
-                "or": [
-                  {
-                    "var": "metadata.query.cursor"
-                  },
-                  0
-                ]
-              }
+              "logic": { "or": [{ "var": "metadata.query.cursor" }, "0"] }
             }
           ]
         }
@@ -57,38 +35,14 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "WITH page AS ( SELECT row_number() OVER (ORDER BY r.conservative DESC, m.id) AS rank,        m.id::text AS model_id, u.handle AS owner, m.version,        m.weight_class::text AS class, m.size_bytes,        r.conservative AS rating, (r.matches_played < 20) AS provisional,        r.matches_played AS matches FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id JOIN ratings r ON r.model_id = m.id AND r.ladder = ($2)::ladder WHERE g.slug = ($1)::text AND m.status = 'active'   AND (($2)::text = 'open' OR m.weight_class = ($2)::ladder) ORDER BY r.conservative DESC, m.id OFFSET ($4)::int LIMIT ($3)::int) SELECT json_build_object(   'entries', coalesce(json_agg(page ORDER BY page.rank), '[]'::json),   'next_cursor', CASE WHEN count(*) = ($3)::int                       THEN (($4)::int + ($3)::int)::text ELSE NULL END)::text AS body FROM page",
+          "query": "WITH page AS ( SELECT row_number() OVER (ORDER BY r.conservative DESC, m.id) AS rank,        m.id::text AS model_id, u.handle AS owner, m.version,        m.weight_class::text AS class, m.size_bytes,        r.conservative AS rating, (r.matches_played < 20) AS provisional,        r.matches_played AS matches FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id JOIN ratings r ON r.model_id = m.id AND r.ladder = ($2)::ladder WHERE g.slug = ($1)::text AND m.status = 'active'   AND (($2)::text = 'open' OR m.weight_class = ($2)::ladder) ORDER BY r.conservative DESC, m.id OFFSET ($4)::int LIMIT ($3)::int) SELECT json_build_object(   'entries', coalesce(json_agg(page ORDER BY page.rank), '[]'::json),   'next_cursor', CASE WHEN count(*) = ($3)::int                       THEN (($4)::int + ($3)::int)::text ELSE NULL END) AS body FROM page",
           "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "temp_data.q.ladder"
-            },
-            {
-              "var": "temp_data.q.limit"
-            },
-            {
-              "var": "temp_data.q.cursor"
-            }
+            { "var": "metadata.params.game" },
+            { "var": "temp_data.q.ladder" },
+            { "var": "temp_data.q.limit" },
+            { "var": "temp_data.q.cursor" }
           ],
           "output": "temp_data.rows"
-        }
-      }
-    },
-    {
-      "id": "parse",
-      "name": "Parse the body column",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "temp_data.rows.0.body",
-          "target": "body"
         }
       }
     },
@@ -99,17 +53,11 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }
     }
-  ],
-  "description": "Query defaults are computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only, so an 'or' written directly in params reaches Postgres as a literal object. See orion-gaps.md N1. The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+  ]
 }

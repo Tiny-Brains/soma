@@ -1,9 +1,8 @@
 {
   "workflow_id": "soma-games-list",
   "name": "List games",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "Postgres builds the response: the one `body` column is json_agg / json_build_object, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body and shapes the response. Keeping response construction in SQL is deliberate -- a mistyped operator inside a map mapping is written through as a literal object with a 200, where a mistyped SQL function is a loud error. Before 1.6 the column had to be cast ::text and parsed back by a parse_json task.",
+  "tags": ["pkg:soma"],
   "condition": true,
   "tasks": [
     {
@@ -13,25 +12,9 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(json_build_object('id', slug, 'name', name) ORDER BY name), '[]'::json)::text AS body FROM games",
+          "query": "SELECT coalesce(json_agg(json_build_object('id', slug, 'name', name) ORDER BY name), '[]'::json) AS body FROM games",
           "params": [],
           "output": "temp_data.rows"
-        }
-      }
-    },
-    {
-      "id": "parse",
-      "name": "Parse the body column",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "temp_data.rows.0.body",
-          "target": "body"
         }
       }
     },
@@ -42,17 +25,11 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }
     }
-  ],
-  "description": "The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+  ]
 }

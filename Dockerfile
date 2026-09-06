@@ -7,10 +7,9 @@
 # ---- fetch and verify the orion-server binary --------------------------------
 FROM debian:bookworm-slim AS orion
 
-# Soma pins 1.5.1: 1.5.0 is the first release where an http_call header can be
-# computed (which is what makes GitHub sign-in expressible) and where a channel may
-# declare response.cookies. See ../README.md "Version requirement".
-ARG ORION_VERSION=1.5.1
+# Soma pins 1.7.0: the first release that takes a var:// in oauth2_login.redirect_uri
+# and has principal_rate_limit. See ../README.md "Version requirement".
+ARG ORION_VERSION=1.7.0
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -36,7 +35,7 @@ RUN set -eux; \
 FROM debian:bookworm-slim
 
 # curl drives the admin API from the entrypoint and answers the healthcheck;
-# jq reads the ids out of the definition files in server/load-package.sh.
+# jq reads the ids out of the definition files in scripts/load-package.sh.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl jq \
  && rm -rf /var/lib/apt/lists/* \
@@ -60,10 +59,12 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/scripts/load-package.sh \
 USER soma
 EXPOSE 8080
 
-# /health answers 200 once the listener is up. It reports "degraded" rather than
-# failing when a background task is down, so this proves reachability, not that
-# every channel loaded -- the entrypoint prints quarantined channels for that.
+# /readyz is Orion's readiness probe: 200 only once startup has finished, the
+# state database answers and no required background task has died. Before 1.6 it
+# could not be used here -- async trace persistence mis-registered its worker as
+# failed and pinned readiness to 503 -- so the image probed /health for a bare 200.
+# A channel that failed to load does not fail this; the entrypoint prints those.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
-  CMD curl -fsS http://127.0.0.1:8080/health > /dev/null || exit 1
+  CMD curl -fsS http://127.0.0.1:8080/readyz > /dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

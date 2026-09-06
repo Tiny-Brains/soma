@@ -1,0 +1,32 @@
+{
+  "channel_id": "soma-auth-github",
+  "name": "soma-auth-github",
+  "tags": ["pkg:soma"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/auth/github",
+  "workflow_id": "soma-auth-github",
+  "config": {
+    "response": { "mode": "shaped", "allowed_headers": ["location"], "cookies": true },
+    "timeout_ms": 10000,
+    "oauth2_login": {
+      "authorize_url": "https://github.com/login/oauth/authorize",
+      "token_url": "https://github.com/login/oauth/access_token",
+      "client_id": "env://GITHUB_CLIENT_ID",
+      "client_secret": "env://GITHUB_CLIENT_SECRET",
+      "client_auth": "body",
+      "redirect_uri": "var://oauth_redirect_uri",
+      "callback_path": "/v1/auth/github/callback",
+      "scopes": ["read:user"],
+      "state_secret": "env://SOMA_SESSION_SECRET",
+      "state_cookie": {
+        "name": "soma_oauth_state",
+        "secure": "var://cookie_secure",
+        "same_site": "lax",
+        "path": "/",
+        "max_age": 600
+      }
+    }
+  }
+}

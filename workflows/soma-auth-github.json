@@ -1,0 +1,122 @@
+{
+  "workflow_id": "soma-auth-github",
+  "name": "Complete GitHub sign-in",
+  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, the per-attempt nonce, PKCE, and the code exchange -- and hands the workflow a verified grant at metadata.oauth. Orion also retires the spent soma_oauth_state cookie on every outcome, so this response sets one cookie, not two. Before Orion 1.6 the same flow was thirteen tasks across two workflows, and the CSRF check had to be smuggled through jwt_verify because a failed validation rule did not halt the run. The session is server-side: `sid` names a row in `sessions`, which every authed statement joins through the `live_sessions` view, so DELETE /v1/session can revoke it. The row's expires_at must stay in step with jwt_sign's expires_in -- both are 30 days -- and it is written before the token is signed so a token can never name a row that does not exist. The cookie's `secure` attribute reads the instance's cookie_secure var: browsers refuse a Secure cookie from an http:// origin, so a plain-http development stack declares it false and a TLS deployment true, with no rewrite of the definition.",
+  "tags": ["pkg:soma"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "sid",
+      "name": "Mint a session id",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.sid", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "identify",
+      "name": "Fetch the GitHub identity",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "github-api",
+          "method": "GET",
+          "path": "/user",
+          "headers": {
+            "authorization": { "cat": ["Bearer ", { "var": "metadata.oauth.access_token" }] }
+          },
+          "output": "temp_data.gh"
+        }
+      }
+    },
+    {
+      "id": "upsert",
+      "name": "Upsert the user",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO users (github_id, handle) VALUES (($1)::bigint, ($2)::text) ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle",
+          "params": [{ "var": "temp_data.gh.id" }, { "var": "temp_data.gh.login" }],
+          "output": "temp_data.upsert"
+        }
+      }
+    },
+    {
+      "id": "load_user",
+      "name": "Read the user id back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT id FROM users WHERE github_id = ($1)::bigint",
+          "params": [{ "var": "temp_data.gh.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "record_session",
+      "name": "Record the session",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO sessions (sid, user_id, expires_at) VALUES (($1)::uuid, ($2)::uuid, now() + interval '30 days')",
+          "params": [{ "var": "temp_data.sid" }, { "var": "temp_data.rows.0.id" }],
+          "output": "temp_data.session_row"
+        }
+      }
+    },
+    {
+      "id": "session",
+      "name": "Mint the session token",
+      "function": {
+        "name": "jwt_sign",
+        "input": {
+          "algorithm": "HS256",
+          "key": "env://SOMA_SESSION_SECRET",
+          "claims": {
+            "sub": { "var": "temp_data.rows.0.id" },
+            "handle": { "var": "temp_data.gh.login" },
+            "sid": { "var": "temp_data.sid" }
+          },
+          "expires_in": "30d",
+          "issuer": "soma",
+          "output": "temp_data.session"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": {} },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 302,
+                "body_path": "data.body",
+                "headers": { "location": { "var": "metadata.vars.app_url" } },
+                "cookies": [
+                  {
+                    "name": "soma_session",
+                    "value": { "var": "temp_data.session" },
+                    "path": "/",
+                    "http_only": true,
+                    "secure": { "var": "metadata.vars.cookie_secure" },
+                    "same_site": "Lax",
+                    "max_age": 2592000
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

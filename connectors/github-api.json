@@ -6,10 +6,7 @@
   "config": {
     "type": "http",
     "url": "https://api.github.com",
-    "headers": {
-      "accept": "application/vnd.github+json",
-      "user-agent": "soma"
-    },
+    "headers": { "accept": "application/vnd.github+json", "user-agent": "soma" },
     "retry": { "max_retries": 2, "retry_delay_ms": 500 }
   }
 }

@@ -1,20 +1,11 @@
 {
   "channel_id": "soma-leaderboard",
   "name": "soma-leaderboard",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "channel_type": "sync",
   "protocol": "rest",
-  "methods": [
-    "GET"
-  ],
+  "methods": ["GET"],
   "route_pattern": "/v1/games/{game}/leaderboard",
   "workflow_id": "soma-leaderboard",
-  "config": {
-    "response": {
-      "mode": "shaped"
-    },
-    "timeout_ms": 10000
-  }
+  "config": { "response": { "mode": "shaped" }, "timeout_ms": 10000 }
 }

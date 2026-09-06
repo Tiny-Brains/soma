@@ -1,9 +1,8 @@
 {
   "workflow_id": "soma-models-list",
   "name": "My submission history",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "The session check could not be a join inside the aggregate, as it is on the other authed reads: json_agg with no GROUP BY returns exactly one row whatever it is fed, so a revoked session would have got 200 with an empty list -- a rejection indistinguishable from having submitted nothing. The aggregate is therefore a scalar subquery and live_sessions is the outer FROM, which yields no row at all when the session is dead. A live session with no submissions still yields one row holding '[]', so `deny` fires on the revocation and not on the empty list. It runs first and is terminal: a condition-gated terminal task is how a workflow refuses a request while choosing its own status code, which has to be 401 here. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body.",
+  "tags": ["pkg:soma"],
   "condition": true,
   "tasks": [
     {
@@ -13,32 +12,28 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json)::text AS body FROM ( SELECT m.id, u.handle AS owner, g.slug AS game, m.version, m.repo, m.release_tag,        m.weight_class AS class, m.size_bytes, m.status, m.reject_reason, m.created_at FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid   AND (($2)::text IS NULL OR g.slug = ($2)::text)) x",
+          "query": "SELECT (SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json) FROM ( SELECT m.id, u.handle AS owner, g.slug AS game, m.version, m.repo, m.release_tag,        m.weight_class AS class, m.size_bytes, m.status, m.reject_reason, m.created_at FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid   AND (($2)::text IS NULL OR g.slug = ($2)::text)) x) AS body FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($1)::uuid",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.query.game"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.query.game" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.rows"
         }
       }
     },
     {
-      "id": "parse",
-      "name": "Parse the body column",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": { "!": { "var": "temp_data.rows.0.body" } },
+      "terminal": true,
       "function": {
-        "name": "parse_json",
+        "name": "map",
         "input": {
-          "source": "temp_data.rows.0.body",
-          "target": "body"
+          "mappings": [
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
+          ]
         }
       }
     },
@@ -49,17 +44,11 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }
     }
-  ],
-  "description": "The body column is cast to text and parsed back by a parse_json task: Orion's db_read goes through sqlx's Any driver, which cannot decode the Postgres json/jsonb type and fails the task outright. Casting keeps response construction in SQL -- see README 'Postgres builds the response JSON' -- at the cost of one extra task."
+  ]
 }
