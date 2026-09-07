@@ -43,21 +43,25 @@ if command -v jq > /dev/null 2>&1; then
   field() { jq -r ".$2" "$1"; }
   ids() { jq -r ".data[].$1"; }
   with_private_urls() { jq '.config.allow_private_urls = true' "$1"; }
+  plugin_body() { jq -n --slurpfile m "$1" --rawfile c "$2" \
+      '{plugin_id: $m[0].name, manifest: $m[0], component: ($c | rtrimstr("\n")), tags: ["pkg:soma"]}'; }
 else
   field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
   ids() { python3 -c 'import json,sys; [print(o[sys.argv[1]]) for o in json.load(sys.stdin)["data"]]' "$1"; }
   with_private_urls() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["config"]["allow_private_urls"]=True; print(json.dumps(d))' "$1"; }
+  plugin_body() { python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(json.dumps({"plugin_id": m["name"], "manifest": m, "component": open(sys.argv[2]).read().strip(), "tags": ["pkg:soma"]}))' "$1" "$2"; }
 fi
 
 # Channels first, because a channel holds its workflow and its route; connectors
 # last. Every object the package creates carries the tag, so this is the whole
 # package, including anything a previous version shipped and this one does not.
 echo "==> deleting existing pkg:soma objects"
-for kind in channels workflows connectors; do
+for kind in channels workflows connectors plugins; do
   case "$kind" in
     channels)   key=channel_id ;;
     workflows)  key=workflow_id ;;
     connectors) key=id ;;
+    plugins)    key=plugin_id ;;
   esac
   for id in $(req "$ADMIN/$kind?tag=pkg:soma&limit=500" | ids "$key"); do
     curl_admin -X DELETE "$ADMIN/$kind/$id" -o /dev/null || true
@@ -77,6 +81,34 @@ for f in connectors/*.json; do
   else
     req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @"$f" > /dev/null
   fi
+  echo "    $id"
+done
+
+# Plugins before workflows: a workflow naming a function no plugin provides is quarantined at
+# load. Soma ships none today -- its two plugins moved to the jodi package with the clocks that
+# call them -- so this loop is a no-op unless a plugins/ directory appears. It is kept because the
+# ordering rule is the thing worth not rediscovering.
+#
+# Every upload lands as a draft and is activated by the PATCH, exactly as a workflow is. Orion
+# validates the manifest, compiles the component in the sandbox and probes every declared function
+# before the draft row is written, so a create that returns 201 has already proved it loads.
+echo "==> plugins"
+for f in plugins/*/plugin.json; do
+  [ -e "$f" ] || continue
+  dir=$(dirname "$f")
+  id=$(field "$f" name)
+  component=$(field "$f" component)
+  # The component reaches the helper as a *file*, never as an argument: base64 of a 100 KiB
+  # component is ~133 KiB of text, and passing that as an argv entry is "Argument list too long"
+  # on any shell. `-w 0` would do it in one step but is GNU-only, and this script runs on the
+  # host too.
+  b64file=$(mktemp)
+  base64 < "$dir/$component" | tr -d '\n' > "$b64file"
+  plugin_body "$f" "$b64file" \
+    | req -X POST "$ADMIN/plugins" -H 'Content-Type: application/json' --data @- > /dev/null
+  rm -f "$b64file"
+  req -X PATCH "$ADMIN/plugins/$id/status" -H 'Content-Type: application/json' \
+      -d '{"status":"active"}' > /dev/null
   echo "    $id"
 done
 

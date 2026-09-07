@@ -7,19 +7,30 @@ Soma is an **[Orion](https://github.com/GoPlasmatic/Orion) v1.7.0 package**: ten
 over Postgres, declared as JSON. There is no application code.
 
 The design and tracking documents — `scope.md` (the API), `schema.md` (the database),
-`orion-gaps.md` (what each Orion release closed, and what Soma changed for it) and `DESIGN.md` — are **not in
-this repo**. They live in the private workspace this repo sits inside, alongside `devops/`
-(`Tiny-Brains/devops`), which holds the compose file and Soma's instance config. References to them
-below name the file without linking it.
+`DESIGN.md`, and the v2 layers under `design/v2/` (`00-overview.md`, `01-match-table.md`,
+`02-jodi.md`, and the `tracker.md` that orders the build) — are **not in this repo**. They live in
+the private workspace this repo sits inside, alongside `devops/` (`Tiny-Brains/devops`), which holds
+the compose file and Soma's instance config. References to them below name the file without linking
+it. Notes once cited as `orion-gaps.md` N-numbers are recorded inline where they matter; that file
+was folded into the v2 layers and no longer exists.
 
-**Soma does not run matches.** A separate game manager service — not yet designed — owns the match
-loop, computes TrueSkill, and admits submitted models. It writes `matches`, `ratings` and the
-admission columns of `models` directly to the same database. Soma writes `users`, `sessions` and
-inserts one `models` row; everything else it reads. See `scope.md` §3.
+**Soma does not play matches.** Under v2 the work splits three ways, one repo each, with
+`devops/` deciding how they are deployed. **Jodi** — the sibling `jodi` repo — pairs matches, folds
+finished ones into ratings, promotes verified versions and withdraws stale queued rows; it is three
+cron channels and two plugins, loaded into this server today. **Kalam** is a second Orion package on its own replicas
+that plays the matches; it holds a database role that can `SELECT` `matches` and `match_seats` and
+`UPDATE` only its own columns of each, and it touches nothing else. The **Model Loader** is a
+separate binary beside each of them, running competitor models and their adapters. Soma owns the
+schema all three share, and the admission workflow that verifies a submission through the loader
+beside it. See `design/v2/00-overview.md` §2 and `scope.md` §3.
 
 ---
 
 ## The surface
+
+Eleven REST routes. Nothing else: Soma is the read and write surface for competitors, and the
+clocks that run the ladder are the **jodi** package in its own repo — loaded into this same
+orion-server today, but that is `devops/`'s choice rather than a fact about either repo.
 
 | Method | Path | Auth |
 |---|---|---|
@@ -134,7 +145,7 @@ orion-server -c ../devops/soma/orion.local.toml validate-config
 every channel's `workflow_id`, every task's connector and its type, duplicate ids and routes. Those
 are the errors a per-file check cannot see. `--deny-warnings` matters more than it looks: the
 warning class it promotes, `[logic.unresolvable]`, is the one that passes every other gate and
-surfaces as wrong data. See `orion-gaps.md` N1.
+surfaces as wrong data.
 
 `clippy -c` is the one that reads the instance config, and so the one that catches a
 `metadata.vars.<name>` the config does not declare — which is exactly how the session cookie once
@@ -182,7 +193,8 @@ when the channel loads. It must equal the callback URL registered with the OAuth
 is a different absolute URL in every environment, and it is `https` only except on a loopback host —
 a value that fails that at load quarantines the channel rather than serving it. Before 1.7.0 the
 field took no reference and `load-package.sh` rewrote it from `OAUTH_REDIRECT_URI`; the container's
-config now reads that variable itself, as `${OAUTH_REDIRECT_URI:-…}`. `orion-gaps.md` N5.
+config now reads that variable itself, as `${OAUTH_REDIRECT_URI:-…}`. Orion refuses a non-https
+redirect URI except on a loopback host.
 
 Whether cookies carry `Secure` is `[vars] cookie_secure` the same way: a TOML boolean the state
 cookie and the session cookies read. Browsers refuse to store a `Secure` cookie from an `http://`
@@ -217,12 +229,13 @@ so is the reason the reads could not be tested against an empty table.
 **Query defaults are computed in a `map` task, never inline in `params`.** `db_read` folds
 `{"var": …}` nodes and nothing else, so an `or` written directly into `params` reaches Postgres as a
 literal object; the leaderboard and match-history workflows each open with a `defaults` task for
-exactly this reason (`orion-gaps.md` N1). The defaults are the strings `"50"`, `"0"` and `"25"` —
+exactly this reason. The defaults are the strings `"50"`, `"0"` and `"25"` —
 the type a query-string value arrives as. Since 1.7.0 the spelling is a matter of taste: a
 placeholder is bound to the type the query declares for it, so `"50"` and `50` both reach
 `LIMIT ($3)::int` as an integer, and a value that will not convert is a `400` naming the placeholder
 and its declared type. Before 1.7.0 the JSON type chose the SQL type and the first call froze it,
-which is why the strings used to be a rule. `orion-gaps.md` N6.
+which is why the strings used to be a rule; since 1.6.0 a placeholder's declared type converts, so
+the spelling no longer matters.
 
 **Cookies are declared, not assembled.** The two workflows that set one carry
 `response.cookies: true` on their channel and write a `data._orion.response.cookies` array — `name`,
@@ -252,7 +265,7 @@ describes; that is a counter and belongs with policy (S13).
 the leaderboard does not use it: the sort key is a live rating that every match rewrites, so a
 keyset position moves between pages exactly as an offset does, and `rank` is a position in the
 whole ladder either way. Keyset is the tool for a table whose sort keys hold still, `created_at, id`
-say, which the match history would be if it paged. `orion-gaps.md` G5.
+say, which the match history would be if it paged.
 
 **`provisional` is `matches_played < 20`, hardcoded in SQL.** It belongs in policy (S13, deferred).
 Grep for `< 20` when that lands.
@@ -308,9 +321,24 @@ mis-registered their worker as failed and pinned `/health` to `degraded` for the
 process. That is fixed, the image's `HEALTHCHECK` now uses `/readyz`, and the mode can change when
 volume says so.
 
-**Nothing promotes a submission.** Rows land in `testing` and stay there until the game manager
-exists. Soma can be finished and tested without it — seed the tables by hand — but the loop does not
-close.
+**The ladder runs, and it is Jodi's.** Three cron channels and two plugins live in the sibling
+`jodi` repo, loaded into this server by `devops/`. Verified end to end against the local stack: a
+`verified` version gets a trial, is promoted, and a finished match folds to a rating that reaches
+`GET /v1/games/{game}/leaderboard`. See `jodi/README.md`.
+
+**Soma's read shapes speak the two-table match.** A match's players come from `match_seats` rather
+than three positionally-aligned arrays, and the match object carries its public status, why it was
+withdrawn and what replaced the seat, the fault and its seat, both digests, per-seat strikes, and
+the rating change each seat took. `scripts/check-sql.sh` PREPAREs every query the package ships
+against a schema built from the migrations — it caught two workflows still reading
+`matches.model_ids` the day the schema changed.
+
+**Nothing admits a submission.** A row lands in `testing` and stays there: the admission workflow
+needs a Model Loader to `inspect` and `validate` against, and that binary does not exist yet
+(`design/v2/tracker.md` P3 and P5). That is the one hand still on the loop.
+
+**Nothing plays a match.** Kalam's package exists; its wave workflow waits on layer 03 and the
+engine. Until then a match is finished by hand to exercise Jodi.
 
 ---
 

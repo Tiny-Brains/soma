@@ -2,7 +2,9 @@
   "workflow_id": "soma-models-list",
   "name": "My submission history",
   "description": "The session check could not be a join inside the aggregate, as it is on the other authed reads: json_agg with no GROUP BY returns exactly one row whatever it is fed, so a revoked session would have got 200 with an empty list -- a rejection indistinguishable from having submitted nothing. The aggregate is therefore a scalar subquery and live_sessions is the outer FROM, which yields no row at all when the session is dead. A live session with no submissions still yields one row holding '[]'. The row is what distinguishes the two cases, so `deny` tests the `session_ok` marker projected from live_sessions rather than `body`: an empty list is falsy to the condition evaluator, and testing `body` would have rejected every user who has not submitted yet. It runs first and is terminal: a condition-gated terminal task is how a workflow refuses a request while choosing its own status code, which has to be 401 here. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body.",
-  "tags": ["pkg:soma"],
+  "tags": [
+    "pkg:soma"
+  ],
   "condition": true,
   "tasks": [
     {
@@ -14,9 +16,15 @@
           "connector": "soma-db",
           "query": "SELECT (SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json) FROM ( SELECT m.id, u.handle AS owner, g.slug AS game, m.version, m.repo, m.release_tag,        m.weight_class AS class, m.size_bytes, m.status, m.reject_reason, m.created_at FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid   AND (($2)::text IS NULL OR g.slug = ($2)::text)) x) AS body, ls.sid AS session_ok FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($1)::uuid",
           "params": [
-            { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.query.game" },
-            { "var": "metadata.auth.claims.sid" }
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.query.game"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
           ],
           "output": "temp_data.rows"
         }
@@ -25,14 +33,29 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }
@@ -44,8 +67,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

@@ -1,8 +1,10 @@
 {
   "workflow_id": "soma-matches-list",
   "name": "Match history for a model",
-  "description": "The limit default is computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only. See orion-gaps.md N1. It is the string \"25\" because that is what ?limit= delivers; the placeholder's declared type converts (orion-gaps.md N6). Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. The GIN containment operator @> is why this is raw SQL rather than the portable dialect.",
-  "tags": ["pkg:soma"],
+  "description": "The limit default is computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only. It is the string \"25\" because that is what ?limit= delivers; the placeholder's declared type converts. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. Under v2 this is a plain join on match_seats (match_seats_model_idx) rather than GIN containment over an array. It lists what was played -- `finished` and `rated` -- so a result appears the moment the match ends and gains its rating change once count has folded it; queued, cancelled and failed rows are deliberately absent, and showing a competitor their own queue is soma-gaps 2.2's remaining half, which needs the owner's session to scope it.",
+  "tags": [
+    "pkg:soma"
+  ],
   "condition": true,
   "tasks": [
     {
@@ -14,7 +16,14 @@
           "mappings": [
             {
               "path": "temp_data.q.limit",
-              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+              "logic": {
+                "or": [
+                  {
+                    "var": "metadata.query.limit"
+                  },
+                  "25"
+                ]
+              }
             }
           ]
         }
@@ -27,8 +36,15 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(x ORDER BY x.played_at DESC), '[]'::json) AS body FROM ( SELECT mt.id, g.slug AS game, mt.reason, mt.played_at FROM matches mt JOIN games g ON g.id = mt.game_id WHERE mt.model_ids @> ARRAY[($1)::uuid] ORDER BY mt.played_at DESC LIMIT ($2)::int) x",
-          "params": [{ "var": "metadata.query.model" }, { "var": "temp_data.q.limit" }],
+          "query": "SELECT coalesce(json_agg(x ORDER BY x.played_at DESC), '[]'::json) AS body FROM ( SELECT mt.id, g.slug AS game, mt.status, mt.preset, mt.reason, mt.played_at, s.rank, s.score, mt.trial_model_id IS NOT NULL AS is_trial FROM match_seats s JOIN matches mt ON mt.id = s.match_id JOIN games g ON g.id = mt.game_id WHERE s.model_id = ($1)::uuid AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC LIMIT ($2)::int) x",
+          "params": [
+            {
+              "var": "metadata.query.model"
+            },
+            {
+              "var": "temp_data.q.limit"
+            }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -40,8 +56,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

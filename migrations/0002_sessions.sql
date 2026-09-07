@@ -2,7 +2,7 @@
 --
 -- Until this table existed, `soma_session` was a bare 30-day JWT: DELETE /v1/session
 -- cleared the cookie and the token stayed valid to `exp`, so a stolen one was good
--- for a month and there was no way to end it. See orion-gaps.md G1.
+-- for a month and there was no way to end it.
 --
 -- The token now carries a `sid` claim naming a row here, and every authed statement
 -- JOINs `live_sessions` on it. The check is a join rather than a guard task on

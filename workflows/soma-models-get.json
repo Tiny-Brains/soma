@@ -1,8 +1,10 @@
 {
   "workflow_id": "soma-models-get",
   "name": "One model version",
-  "description": "Postgres builds the response: the `body` column is json_build_object with the ratings folded in as json_object_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. Before 1.6 the column had to be cast ::text and parsed back by a parse_json task.",
-  "tags": ["pkg:soma"],
+  "description": "One row, one `body` column, built by Postgres. `trial` is soma-gaps 2.4: a version sits in `verified` while its trial match is queued or being played, and without this the Submit screen would show a submission that had simply stopped moving. It carries the trial's own status and when it was queued, so the wait can be stated rather than guessed at. `provisional` is now sigma against the settled threshold from [vars] -- the same number pair's demand view calls settled -- rather than a hardcoded matches_played < 20 that could disagree with it.",
+  "tags": [
+    "pkg:soma"
+  ],
   "condition": true,
   "tasks": [
     {
@@ -12,8 +14,15 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object(  'id', m.id, 'owner', u.handle, 'game', g.slug, 'version', m.version,  'repo', m.repo, 'release_tag', m.release_tag, 'commit_sha', m.commit_sha,  'class', m.weight_class, 'size_bytes', m.size_bytes,  'param_count', m.param_count, 'status', m.status,  'reject_reason', m.reject_reason, 'created_at', m.created_at,  'ratings', coalesce((SELECT json_object_agg(r.ladder, json_build_object(       'rating', r.conservative, 'provisional', r.matches_played < 20,       'matches', r.matches_played))     FROM ratings r WHERE r.model_id = m.id), '{}'::json)) AS body FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.id = ($1)::uuid",
-          "params": [{ "var": "metadata.params.id" }],
+          "query": "SELECT json_build_object( 'id', m.id, 'owner', u.handle, 'game', g.slug, 'version', m.version, 'repo', m.repo, 'release_tag', m.release_tag, 'commit_sha', m.commit_sha, 'class', m.weight_class, 'size_bytes', m.size_bytes, 'param_count', m.param_count, 'status', m.status, 'reject_reason', m.reject_reason, 'created_at', m.created_at, 'trial', (SELECT json_build_object('match_id', t.id, 'status', t.status, 'preset', t.preset, 'queued_at', t.created_at) FROM matches t WHERE t.trial_model_id = m.id ORDER BY t.created_at DESC LIMIT 1), 'ratings', coalesce((SELECT json_object_agg(r.ladder, json_build_object( 'rating', r.conservative, 'mu', r.mu, 'sigma', r.sigma, 'provisional', r.sigma > ($2)::float8, 'matches', r.matches_played)) FROM ratings r WHERE r.model_id = m.id), '{}'::json)) AS body FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.params.id"
+            },
+            {
+              "var": "metadata.vars.settled_sigma"
+            }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -25,8 +34,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

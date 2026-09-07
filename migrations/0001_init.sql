@@ -1,12 +1,24 @@
--- Soma M0 — initial schema
--- Transcribed from schema.md. Postgres 13+ (gen_random_uuid is built in).
+-- Soma — initial schema, v2.
 --
--- Two services write this database:
---   Soma          — users, and the INSERT of a models row
---   game manager  — matches, ratings, and the admission columns + status on models
+-- Transcribed from design/v2/01-match-table.md §3 (layer 01 draft 3, agreed and verified on
+-- Postgres 16 by design/v2/01-verify/run.sh), which supersedes schema.md for everything below
+-- `ratings`. Postgres 13+ (gen_random_uuid is built in).
 --
--- Neither is trusted to enforce "one active version" or "one submission in flight".
--- The partial unique indexes at the bottom are.
+-- There is no 0003: nothing is released, so there is no migration chain to keep. This file IS
+-- the schema. `01-verify/01_schema.sql` was the delta over the pre-v2 files and is now history;
+-- the harness that applies it stays the CI check.
+--
+-- Three writers share this database, and each is confined by what it can reach:
+--
+--   Soma   — users, sessions, the INSERT of a models row, and (as Jodi, three cron channels in
+--            the same Orion package) matches, match_seats, rating_events, ratings and clocks.
+--   Kalam  — the match players. A separate role, granted SELECT on matches and match_seats and
+--            UPDATE on named columns of each. It can reach no other table and no other column,
+--            so "Kalam writes no rating" is a fact of the grant, not a convention. See §3.8.
+--   the Model Loader — no database access at all. It is called over loopback HTTP.
+--
+-- Nothing above is trusted to enforce one-active-version, one-submission-in-flight, or
+-- one-live-trial. The partial unique indexes and the exclusion constraint at the bottom are.
 
 BEGIN;
 
@@ -18,16 +30,34 @@ CREATE TYPE user_role AS ENUM ('competitor', 'admin', 'baseline');
 -- and in open. models.weight_class is CHECKed against it below.
 CREATE TYPE ladder AS ENUM ('nano', 'micro', 'mini', 'small', 'large', 'open');
 
-CREATE TYPE model_status AS ENUM ('testing', 'active', 'superseded', 'rejected');
+-- 'verified' sits between 'testing' and 'active': admission has checked the release and the
+-- adapter, and the version is now waiting for its trial match. It is a status of its own rather
+-- than a derived signal so that pair, count and withdraw can each test the status alone
+-- (decision 21, layer 01 §3.2). A version is "contesting" when it is 'active', or 'verified' for
+-- the candidate seat of its own trial row.
+CREATE TYPE model_status AS ENUM ('testing', 'verified', 'active', 'superseded', 'rejected');
+
+-- A match's life. 'pending' is born by pair; Kalam takes it through 'claimed' and 'running' to
+-- 'finished'; count marks it 'rated'. 'cancelled' is withdraw's, 'failed' is a fault's — both
+-- terminal, neither counted.
+CREATE TYPE match_status AS ENUM
+    ('pending', 'claimed', 'running', 'finished', 'rated', 'cancelled', 'failed');
 
 -- ---------------------------------------------------------------------- games
 
 -- Also the fleet table: one game, one server.
 CREATE TABLE games (
-    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    slug        text        NOT NULL UNIQUE,
-    name        text        NOT NULL,
-    created_at  timestamptz NOT NULL DEFAULT now()
+    id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug                 text        NOT NULL UNIQUE,
+    name                 text        NOT NULL,
+
+    -- The engine every new match is stamped with. The deploy step writes it once the replicas
+    -- carrying that engine exist (finding 5 option A); pair reads it at insert, withdraw cancels
+    -- queued rows that no longer match it, and Kalam claims only rows naming its own digest. That
+    -- is what keeps two engine versions out of one ladder across a rolling deploy.
+    active_engine_digest text,
+
+    created_at           timestamptz NOT NULL DEFAULT now()
 );
 
 -- ---------------------------------------------------------------------- users
@@ -48,9 +78,10 @@ CREATE TABLE users (
 
 -- --------------------------------------------------------------------- models
 
--- One row per submission. Everything from commit_sha down is null at insert:
--- a submission names a GitHub release and cannot state its own size, class or
--- hashes. The game manager fills them at admission.
+-- One row per submission. Everything from commit_sha down is null at insert: a submission names
+-- a GitHub release and cannot state its own size, class or hashes. The admission workflow fills
+-- them, then moves the row 'testing' -> 'verified'. Promotion to 'active' is count's, after the
+-- trial match is played.
 CREATE TABLE models (
     id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id        uuid         NOT NULL REFERENCES users (id),
@@ -69,6 +100,17 @@ CREATE TABLE models (
     flops_estimate  bigint,
     weights_hash    text,
     adapter_hash    text,
+
+    -- The adapter as the release asset's exact text, stored rather than referenced: it is small,
+    -- it is what the evaluator runs, and holding the bytes means a re-validation sweep after a
+    -- dialect change needs no network. The CHECK below makes the stored text and the recorded
+    -- hash impossible to disagree.
+    adapter          text,
+
+    -- Which evaluator build verified this version. Reported by the loader on every call; a change
+    -- in it is what makes the re-validation sweep necessary (finding 5).
+    evaluator_digest text,
+
     reject_reason   text,
     created_at      timestamptz  NOT NULL DEFAULT now(),
 
@@ -76,13 +118,24 @@ CREATE TABLE models (
         CHECK (weight_class <> 'open'),
 
     CONSTRAINT models_version_positive
-        CHECK (version >= 1)
+        CHECK (version >= 1),
+
+    -- Past 'testing', a row must know what it is. This is what stops a half-verified version
+    -- being paired: pair joins on status and would otherwise seat a null weights_hash.
+    CONSTRAINT models_past_testing_has_contents
+        CHECK (status IN ('testing', 'rejected')
+            OR (weights_hash IS NOT NULL AND adapter_hash IS NOT NULL
+                AND evaluator_digest IS NOT NULL AND weight_class IS NOT NULL)),
+
+    CONSTRAINT models_adapter_matches_hash
+        CHECK (adapter IS NULL
+            OR adapter_hash = 'sha256:' || encode(sha256(convert_to(adapter, 'UTF8')), 'hex'))
 );
 
 -- -------------------------------------------------------------------- ratings
 
 -- Two rows per promoted model: its weight class, and open.
--- Created at promotion, so a testing or rejected model has none.
+-- Created at promotion, so a testing, verified or rejected model has none.
 --
 -- seed_mu / seed_sigma record what this version inherited from the one it
 -- replaced, at the instant it was promoted. They are not derivable: the
@@ -107,56 +160,187 @@ CREATE TABLE ratings (
 
 -- -------------------------------------------------------------------- matches
 
--- Seat arrays are positionally aligned: index IS seat number, the same
--- addressing docs/PROTOCOL.md uses for actions against ants.
+-- A match is born 'pending' by pair, with everything needed to play it and nothing about how it
+-- went. Kalam claims it with a token, plays it, and finishes it in place. Count marks it 'rated'.
 --
--- Postgres cannot foreign-key an array element, so nothing here stops a match
--- referencing a model that does not exist or one from another game. The writer
--- must check both.
+-- The row is the unit of work AND the unit of idempotence: there is no separate claims table and
+-- no id derived from an occurrence. `claim_token` is what makes a stale replica's finish a no-op,
+-- and `rated_seq` is what makes a second fold of the same match impossible.
 CREATE TABLE matches (
-    id              uuid        PRIMARY KEY,   -- supplied by the writer, for idempotency
-    game_id         uuid        NOT NULL REFERENCES games (id),
+    id                   uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    game_id              uuid         NOT NULL REFERENCES games (id),
+    status               match_status NOT NULL DEFAULT 'pending',
+    created_at           timestamptz  NOT NULL DEFAULT now(),
 
-    cartridge_hash  text        NOT NULL,      -- what actually ran; with seed + preset,
-    seed            bigint      NOT NULL,      -- the reproducibility triple
-    preset          text        NOT NULL,
-    reason          text        NOT NULL,      -- free text, never an enum: game-defined
+    -- ---- what pair decides, and what it takes to reproduce the match
+    engine_digest        text         NOT NULL,   -- which engine must play it
+    seed                 bigint       NOT NULL,
+    preset               text         NOT NULL,
+    seat_count           smallint     NOT NULL,
+    ladders              ladder[]     NOT NULL,   -- derived at insert; empty for a trial
+    trial_model_id       uuid         REFERENCES models (id),
+    pairing_id           uuid,                    -- the pairing run that proposed it, for audit
 
-    model_ids       uuid[]      NOT NULL,
-    ranks           smallint[]  NOT NULL,      -- 1 = best; ties allowed
-    scores          int[]       NOT NULL,      -- integer by law: game state carries no floats
+    -- ---- the lease
+    claim_token          uuid,
+    lease_expires_at     timestamptz,
+    lapses               smallint     NOT NULL DEFAULT 0,   -- leases that expired mid-play
+    refusals             smallint     NOT NULL DEFAULT 0,   -- loader refusals for want of memory
 
-    replay_key      text,
-    played_at       timestamptz NOT NULL,      -- reported by the game server
-    ingested_at     timestamptz NOT NULL DEFAULT now(),  -- our clock; orders any recompute
+    -- ---- what Kalam reports
+    reason               text,        -- free text, never an enum: game-defined
+    turns                int,
+    played_ms            int,
+    engine_digest_played text,        -- what actually ran; compare with engine_digest for skew
+    evaluator_digest     text,
+    replay_key           text,        -- names the attempt, so a stale attempt's blob is an orphan
+    played_at            timestamptz,
+    fault_reason         text,
+    fault_seat           smallint,    -- which seat is to blame, when one is
+    closed_at            timestamptz,
 
-    CONSTRAINT matches_seats_aligned
-        CHECK (cardinality(model_ids) = cardinality(ranks)
-           AND cardinality(ranks)     = cardinality(scores)),
+    -- ---- what withdraw reports
+    withdrawn_reason     text,
+    successor_id         uuid         REFERENCES models (id),
 
-    CONSTRAINT matches_has_seats
-        CHECK (cardinality(model_ids) >= 2)
+    -- ---- what count reports
+    rated_at             timestamptz,
+    rated_seq            bigint,
+
+    CONSTRAINT matches_seat_count         CHECK (seat_count >= 2),
+    CONSTRAINT matches_fault_seat_in_range
+        CHECK (fault_seat IS NULL OR fault_seat BETWEEN 0 AND seat_count - 1),
+    CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
+
+    -- The status and the columns that go with it cannot disagree. This is also what confines
+    -- Kalam: with UPDATE granted on its columns only, there is no state it can reach that is not
+    -- one of its own -- it cannot mark a row 'rated', because it cannot write rated_at.
+    CONSTRAINT matches_status_shape
+        CHECK (CASE status
+            WHEN 'pending'   THEN claim_token IS NULL AND lease_expires_at IS NULL
+                              AND played_at IS NULL AND closed_at IS NULL AND rated_at IS NULL
+            WHEN 'claimed'   THEN claim_token IS NOT NULL AND lease_expires_at IS NOT NULL
+                              AND played_at IS NULL
+            WHEN 'running'   THEN claim_token IS NOT NULL AND lease_expires_at IS NOT NULL
+                              AND played_at IS NULL
+            WHEN 'finished'  THEN claim_token IS NOT NULL AND replay_key IS NOT NULL
+                              AND played_at IS NOT NULL AND engine_digest_played IS NOT NULL
+                              AND evaluator_digest IS NOT NULL AND rated_at IS NULL
+            WHEN 'rated'     THEN played_at IS NOT NULL AND rated_at IS NOT NULL
+                              AND rated_seq IS NOT NULL
+            WHEN 'cancelled' THEN withdrawn_reason IS NOT NULL AND closed_at IS NOT NULL
+                              AND played_at IS NULL
+            WHEN 'failed'    THEN fault_reason IS NOT NULL AND closed_at IS NOT NULL
+                              AND played_at IS NULL
+        END)
 );
+
+-- The order count folded matches in. A global sequence rather than a timestamp: two matches can
+-- share a played_at to the microsecond, and the audit needs a total order.
+CREATE SEQUENCE rating_seq AS bigint;
+
+-- ---------------------------------------------------------------- match_seats
+
+-- One row per seat, not arrays and not one jsonb document (decision 2, layer 01 §8). Arrays
+-- cannot be foreign-keyed, so a seat could name a model that does not exist or one from another
+-- game; a table can, and does. It is also what makes "every match this version played" an index
+-- scan rather than a containment search over every row in the table.
+--
+-- seat IS the index: seat 0 is the first player, the same addressing docs/PROTOCOL.md uses.
+CREATE TABLE match_seats (
+    match_id       uuid     NOT NULL REFERENCES matches (id) ON DELETE CASCADE,
+    seat           smallint NOT NULL,
+
+    -- ---- what pair writes
+    model_id       uuid     NOT NULL REFERENCES models (id),
+    weights_hash   text     NOT NULL,   -- copied at insert: the row records what was paired,
+    adapter_hash   text     NOT NULL,   -- not what the model row says today
+    paired_ratings jsonb,               -- the rating snapshot the pairing was made on
+
+    -- ---- what Kalam writes
+    rank           smallint,            -- 1 = best; ties allowed; forfeits last
+    score          int,                 -- integer by law: game state carries no floats
+    strikes        smallint,
+
+    PRIMARY KEY (match_id, seat),
+    CONSTRAINT match_seats_seat_nonneg    CHECK (seat >= 0),
+    CONSTRAINT match_seats_result_whole   CHECK ((rank IS NULL) = (score IS NULL)
+                                             AND (rank IS NULL) = (strikes IS NULL)),
+    CONSTRAINT match_seats_rank_positive  CHECK (rank IS NULL OR rank >= 1),
+    CONSTRAINT match_seats_strikes_nonneg CHECK (strikes IS NULL OR strikes >= 0)
+);
+
+-- -------------------------------------------------------------- rating_events
+
+-- One row per seat per ladder per counted match, plus a seed row at promotion (seq = 0).
+-- Decision 22, taken early because the fold writes the rows anyway.
+--
+-- The primary key IS the correctness argument (finding 1, option B'): (model_id, ladder, seq)
+-- with seq taken from ratings.matches_played means a second fold of the same match collides
+-- rather than double-counting. The chain -- every event starting where the previous one on its
+-- ladder ended -- is then checkable by a join, which is what `a_chain` in 01-verify does.
+CREATE TABLE rating_events (
+    model_id     uuid        NOT NULL REFERENCES models (id) ON DELETE CASCADE,
+    ladder       ladder      NOT NULL,
+    seq          int         NOT NULL,
+    match_id     uuid        REFERENCES matches (id),
+    seat         smallint,
+    mu_before    float8,
+    sigma_before float8,
+    mu_after     float8      NOT NULL,
+    sigma_after  float8      NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (model_id, ladder, seq),
+    FOREIGN KEY (match_id, seat) REFERENCES match_seats (match_id, seat),
+    CONSTRAINT rating_events_seq_nonneg CHECK (seq >= 0),
+
+    -- seq 0 is the seed at promotion: no match, no before. Everything else is a fold: both.
+    CONSTRAINT rating_events_seed_shape
+        CHECK ((seq = 0) = (match_id IS NULL)
+           AND (seq = 0) = (mu_before IS NULL)
+           AND (mu_before IS NULL) = (sigma_before IS NULL)
+           AND (match_id IS NULL) = (seat IS NULL))
+);
+
+-- --------------------------------------------------------------------- clocks
+
+-- One table, two flavours of fence (layer 01 §3.6).
+--
+--   run fence   -- (scheduled_for, attempt). A cron run claims it at its first task with its own
+--                  occurrence's identity, monotonically; every ladder write in the run then reads
+--                  the row FOR SHARE and writes nothing if it has moved. A run that lost the race
+--                  provably writes nothing. Used by `count`.
+--   epoch fence -- a counter any roster writer bumps. Pair reads it at run start and every insert
+--                  checks it FOR SHARE, so a pairing decided against a roster that has since
+--                  changed cannot land. Used by `roster`.
+--
+-- `pair` and `withdraw` are seeded as run fences that nothing currently claims: pair's guarantee
+-- is the roster epoch (a stale run overfills by at most one run's worth, which the depth target
+-- bounds), and withdraw's single statement is idempotent. The rows cost nothing and are here if
+-- either ever needs one.
+CREATE TABLE clocks (
+    key           text        PRIMARY KEY,
+    scheduled_for timestamptz NOT NULL DEFAULT '-infinity',
+    attempt       int         NOT NULL DEFAULT 0,
+    epoch         bigint      NOT NULL DEFAULT 0,
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO clocks (key) VALUES ('count'), ('pair'), ('withdraw'), ('roster');
 
 -- -------------------------------------------------------------------- indexes
 
--- Seven. Four serve an endpoint, three enforce a rule.
--- games (slug) and ratings (model_id, ladder) are already covered by the
--- UNIQUE and PRIMARY KEY above.
+-- models --------------------------------------------------------------------
 
 -- versions are unambiguous per entry
 CREATE UNIQUE INDEX models_owner_game_version_uniq
     ON models (owner_id, game_id, version);
 
--- at most one contesting version
-CREATE UNIQUE INDEX models_one_active_uniq
-    ON models (owner_id, game_id)
-    WHERE status = 'active';
-
--- at most one submission in flight
-CREATE UNIQUE INDEX models_one_testing_uniq
-    ON models (owner_id, game_id)
-    WHERE status = 'testing';
+-- At most one submission in flight, where "in flight" now spans both pre-active states: a
+-- competitor with a verified version waiting for its trial may not submit another.
+CREATE UNIQUE INDEX models_one_in_flight_uniq
+    ON models (owner_id, game_id) WHERE status IN ('testing', 'verified');
 
 -- the same release cannot be entered twice
 CREATE UNIQUE INDEX models_owner_game_release_uniq
@@ -167,14 +351,95 @@ CREATE INDEX models_game_class_active_idx
     ON models (game_id, weight_class)
     WHERE status = 'active';
 
--- GET /matches?model={id} — containment, not a join
-CREATE INDEX matches_model_ids_gin
-    ON matches USING gin (model_ids);
+-- At most one contesting version -- as a DEFERRABLE exclusion constraint rather than a partial
+-- unique index, so that promotion's single statement does not depend on CTE order. Postgres does
+-- not order the updates of sibling CTEs, so "activate the candidate" and "supersede the
+-- predecessor" can be applied in either order; with the rule checked at commit, both orders
+-- succeed. 01-verify runs the statement written both ways to prove it (01 §9.1).
+ALTER TABLE models
+    ADD CONSTRAINT models_one_active_excl
+        EXCLUDE USING btree (owner_id WITH =, game_id WITH =) WHERE (status = 'active')
+        DEFERRABLE INITIALLY DEFERRED;
 
--- There is deliberately no index on ratings.conservative. Only active models are
--- ranked, status lives on models, and Postgres cannot build a partial index across
--- a join -- so it would be walked past every superseded and rejected version. The
--- leaderboard is a join filtered by models_game_class_active_idx, sorted afterward.
--- At M0 that sorts one row per competitor per ladder.
+-- matches -------------------------------------------------------------------
+
+-- the claim: pending rows of one engine, oldest first
+CREATE INDEX matches_pending_claim_idx
+    ON matches (engine_digest, created_at) WHERE status = 'pending';
+
+-- the in-flight set. Deliberately WITHOUT lease_expires_at: a renew every N turns rewrites that
+-- column on every live row, and keeping it out of the index is what leaves those updates
+-- heap-only. The reaper scans this index and filters.
+CREATE INDEX matches_in_flight_idx
+    ON matches (claim_token) WHERE status IN ('claimed', 'running');
+
+-- count's batch: finished, in finish order
+CREATE INDEX matches_finished_idx
+    ON matches (played_at, id) WHERE status = 'finished';
+
+-- One live trial per candidate. 'finished' is inside the predicate on purpose: a trial that has
+-- been played but not yet decided still counts as live, so pair cannot insert a second one in the
+-- window between Kalam finishing it and count deciding it.
+CREATE UNIQUE INDEX matches_one_live_trial_uniq
+    ON matches (trial_model_id)
+    WHERE trial_model_id IS NOT NULL AND status IN ('pending', 'claimed', 'running', 'finished');
+
+-- how many trials a candidate has had, for the re-pair cap
+CREATE INDEX matches_trial_history_idx
+    ON matches (trial_model_id) WHERE trial_model_id IS NOT NULL;
+
+-- match_seats ---------------------------------------------------------------
+
+-- a version's matches: GET /matches?model={id}, and the demand view's in-flight count
+CREATE INDEX match_seats_model_idx
+    ON match_seats (model_id, match_id);
+
+-- the claim's affinity fill: rows whose models a replica already holds
+CREATE INDEX match_seats_weights_idx
+    ON match_seats (weights_hash, match_id);
+
+-- rating_events -------------------------------------------------------------
+
+-- the rating change a given match produced, for the Version screen
+CREATE INDEX rating_events_match_idx
+    ON rating_events (match_id, seat);
+
+-- There is deliberately no index on ratings.conservative. Only active models are ranked, status
+-- lives on models, and Postgres cannot build a partial index across a join -- so it would be
+-- walked past every superseded and rejected version. The leaderboard is a join filtered by
+-- models_game_class_active_idx, sorted afterward.
+
+-- ---------------------------------------------------------------- table storage
+
+-- Every match row is updated at least four times after insert -- claim, start, renew (repeatedly),
+-- finish, rate -- and the renews are the reason for the headroom: leaving 30% free gives those
+-- updates somewhere on the same page to go, which is what keeps them heap-only and off the
+-- indexes. Revisit if vacuum ever says the trade is wrong (finding 12.1 b).
+ALTER TABLE matches SET (fillfactor = 70);
+
+-- ------------------------------------------------------------------ the Kalam role
+
+-- Finding 12.2 option (a): confine the match player by grant, not by convention. It can read the
+-- two tables it plays from and write only the columns it reports. Combined with
+-- matches_status_shape above, there is no state it can reach that is not one of its own -- it
+-- cannot rate a match, cancel one, pair one, or touch models, ratings, users or clocks at all.
+--
+-- Roles are cluster-global while this schema is per-database, which is why the create is guarded.
+-- No password is set here: the credential is deployment configuration and lives in devops/, so
+-- the committed migration ships no secret. Until one is set the role cannot log in.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kalam') THEN
+        CREATE ROLE kalam LOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public TO kalam;
+GRANT SELECT ON matches, match_seats TO kalam;
+GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
+              reason, turns, played_ms, engine_digest_played, evaluator_digest,
+              replay_key, played_at, fault_reason, fault_seat, closed_at)
+    ON matches TO kalam;
+GRANT UPDATE (rank, score, strikes)
+    ON match_seats TO kalam;
 
 COMMIT;
