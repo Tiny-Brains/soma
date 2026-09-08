@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-leaderboard",
   "name": "Game leaderboard",
-  "description": "Query defaults are computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only, so an 'or' written directly in params reaches Postgres as a literal object. The defaults are the strings \"50\" and \"0\" because that is what the query string delivers; the placeholder's declared type converts, so the spelling no longer matters. Postgres builds the response: the one `body` column is json_build_object over the page, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. `provisional` is sigma against the settled threshold from [vars] -- the same number pair's demand view calls settled -- rather than a hardcoded match count that could disagree with it (soma-gaps 2.8). Pagination is OFFSET on purpose, the cursor being the offset as a string: the sort key is a live rating that every match rewrites, so a keyset position would drift exactly as an offset does, and `rank` is a position in the whole ladder either way.",
+  "description": "Query defaults are computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only, so an 'or' written directly in params reaches Postgres as a literal object. The defaults are the strings \"50\" and \"0\" because that is what the query string delivers; the placeholder's declared type converts, so the spelling no longer matters. Postgres builds the response: the one `body` column is json_build_object over the page, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. `provisional` is sigma against the settled threshold from [vars] -- the same number pair's demand view calls settled -- rather than a hardcoded match count that could disagree with it (soma-gaps 2.8). Pagination is OFFSET on purpose, the cursor being the offset as a string: the sort key is a live rating that every match rewrites, so a keyset position would drift exactly as an offset does, and `rank` is a position in the whole ladder either way. LAYER 06 §6.7: the season is a query parameter -- ?season=N reads a closed season's standings, which are its active versions and their rating rows, kept for ever; absent, the live season, or the latest closed when none is live. `season` and `closed` are on the body.",
   "tags": [
     "pkg:soma"
   ],
@@ -46,6 +46,12 @@
                   "0"
                 ]
               }
+            },
+            {
+              "path": "temp_data.q.season",
+              "logic": {
+                "var": "metadata.query.season"
+              }
             }
           ]
         }
@@ -58,7 +64,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "WITH page AS ( SELECT row_number() OVER (ORDER BY r.conservative DESC, m.id) AS rank,        m.id::text AS model_id, u.handle AS owner, m.version,        m.weight_class::text AS class, m.size_bytes,        r.conservative AS rating, (r.sigma > ($5)::float8) AS provisional,        r.matches_played AS matches FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id JOIN ratings r ON r.model_id = m.id AND r.ladder = ($2)::ladder WHERE g.slug = ($1)::text AND m.status = 'active'   AND (($2)::text = 'open' OR m.weight_class = ($2)::ladder) ORDER BY r.conservative DESC, m.id OFFSET ($4)::int LIMIT ($3)::int) SELECT json_build_object(   'entries', coalesce(json_agg(page ORDER BY page.rank), '[]'::json),   'next_cursor', CASE WHEN count(*) = ($3)::int                       THEN (($4)::int + ($3)::int)::text ELSE NULL END) AS body FROM page",
+          "query": "WITH season AS ( SELECT s.id, s.number, (s.closed_at IS NOT NULL) AS closed FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND (($6)::int IS NULL OR s.number = ($6)::int) ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1 ), page AS ( SELECT row_number() OVER (ORDER BY r.conservative DESC, m.id) AS rank, m.id::text AS model_id, u.handle AS owner, m.version, m.weight_class::text AS class, m.size_bytes, r.conservative AS rating, (r.sigma > ($5)::float8) AS provisional, r.matches_played AS matches FROM season JOIN models m ON m.season_id = season.id AND m.status = 'active' JOIN ratings r ON r.model_id = m.id AND r.ladder = ($2)::ladder JOIN users u ON u.id = m.owner_id WHERE (($2)::text = 'open' OR m.weight_class = ($2)::ladder) ORDER BY r.conservative DESC, m.id OFFSET ($4)::int LIMIT ($3)::int) SELECT json_build_object( 'season', (SELECT number FROM season), 'closed', (SELECT closed FROM season), 'entries', coalesce(json_agg(page ORDER BY page.rank), '[]'::json), 'next_cursor', CASE WHEN count(*) = ($3)::int THEN (($4)::int + ($3)::int)::text ELSE NULL END) AS body FROM page",
           "params": [
             {
               "var": "metadata.params.game"
@@ -74,6 +80,9 @@
             },
             {
               "var": "metadata.vars.settled_sigma"
+            },
+            {
+              "var": "temp_data.q.season"
             }
           ],
           "output": "temp_data.rows"

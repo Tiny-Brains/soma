@@ -28,7 +28,7 @@ beside it. See `design/v2/00-overview.md` §2 and `scope.md` §3.
 
 ## The surface
 
-Eleven REST routes. Nothing else: Soma is the read and write surface for competitors, and the
+Fourteen REST routes. Nothing else: Soma is the read and write surface for competitors, and the
 clocks that run the ladder are the **jodi** package in its own repo — loaded into this same
 orion-server today, but that is `devops/`'s choice rather than a fact about either repo.
 
@@ -39,14 +39,17 @@ orion-server today, but that is `devops/`'s choice rather than a fact about eith
 | `GET` | `/v1/me` | session |
 | `DELETE` | `/v1/session` | session |
 | `GET` | `/v1/games` | — |
-| `GET` | `/v1/games/{game}/leaderboard?ladder=&limit=&cursor=` | — |
+| `GET` | `/v1/games/{game}/leaderboard?ladder=&limit=&cursor=&season=` | — |
+| `GET` | `/v1/games/{game}/seasons` | — |
+| `POST` | `/v1/games/{game}/seasons` | session, admin |
+| `POST` | `/v1/games/{game}/seasons/current/close` | session, admin |
 | `POST` | `/v1/submissions` | session |
 | `GET` | `/v1/models?game=` | session |
 | `GET` | `/v1/models/{id}` | — |
 | `GET` | `/v1/matches?model=&limit=` | — |
 | `GET` | `/v1/matches/{id}` | — |
 
-Eleven routes on ten channels: the sign-in channel serves both `/v1/auth/github` and its callback.
+Fourteen routes on thirteen channels: the sign-in channel serves both `/v1/auth/github` and its callback.
 Response shapes are in `scope.md` §2.
 
 ---
@@ -287,6 +290,17 @@ join on `live_sessions` is what enforces the rule; `deny` only names the outcome
 ---
 
 ## Status
+
+**Seasons (layer 06, 8 September 2026).** A season is an admin-created competition window for a
+game — `submissions_open_at`, `submissions_close_at`, and a `rules` document with per-rule
+`enabled` flags (`unique_weights`, `participants`) — and it closes itself when its scores have
+settled, or when an admin asks. `POST /v1/submissions` stamps the game's open season and refuses
+`409 season_not_open`, `not_a_participant` or `weights_already_entered` by the season's rules;
+`GET /v1/games` carries the current season and its state; the leaderboard reads a closed season
+by `?season=N`, whose standings are kept for ever. The two admin endpoints read `users.role` off
+the live session. Driven end to end on the local stack: a season closed by settling, one created
+with a participant rule and closed on request. `design/v2/06-rating-seasons.md`.
+
 
 **Sign-in is native.** One channel, seven tasks in the workflow, PKCE included. Verified by
 request on 1.7.0: `GET /v1/auth/github` answers `302` to GitHub carrying `state`, `scope=read:user`,

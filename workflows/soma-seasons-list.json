@@ -1,0 +1,52 @@
+{
+  "workflow_id": "soma-seasons-list",
+  "name": "List a game's seasons",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "Layer 06 §6.7: every season of the game, newest first, each with its derived state -- closed, scheduled, open or settling -- its window, its engine and its rules. The index of past seasons, whose standings are read by GET /v1/games/{game}/leaderboard?season=N and are kept for ever (rule 5).",
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT coalesce(json_agg(json_build_object('number', s.number, 'state', CASE WHEN s.closed_at IS NOT NULL THEN 'closed' WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'closed_at', s.closed_at, 'close_requested_at', s.close_requested_at, 'engine_digest', s.engine_digest, 'rules', s.rules) ORDER BY s.number DESC), '[]'::json) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text",
+          "params": [
+            {
+              "var": "metadata.params.game"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

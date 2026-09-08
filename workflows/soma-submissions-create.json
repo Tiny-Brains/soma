@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-submissions-create",
   "name": "Enter a GitHub release",
-  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. The one-in-flight and duplicate-release rules are partial unique indexes; since Orion 1.5.0 a violation is classified as integrity_unique and answers 409 CONFLICT on its own, so no task catches it -- the run halts at the insert and the platform states the conflict. The two indexes are indistinguishable to the workflow by design (the constraint name is not surfaced), which is fine here: the scope asks for 409 either way. Both statements join live_sessions, not just the insert: a revoked session must neither write nor read. Guarding only the insert would leave a hole -- re-posting a release already submitted inserts nothing, hits no unique index, and the read-back would then answer 201 with the existing row. The join makes Postgres enforce it, which matters more here than on a read: a JSONLogic `condition` guarding the write would fail open if it were ever wrong. `deny` shapes the 401 for the empty result, runs before the response and is `terminal: true`, so nothing can run past a rejection. Decision 35 (layer 08 §3): the competitor declares both hashes and `declared` refuses 400 before the insert when either is missing or malformed -- otherwise the row is created, claimed, refused HASH_MISMATCH and rejected, which reports the competitor's model as wrong when the request was. The declaration is not what stops a release asset being swapped after admission -- the mirror inside /load does that -- it is what lets a competitor verify the platform holds THEIR bytes, and what pins the bytes across admission's three retries.",
+  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. The one-in-flight and duplicate-release rules are partial unique indexes; a violation is integrity_unique and answers 409 on its own. Both statements join live_sessions: a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. `deny` shapes the 401 and is terminal. Decision 35 (layer 08 §3): both hashes are declared and `declared` refuses 400 before the insert. LAYER 06 (06 §4.8, §6.6): the insert joins the game's OPEN season -- live and inside its window -- stamps it, and carries the season's rules as predicates: `participants` (only the listed users) and `unique_weights` (no other user holds these weights; a competitor may resubmit their own; rejected rows do not count). Zero rows and `why` reads the state and the two verdicts, and `refused` answers 409 with one word: season_not_open, not_a_participant or weights_already_entered. The read-back is scoped to the live season, so a release entered last season cannot be reported as this season's.",
   "tags": [
     "pkg:soma"
   ],
@@ -118,7 +118,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text GROUP BY g.id",
+          "query": "INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, s.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text AND (NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($1)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids'))) AND (NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($6)::text AND o.owner_id <> ($1)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) GROUP BY g.id, s.id",
           "params": [
             {
               "var": "metadata.auth.claims.sub"
@@ -147,13 +147,131 @@
       }
     },
     {
+      "id": "why",
+      "name": "Why nothing was inserted",
+      "condition": {
+        "!": {
+          ">": [
+            {
+              "var": "temp_data.insert.rows_affected"
+            },
+            0
+          ]
+        }
+      },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NULL THEN NULL WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'participant', s.id IS NULL OR NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($2)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids')), 'unique_weights', s.id IS NULL OR NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($3)::text AND o.owner_id <> ($2)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "params": [
+            {
+              "var": "data.req.game"
+            },
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "data.req.weights_hash"
+            }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "refused",
+      "name": "Refused by the season",
+      "terminal": true,
+      "condition": {
+        "and": [
+          {
+            "!": {
+              ">": [
+                {
+                  "var": "temp_data.insert.rows_affected"
+                },
+                0
+              ]
+            }
+          },
+          {
+            "or": [
+              {
+                "!=": [
+                  {
+                    "var": "temp_data.why.0.body.state"
+                  },
+                  "open"
+                ]
+              },
+              {
+                "!": {
+                  "var": "temp_data.why.0.body.participant"
+                }
+              },
+              {
+                "!": {
+                  "var": "temp_data.why.0.body.unique_weights"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body.error",
+              "logic": {
+                "if": [
+                  {
+                    "!=": [
+                      {
+                        "var": "temp_data.why.0.body.state"
+                      },
+                      "open"
+                    ]
+                  },
+                  "season_not_open",
+                  {
+                    "!": {
+                      "var": "temp_data.why.0.body.participant"
+                    }
+                  },
+                  "not_a_participant",
+                  "weights_already_entered"
+                ]
+              }
+            },
+            {
+              "path": "data.body.season",
+              "logic": {
+                "var": "temp_data.why.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 409,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      },
+      "description": "A revoked session also inserts nothing, and is not this task's: with the season open and both rules satisfied it falls through to the read-back, whose empty result `deny` answers 401 as before."
+    },
+    {
       "id": "fetch",
       "name": "Read the row back",
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', m.id, 'version', m.version, 'status', m.status, 'weights_hash', m.weights_hash, 'adapter_hash', m.adapter_hash) AS body FROM models m JOIN games g ON g.id = m.game_id JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = m.owner_id WHERE m.owner_id = ($1)::uuid AND g.slug = ($2)::text AND m.repo = ($3)::text AND m.release_tag = ($4)::text",
+          "query": "SELECT json_build_object('model_id', m.id, 'version', m.version, 'status', m.status, 'season', se.number, 'weights_hash', m.weights_hash, 'adapter_hash', m.adapter_hash) AS body FROM models m JOIN games g ON g.id = m.game_id JOIN seasons se ON se.id = m.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = m.owner_id WHERE m.owner_id = ($1)::uuid AND g.slug = ($2)::text AND m.repo = ($3)::text AND m.release_tag = ($4)::text",
           "params": [
             {
               "var": "metadata.auth.claims.sub"

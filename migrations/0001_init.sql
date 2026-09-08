@@ -19,6 +19,11 @@
 --
 -- Nothing above is trusted to enforce one-active-version, one-submission-in-flight, or
 -- one-live-trial. The partial unique indexes and the exclusion constraint at the bottom are.
+--
+-- SEASONS -- design/v2/06-rating-seasons.md (layer 06 draft 3, agreed 8 September 2026). A season is
+-- an admin-created competition window for one game; a version belongs to exactly one season; a
+-- season closes itself when its scores have settled; its standings are kept for ever. Layer 06's
+-- statements are verified by design/v2/06-verify/run.sh.
 
 BEGIN;
 
@@ -51,10 +56,12 @@ CREATE TABLE games (
     slug                 text        NOT NULL UNIQUE,
     name                 text        NOT NULL,
 
-    -- The engine every new match is stamped with. The deploy step writes it once the replicas
-    -- carrying that engine exist (finding 5 option A); pair reads it at insert, withdraw cancels
-    -- queued rows that no longer match it, and Kalam claims only rows naming its own digest. That
-    -- is what keeps two engine versions out of one ladder across a rolling deploy.
+    -- The engine the deploy step declares current, written once the replicas carrying it exist
+    -- (finding 5 option A). A SEASON PINS A COPY at creation (layer 06 §4.4): pair stamps rows
+    -- from the season's copy, withdraw retires rows against it, and Kalam claims only rows naming
+    -- its own digest. A behaviour-preserving patch updates both; a rules change is refused while a
+    -- season is live and enters with the next season. The two columns differing is a fact -- a
+    -- release waiting for the next season -- not a drift.
     active_engine_digest text,
 
     -- THE CARTRIDGE'S REGISTRATION DATA -- decision 38, layer 08 §8. Two documents published by
@@ -77,6 +84,61 @@ CREATE TABLE games (
 
     created_at           timestamptz NOT NULL DEFAULT now()
 );
+
+-- -------------------------------------------------------------------- seasons
+
+-- Layer 06 §4: a competition window for one game, created by an admin. The owner's four rules:
+--   1. an admin creates a season for each game, with its submission window and its rules;
+--   2. a submission belongs to a season (models.season_id, stamped at POST /v1/submissions);
+--   3. seasons of a game never overlap -- at most one is LIVE (closed_at IS NULL), by the partial
+--      unique index below -- and the next opens at least season_gap_days after the previous closed;
+--   4. a season closes itself when its scores have settled (withdraw's second task, 06 §5.2), or
+--      when an admin asks (close_requested_at).
+-- And the fifth: its standings are its `active` versions and their `ratings` rows, kept for ever.
+--
+-- Four states, derived from three timestamps rather than kept in a column (06 §4.2):
+--   closed     closed_at IS NOT NULL
+--   scheduled  now() <  submissions_open_at
+--   open       now() <  submissions_close_at
+--   settling   otherwise
+CREATE TABLE seasons (
+    id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    game_id              uuid        NOT NULL REFERENCES games (id),
+    number               int         NOT NULL,                       -- 1, 2, ... per game
+
+    -- Pinned from games.active_engine_digest at creation (06 §4.4).
+    engine_digest        text        NOT NULL,
+
+    submissions_open_at  timestamptz NOT NULL,                       -- the gap is checked here (rule 3)
+    submissions_close_at timestamptz NOT NULL,                       -- the last submission date (rule 4)
+    closed_at            timestamptz,                                -- set by the close, once
+
+    -- An admin's request to close, consumed by the close on withdraw's next tick. Stays set on the
+    -- closed row as the record that the close was asked for rather than reached.
+    close_requested_at   timestamptz,
+
+    -- The season's submission rules (06 §4.8): one document, each rule under its own key with an
+    -- `enabled` flag, so a rule is turned on or off per season without a schema change. Checked
+    -- as predicates in the submission insert itself. Two rules exist:
+    --   unique_weights  { enabled, scope: 'game' | 'season' }  -- no two users hold one weights hash
+    --   participants    { enabled, user_ids: [...] }           -- only the listed users may submit
+    -- The check refuses a key this schema does not name, so a misspelt rule fails loudly.
+    rules                jsonb       NOT NULL DEFAULT '{}'::jsonb,
+
+    -- The TinyBrain Index's lambda, fitted and published per season (DESIGN.md §9). P7's.
+    lambda               float8,
+
+    created_at           timestamptz NOT NULL DEFAULT now(),
+
+    UNIQUE (game_id, number),
+    CONSTRAINT seasons_number_positive CHECK (number >= 1),
+    CONSTRAINT seasons_window          CHECK (submissions_close_at > submissions_open_at),
+    CONSTRAINT seasons_rules_known     CHECK (jsonb_typeof(rules) = 'object'
+                                          AND (rules - 'unique_weights' - 'participants') = '{}'::jsonb)
+);
+
+-- Rule 3: at most one live season per game. This IS the non-overlap rule, as an index.
+CREATE UNIQUE INDEX seasons_one_live_uniq ON seasons (game_id) WHERE closed_at IS NULL;
 
 -- ---------------------------------------------------------------------- users
 
@@ -104,6 +166,12 @@ CREATE TABLE models (
     id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id        uuid         NOT NULL REFERENCES users (id),
     game_id         uuid         NOT NULL REFERENCES games (id),
+
+    -- Rule 2: a version belongs to exactly one season. Stamped by POST /v1/submissions from the
+    -- game's OPEN season, or by the season create for a carried baseline; never changed. A closed
+    -- season's `active` versions are its final standing, which is why the one-active rule and the
+    -- release-uniqueness rule below are per season.
+    season_id       uuid         NOT NULL REFERENCES seasons (id),
     version         int          NOT NULL,
 
     repo            text         NOT NULL,
@@ -206,7 +274,8 @@ CREATE TABLE matches (
     created_at           timestamptz  NOT NULL DEFAULT now(),
 
     -- ---- what pair decides, and what it takes to reproduce the match
-    engine_digest        text         NOT NULL,   -- which engine must play it
+    season_id            uuid         NOT NULL REFERENCES seasons (id),   -- the live season at insert
+    engine_digest        text         NOT NULL,   -- which engine must play it: the season's copy
     seed                 bigint       NOT NULL,
     preset               text         NOT NULL,
     seat_count           smallint     NOT NULL,
@@ -375,9 +444,9 @@ CREATE UNIQUE INDEX models_owner_game_version_uniq
 CREATE UNIQUE INDEX models_one_in_flight_uniq
     ON models (owner_id, game_id) WHERE status IN ('testing', 'verified');
 
--- the same release cannot be entered twice
+-- the same release cannot be entered twice IN ONE SEASON; it may be entered again in the next
 CREATE UNIQUE INDEX models_owner_game_release_uniq
-    ON models (owner_id, game_id, repo, release_tag);
+    ON models (owner_id, game_id, season_id, repo, release_tag);
 
 -- the admission claim: testing rows, oldest first. The mirror of matches_pending_claim_idx, and
 -- deliberately WITHOUT admit_started_at -- a claim rewrites that column on every row it takes and
@@ -385,9 +454,9 @@ CREATE UNIQUE INDEX models_owner_game_release_uniq
 CREATE INDEX models_admit_claim_idx
     ON models (created_at) WHERE status = 'testing';
 
--- class ladders; the game_id prefix also serves the open ladder
-CREATE INDEX models_game_class_active_idx
-    ON models (game_id, weight_class)
+-- class ladders, by season; the season_id prefix also serves the open ladder
+CREATE INDEX models_season_class_active_idx
+    ON models (season_id, weight_class)
     WHERE status = 'active';
 
 -- At most one contesting version -- as a DEFERRABLE exclusion constraint rather than a partial
@@ -395,9 +464,12 @@ CREATE INDEX models_game_class_active_idx
 -- not order the updates of sibling CTEs, so "activate the candidate" and "supersede the
 -- predecessor" can be applied in either order; with the rule checked at commit, both orders
 -- succeed. 01-verify runs the statement written both ways to prove it (01 §9.1).
+-- Per SEASON (layer 06 §4.5): a closed season's final version stays `active` -- it is the
+-- standing -- while the same owner contests the next season with another.
 ALTER TABLE models
     ADD CONSTRAINT models_one_active_excl
-        EXCLUDE USING btree (owner_id WITH =, game_id WITH =) WHERE (status = 'active')
+        EXCLUDE USING btree (owner_id WITH =, game_id WITH =, season_id WITH =)
+        WHERE (status = 'active')
         DEFERRABLE INITIALLY DEFERRED;
 
 -- matches -------------------------------------------------------------------
@@ -446,7 +518,7 @@ CREATE INDEX rating_events_match_idx
 -- There is deliberately no index on ratings.conservative. Only active models are ranked, status
 -- lives on models, and Postgres cannot build a partial index across a join -- so it would be
 -- walked past every superseded and rejected version. The leaderboard is a join filtered by
--- models_game_class_active_idx, sorted afterward.
+-- models_season_class_active_idx, sorted afterward.
 
 -- ---------------------------------------------------------------- table storage
 

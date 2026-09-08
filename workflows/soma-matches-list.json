@@ -36,7 +36,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(x ORDER BY x.played_at DESC), '[]'::json) AS body FROM ( SELECT mt.id, g.slug AS game, mt.status, mt.preset, mt.reason, mt.played_at, s.rank, s.score, mt.trial_model_id IS NOT NULL AS is_trial FROM match_seats s JOIN matches mt ON mt.id = s.match_id JOIN games g ON g.id = mt.game_id WHERE s.model_id = ($1)::uuid AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC LIMIT ($2)::int) x",
+          "query": "SELECT coalesce(json_agg(x ORDER BY x.played_at DESC), '[]'::json) AS body FROM ( SELECT mt.id, g.slug AS game, (SELECT se.number FROM seasons se WHERE se.id = mt.season_id) AS season, mt.status, mt.preset, mt.reason, mt.played_at, s.rank, s.score, mt.trial_model_id IS NOT NULL AS is_trial FROM match_seats s JOIN matches mt ON mt.id = s.match_id JOIN games g ON g.id = mt.game_id WHERE s.model_id = ($1)::uuid AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC LIMIT ($2)::int) x",
           "params": [
             {
               "var": "metadata.query.model"
