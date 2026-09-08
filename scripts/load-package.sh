@@ -129,4 +129,7 @@ for f in channels/*.json; do
 done
 
 echo "==> health"
-curl -sS "${ADMIN%/api/v1/admin}/health" | tr ',' '\n' | grep -E 'quarantined|failed_to_load' || true
+# Through curl_admin: /health's detail -- the plugin list, the quarantined channels -- is gated on
+# `show_detail = !admin_auth.enabled || a valid admin key`. Unauthenticated it still answers 200 and
+# simply omits them, so this check would quietly report nothing wrong on a node where something is.
+curl_admin "${ADMIN%/api/v1/admin}/health" | tr ',' '\n' | grep -E 'quarantined|failed_to_load' || true
