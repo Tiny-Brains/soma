@@ -553,4 +553,34 @@ GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
 GRANT UPDATE (rank, score, strikes)
     ON match_seats TO kalam;
 
+-- ------------------------------------------------------------------ the Jodi role
+
+-- The same argument as Kalam's, one layer in: Jodi's four clocks are the version's life cycle, and
+-- until now they ran as the schema owner because they were once inside Soma's package. They are
+-- not any more, and an owner role that can drop the table it folds ratings into is a grant nobody
+-- chose -- it is one nobody got round to narrowing (layer 07 §10, §16.3).
+--
+-- The verbs below are DERIVED from jodi/workflows/*.json rather than guessed, and
+-- jodi/scripts/check-sql.sh re-derives them on every run so a new statement that needs a grant it
+-- does not have fails there rather than at 3am. Two absences are the point of the exercise:
+--
+--   no DELETE anywhere       jodi-db already declares `operations: {delete: false}`, but that is a
+--                            connector setting -- a property of the config, not of the database.
+--                            This is the half that survives a config edit.
+--   nothing on `sessions`    that is Soma's auth surface. A clock has no business reading a
+--                            session row, and now it cannot.
+--
+-- rating_events is INSERT-only on purpose: Jodi appends the audit trail and never reads it back.
+-- Adding a statement that does will fail the grant check, which is the right place to notice.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'jodi') THEN
+        CREATE ROLE jodi LOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public TO jodi;
+GRANT SELECT ON clocks, games, matches, match_seats, models, ratings, seasons, users TO jodi;
+GRANT INSERT ON matches, match_seats, rating_events, ratings TO jodi;
+GRANT UPDATE ON clocks, matches, models, ratings, seasons TO jodi;
+
 COMMIT;
