@@ -1,7 +1,7 @@
 -- Soma — initial schema, v2.
 --
--- Transcribed from design/v2/01-match-table.md §3 (layer 01 draft 3, agreed and verified on
--- Postgres 16 by design/v2/01-verify/run.sh), which supersedes schema.md for everything below
+-- Transcribed from docs/schema.md §3 (draft 3, agreed and verified on
+-- Postgres 16 by scripts/verify/run.sh), which supersedes the pre-v2 schema for everything below
 -- `ratings`. Postgres 13+ (gen_random_uuid is built in).
 --
 -- There is no 0003: nothing is released, so there is no migration chain to keep. This file IS
@@ -20,10 +20,10 @@
 -- Nothing above is trusted to enforce one-active-version, one-submission-in-flight, or
 -- one-live-trial. The partial unique indexes and the exclusion constraint at the bottom are.
 --
--- SEASONS -- design/v2/06-rating-seasons.md (layer 06 draft 3, agreed 8 September 2026). A season is
+-- SEASONS -- jodi/docs/rating-and-seasons.md (draft 3, agreed 8 September 2026). A season is
 -- an admin-created competition window for one game; a version belongs to exactly one season; a
--- season closes itself when its scores have settled; its standings are kept for ever. Layer 06's
--- statements are verified by design/v2/06-verify/run.sh.
+-- season closes itself when its scores have settled; its standings are kept for ever. Its
+-- statements are verified by jodi/scripts/verify/run.sh.
 
 BEGIN;
 
@@ -38,7 +38,7 @@ CREATE TYPE ladder AS ENUM ('nano', 'micro', 'mini', 'small', 'large', 'open');
 -- 'verified' sits between 'testing' and 'active': admission has checked the release and the
 -- adapter, and the version is now waiting for its trial match. It is a status of its own rather
 -- than a derived signal so that pair, count and withdraw can each test the status alone
--- (decision 21, layer 01 §3.2). A version is "contesting" when it is 'active', or 'verified' for
+-- (decision 21, docs/schema.md §3.2). A version is "contesting" when it is 'active', or 'verified' for
 -- the candidate seat of its own trial row.
 CREATE TYPE model_status AS ENUM ('testing', 'verified', 'active', 'superseded', 'rejected');
 
@@ -57,29 +57,29 @@ CREATE TABLE games (
     name                 text        NOT NULL,
 
     -- The engine the deploy step declares current, written once the replicas carrying it exist
-    -- (finding 5 option A). A SEASON PINS A COPY at creation (layer 06 §4.4): pair stamps rows
+    -- (finding 5 option A). A SEASON PINS A COPY at creation (jodi/docs/rating-and-seasons.md §4.4): pair stamps rows
     -- from the season's copy, withdraw retires rows against it, and Kalam claims only rows naming
     -- its own digest. A behaviour-preserving patch updates both; a rules change is refused while a
     -- season is live and enters with the next season. The two columns differing is a fact -- a
     -- release waiting for the next season -- not a drift.
     active_engine_digest text,
 
-    -- THE CARTRIDGE'S REGISTRATION DATA -- decision 38, layer 08 §8. Two documents published by
+    -- THE CARTRIDGE'S REGISTRATION DATA -- decision 38, jodi/docs/admission.md §8. Two documents published by
     -- whoever wrote the cartridge, read by admission and by nothing else today.
     --
-    -- `manifest` is DESIGN.md §3's declaration verbatim: abi, game, version, presets, limits,
+    -- `manifest` is the platform design §3's declaration verbatim: abi, game, version, presets, limits,
     -- budgets. Admission reads budgets.adapter_ops_max and budgets.flop_caps from it, and they
     -- live HERE rather than in Jodi's [vars] because they are per game by construction -- a
     -- 128x128 Ants board and a card game have nothing in common -- so a second cartridge must be
     -- content and not a config change. Pair's presets could come from it too and eventually
-    -- should; moving them is a change to a running clock for no gain layer 08 needs.
+    -- should; moving them is a change to a running clock for no gain jodi/docs/admission.md needs.
     manifest             jsonb,
 
     -- The observations admission validates an adapter against, in the game's own state shape.
     -- THE WORST CASE MUST BE IN HERE -- the largest preset, the most units -- or the gate is
     -- theatre: the operation budget is checked per call during a real match, so an adapter
     -- validated only against a small sample and then struck every turn has been admitted by a
-    -- check that did not test it. Layer 04 §3.6 states the requirement; this column is its answer.
+    -- check that did not test it. axon/docs/design.md §3.6 states the requirement; this column is its answer.
     reference_observations jsonb,
 
     created_at           timestamptz NOT NULL DEFAULT now()
@@ -87,7 +87,7 @@ CREATE TABLE games (
 
 -- -------------------------------------------------------------------- seasons
 
--- Layer 06 §4: a competition window for one game, created by an admin. The owner's four rules:
+-- jodi/docs/rating-and-seasons.md §4: a competition window for one game, created by an admin. The owner's four rules:
 --   1. an admin creates a season for each game, with its submission window and its rules;
 --   2. a submission belongs to a season (models.season_id, stamped at POST /v1/submissions);
 --   3. seasons of a game never overlap -- at most one is LIVE (closed_at IS NULL), by the partial
@@ -125,7 +125,7 @@ CREATE TABLE seasons (
     -- The check refuses a key this schema does not name, so a misspelt rule fails loudly.
     rules                jsonb       NOT NULL DEFAULT '{}'::jsonb,
 
-    -- The TinyBrain Index's lambda, fitted and published per season (DESIGN.md §9). P7's.
+    -- The TinyBrain Index's lambda, fitted and published per season (the platform design §9). P7's.
     lambda               float8,
 
     created_at           timestamptz NOT NULL DEFAULT now(),
@@ -199,7 +199,7 @@ CREATE TABLE models (
 
     reject_reason   text,
 
-    -- THE ADMISSION CLAIM -- layer 08 §4. Admission needs no run fence the way count does: it
+    -- THE ADMISSION CLAIM -- jodi/docs/admission.md §4. Admission needs no run fence the way count does: it
     -- writes one row per item, so this per-row claim IS the mutual exclusion, and it is strictly
     -- better than a fence here because a run that dies mid-batch releases what it had not reached
     -- at once and the row it held after admit_timeout_s. The verdict statement re-checks
@@ -343,12 +343,12 @@ CREATE SEQUENCE rating_seq AS bigint;
 
 -- ---------------------------------------------------------------- match_seats
 
--- One row per seat, not arrays and not one jsonb document (decision 2, layer 01 §8). Arrays
+-- One row per seat, not arrays and not one jsonb document (decision 2, docs/schema.md §8). Arrays
 -- cannot be foreign-keyed, so a seat could name a model that does not exist or one from another
 -- game; a table can, and does. It is also what makes "every match this version played" an index
 -- scan rather than a containment search over every row in the table.
 --
--- seat IS the index: seat 0 is the first player, the same addressing docs/PROTOCOL.md uses.
+-- seat IS the index: seat 0 is the first player, the same addressing docs/ants/docs/protocol.md uses.
 CREATE TABLE match_seats (
     match_id       uuid     NOT NULL REFERENCES matches (id) ON DELETE CASCADE,
     seat           smallint NOT NULL,
@@ -407,7 +407,7 @@ CREATE TABLE rating_events (
 
 -- --------------------------------------------------------------------- clocks
 
--- One table, two flavours of fence (layer 01 §3.6).
+-- One table, two flavours of fence (docs/schema.md §3.6).
 --
 --   run fence   -- (scheduled_for, attempt). A cron run claims it at its first task with its own
 --                  occurrence's identity, monotonically; every ladder write in the run then reads
@@ -464,7 +464,7 @@ CREATE INDEX models_season_class_active_idx
 -- not order the updates of sibling CTEs, so "activate the candidate" and "supersede the
 -- predecessor" can be applied in either order; with the rule checked at commit, both orders
 -- succeed. 01-verify runs the statement written both ways to prove it (01 §9.1).
--- Per SEASON (layer 06 §4.5): a closed season's final version stays `active` -- it is the
+-- Per SEASON (jodi/docs/rating-and-seasons.md §4.5): a closed season's final version stays `active` -- it is the
 -- standing -- while the same owner contests the next season with another.
 ALTER TABLE models
     ADD CONSTRAINT models_one_active_excl
@@ -558,7 +558,7 @@ GRANT UPDATE (rank, score, strikes)
 -- The same argument as Kalam's, one layer in: Jodi's four clocks are the version's life cycle, and
 -- until now they ran as the schema owner because they were once inside Soma's package. They are
 -- not any more, and an owner role that can drop the table it folds ratings into is a grant nobody
--- chose -- it is one nobody got round to narrowing (layer 07 §10, §16.3).
+-- chose -- it is one nobody got round to narrowing (devops/docs/deployment.md §10, §16.3).
 --
 -- The verbs below are DERIVED from jodi/workflows/*.json rather than guessed, and
 -- jodi/scripts/check-sql.sh re-derives them on every run so a new statement that needs a grant it

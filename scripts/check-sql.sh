@@ -13,7 +13,7 @@
 #
 # It is a syntax and planning check, not a behaviour one: PREPARE resolves every relation, column
 # and function and builds a plan, so a typo, a dropped column or a renamed table cannot survive it.
-# What each statement DOES is design/v2/01-verify/run.sh's walk.
+# What each statement DOES is scripts/verify/run.sh's walk.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
