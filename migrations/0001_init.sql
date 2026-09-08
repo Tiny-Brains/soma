@@ -57,6 +57,24 @@ CREATE TABLE games (
     -- is what keeps two engine versions out of one ladder across a rolling deploy.
     active_engine_digest text,
 
+    -- THE CARTRIDGE'S REGISTRATION DATA -- decision 38, layer 08 §8. Two documents published by
+    -- whoever wrote the cartridge, read by admission and by nothing else today.
+    --
+    -- `manifest` is DESIGN.md §3's declaration verbatim: abi, game, version, presets, limits,
+    -- budgets. Admission reads budgets.adapter_ops_max and budgets.flop_caps from it, and they
+    -- live HERE rather than in Jodi's [vars] because they are per game by construction -- a
+    -- 128x128 Ants board and a card game have nothing in common -- so a second cartridge must be
+    -- content and not a config change. Pair's presets could come from it too and eventually
+    -- should; moving them is a change to a running clock for no gain layer 08 needs.
+    manifest             jsonb,
+
+    -- The observations admission validates an adapter against, in the game's own state shape.
+    -- THE WORST CASE MUST BE IN HERE -- the largest preset, the most units -- or the gate is
+    -- theatre: the operation budget is checked per call during a real match, so an adapter
+    -- validated only against a small sample and then struck every turn has been admitted by a
+    -- check that did not test it. Layer 04 §3.6 states the requirement; this column is its answer.
+    reference_observations jsonb,
+
     created_at           timestamptz NOT NULL DEFAULT now()
 );
 
@@ -112,6 +130,21 @@ CREATE TABLE models (
     evaluator_digest text,
 
     reject_reason   text,
+
+    -- THE ADMISSION CLAIM -- layer 08 §4. Admission needs no run fence the way count does: it
+    -- writes one row per item, so this per-row claim IS the mutual exclusion, and it is strictly
+    -- better than a fence here because a run that dies mid-batch releases what it had not reached
+    -- at once and the row it held after admit_timeout_s. The verdict statement re-checks
+    -- admit_token, so a run whose claim lapsed while it was verifying writes nothing.
+    --
+    -- admit_attempts counts REAL attempts: a loader-class fault (the store is down, GitHub 5xx)
+    -- releases the claim and decrements it, because an outage must not consume a competitor's
+    -- three tries. At admit_attempts_max the row is rejected TIMED_OUT -- the one rejection word
+    -- that does not mean "your model is wrong".
+    admit_started_at timestamptz,
+    admit_token      uuid,
+    admit_attempts   int          NOT NULL DEFAULT 0,
+
     created_at      timestamptz  NOT NULL DEFAULT now(),
 
     CONSTRAINT models_weight_class_not_open
@@ -345,6 +378,12 @@ CREATE UNIQUE INDEX models_one_in_flight_uniq
 -- the same release cannot be entered twice
 CREATE UNIQUE INDEX models_owner_game_release_uniq
     ON models (owner_id, game_id, repo, release_tag);
+
+-- the admission claim: testing rows, oldest first. The mirror of matches_pending_claim_idx, and
+-- deliberately WITHOUT admit_started_at -- a claim rewrites that column on every row it takes and
+-- keeping it out of the index leaves those updates heap-only.
+CREATE INDEX models_admit_claim_idx
+    ON models (created_at) WHERE status = 'testing';
 
 -- class ladders; the game_id prefix also serves the open ladder
 CREATE INDEX models_game_class_active_idx
