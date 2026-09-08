@@ -1,6 +1,0 @@
-.git
-.run
-server/.env
-server/orion.toml
-*.md
-!README.md

@@ -59,8 +59,11 @@ channels/     10 · one per endpoint; soma-auth-github carries the oauth2_login 
 workflows/    10 · one per channel
 migrations/    2 · 0001_init.sql, 0002_sessions.sql
 scripts/          load-package.sh — installs the above into a running server
-Dockerfile        the image: upstream orion-server + this package
 ```
+
+There is no Dockerfile: Soma ships definitions, and the image that runs them — upstream
+orion-server, nothing baked in — is `devops/orion/`. The compose stack's `loader` runs
+`scripts/load-package.sh` against it, exactly as you would by hand.
 
 Everything carries `tags: ["pkg:soma"]`, which is what `orion-server package export --tag pkg:soma`
 selects on and what `load-package.sh` sweeps before reloading. The files are in `orion-server fmt`'s
@@ -101,8 +104,8 @@ instance whose version you do not control.
 ## Running it
 
 The short way is the compose stack in the workspace's `devops/` directory, which brings up Postgres,
-this package and the web shell together. What follows is the same thing by hand, against an
-`orion-server` on your PATH.
+one orion-server holding this package beside Jodi's and Kalam's, and the web shell. What follows is
+the same thing by hand, against an `orion-server` on your PATH.
 
 **1. Database.**
 
@@ -137,8 +140,8 @@ database, no running instance.
 
 ```bash
 orion-server lint . --deny-warnings
-orion-server clippy . -c ../devops/soma/orion.local.toml --deny-warnings
-orion-server -c ../devops/soma/orion.local.toml validate-config
+orion-server clippy . -c ../devops/orion/orion.local.toml --deny-warnings
+orion-server -c ../devops/orion/orion.local.toml validate-config
 ```
 
 `lint` reads the directory as a **set**, so it resolves the references between the three kinds —
@@ -318,7 +321,7 @@ guard — cannot fail open.
 **Trace persistence is a free choice.** `trace_storage.mode` is `sync`, Orion's default, and the
 write costs 2.1 ms median on `GET /v1/games`. Before 1.6.0 it had to be: `async` and `batch`
 mis-registered their worker as failed and pinned `/health` to `degraded` for the life of the
-process. That is fixed, the image's `HEALTHCHECK` now uses `/readyz`, and the mode can change when
+process. That is fixed, the orion image's `HEALTHCHECK` now uses `/readyz`, and the mode can change when
 volume says so.
 
 **The ladder runs, and it is Jodi's.** Three cron channels and two plugins live in the sibling
