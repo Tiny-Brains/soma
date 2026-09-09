@@ -30,7 +30,24 @@ CREATE TABLE sessions (
     user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     issued_at   timestamptz NOT NULL DEFAULT now(),
     expires_at  timestamptz NOT NULL,
-    revoked_at  timestamptz
+    revoked_at  timestamptz,
+
+    -- SOMA-GAPS 3.2: what the session list is FOR. A row that says only "signed in 30 days ago"
+    -- cannot help anyone recognise the session they want to end, which is the whole point of
+    -- offering to end one.
+    --
+    -- The browser's own words, recorded once at sign-in and never parsed here: turning
+    -- "Mozilla/5.0 (Macintosh; ...) Firefox/141.0" into "Firefox on macOS" is presentation, it
+    -- changes with every browser release, and a database is the wrong place to keep a lookup
+    -- table that goes stale on its own.
+    user_agent  text,
+
+    -- BUCKETED, NOT EXACT. Updated by GET /v1/me -- the one route the shell calls on every page --
+    -- and only when it is already more than five minutes old, so the common request writes
+    -- nothing and a busy session costs at most twelve row updates an hour. "Last used 3 days ago"
+    -- does not need better than that, and a write on every authed read would turn the cheapest
+    -- statement in the package into the most expensive.
+    last_seen_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- `expires_at` duplicates the token's own `exp`, which Orion already enforces at the
@@ -41,7 +58,7 @@ CREATE TABLE sessions (
 -- The predicate lives in a view so it is written once. Every authed statement joins
 -- this, never the table.
 CREATE VIEW live_sessions AS
-    SELECT sid, user_id
+    SELECT sid, user_id, issued_at, expires_at, user_agent, last_seen_at
     FROM sessions
     WHERE revoked_at IS NULL
       AND expires_at > now();

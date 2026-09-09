@@ -1,11 +1,11 @@
 {
   "workflow_id": "soma-matches-list",
-  "name": "Match history for a model",
-  "description": "The limit default is computed in a map task, not inline in params: db_read folds {\"var\": ..} nodes only. It is the string \"25\" because that is what ?limit= delivers; the placeholder's declared type converts. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. Under v2 this is a plain join on match_seats (match_seats_model_idx) rather than GIN containment over an array. It lists what was played -- `finished` and `rated` -- so a result appears the moment the match ends and gains its rating change once count has folded it; queued, cancelled and failed rows are deliberately absent, and showing a competitor their own queue is soma-gaps 2.2's remaining half, which needs the owner's session to scope it.",
+  "name": "Matches, by season or by model",
   "tags": [
     "pkg:soma"
   ],
   "condition": true,
+  "description": "Two listings, one statement. Without ?model= it is the /matches page: every match of one game and season, newest first, each carrying ALL of its seats -- soma-gaps 2.3, because the seats block is one component and it takes the whole row, not the one seat the caller asked about. With ?model= it is a version's own history, which is what this route used to be and only that. The season resolves the way the leaderboard's does: ?season=N, else the live one, else the latest closed. TRIALS ARE PRIVATE (soma-gaps 2.1): a trial seats a `verified` candidate that nobody else may see yet, so the season listing excludes trial_model_id rows and only a query that already names the model returns them. `matched` is NOT MATERIALIZED so both the page and the count inline: materialised, the page would scan the whole season instead of walking matches_season_played_idx. Pagination is a KEYSET here, not the leaderboard's OFFSET -- played_at is written once and never moves, so a position in this list does not drift the way a position on a live ladder does. The cursor is `<played_at>|<id>`, the id breaking a tie two matches can genuinely share. `total` is the filtered count and is returned on the first page only: it is the one part that must scan, and a caller paging deeper already has it. `outcome` and the per-seat `dq` read forfeit_strikes from [vars] -- soma-gaps 4.1 -- rather than hardcoding five, because a seat the referee forfeited and a seat that merely lost are not the same mark on the page. ?owner={handle} is the public half of soma-gaps 2.2: every match a person's versions played, across every version they have entered, which is the list the bottom of a profile shows. It is still the public listing -- finished and rated, no trials. The private half, the queued, cancelled and failed rows only their owner may see, is GET /v1/me/matches, a route of its own rather than a parameter here: a channel either verifies a session or it does not, and a public route that returns more to some callers is how a privacy bug gets written.",
   "tasks": [
     {
       "id": "defaults",
@@ -36,13 +36,40 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(x ORDER BY x.played_at DESC), '[]'::json) AS body FROM ( SELECT mt.id, g.slug AS game, (SELECT se.number FROM seasons se WHERE se.id = mt.season_id) AS season, mt.status, mt.preset, mt.reason, mt.played_at, s.rank, s.score, mt.trial_model_id IS NOT NULL AS is_trial FROM match_seats s JOIN matches mt ON mt.id = s.match_id JOIN games g ON g.id = mt.game_id WHERE s.model_id = ($1)::uuid AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC LIMIT ($2)::int) x",
+          "query": "WITH season AS ( SELECT s.id, s.number FROM seasons s JOIN games g ON g.id = s.game_id WHERE ($1)::text IS NOT NULL AND g.slug = ($1)::text AND (($2)::int IS NULL OR s.number = ($2)::int) ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1 ), matched AS NOT MATERIALIZED ( SELECT mt.id, mt.game_id, mt.season_id, mt.status, mt.preset, mt.seed, mt.reason, mt.turns, mt.played_at, mt.ladders, mt.trial_model_id FROM matches mt WHERE mt.status IN ('finished', 'rated') AND (($1)::text IS NULL OR mt.season_id = (SELECT id FROM season)) AND (($10)::uuid IS NOT NULL OR mt.trial_model_id IS NULL) AND (($10)::uuid IS NULL OR EXISTS (SELECT 1 FROM match_seats ms WHERE ms.match_id = mt.id AND ms.model_id = ($10)::uuid)) AND (($11)::text IS NULL OR EXISTS (SELECT 1 FROM match_seats ms JOIN models md ON md.id = ms.model_id JOIN users ou ON ou.id = md.owner_id WHERE ms.match_id = mt.id AND ou.handle = ($11)::text)) AND (($3)::text IS NULL OR ($3)::ladder = ANY (mt.ladders)) AND (($4)::text IS NULL OR EXISTS (SELECT 1 FROM match_seats ms JOIN models md ON md.id = ms.model_id WHERE ms.match_id = mt.id AND md.weight_class = ($4)::ladder)) AND (($5)::text IS NULL OR mt.preset = ($5)::text) AND (($6)::text IS NULL OR CASE ($6)::text WHEN 'dq' THEN EXISTS (SELECT 1 FROM match_seats ms WHERE ms.match_id = mt.id AND ms.strikes >= ($7)::int) WHEN 'drawn' THEN (SELECT count(*) FROM match_seats ms WHERE ms.match_id = mt.id AND ms.rank = 1) > 1 WHEN 'decided' THEN (SELECT count(*) FROM match_seats ms WHERE ms.match_id = mt.id AND ms.rank = 1) = 1 ELSE true END) ), page AS ( SELECT * FROM matched WHERE ($8)::text IS NULL OR (played_at, id) < (split_part(($8)::text, '|', 1)::timestamptz, split_part(($8)::text, '|', 2)::uuid) ORDER BY played_at DESC, id DESC LIMIT ($9)::int ) SELECT json_build_object( 'season', (SELECT number FROM season), 'total', CASE WHEN ($8)::text IS NULL THEN (SELECT count(*) FROM matched) END, 'matches', coalesce((SELECT json_agg(json_build_object( 'id', p.id, 'game', (SELECT g.slug FROM games g WHERE g.id = p.game_id), 'season', (SELECT se.number FROM seasons se WHERE se.id = p.season_id), 'status', p.status, 'preset', p.preset, 'seed', p.seed, 'reason', p.reason, 'turns', p.turns, 'played_at', p.played_at, 'ladders', array_to_json(p.ladders), 'is_trial', p.trial_model_id IS NOT NULL, 'seats', (SELECT coalesce(json_agg(json_build_object( 'seat', ms.seat, 'model_id', ms.model_id, 'owner', u.handle, 'baseline', u.role = 'baseline', 'class', md.weight_class, 'version', md.version, 'rank', ms.rank, 'score', ms.score, 'strikes', ms.strikes, 'outcome', CASE WHEN ms.rank IS NULL THEN NULL WHEN ms.strikes >= ($7)::int THEN 'dq' WHEN ms.rank > 1 THEN 'loss' WHEN (SELECT count(*) FROM match_seats w WHERE w.match_id = ms.match_id AND w.rank = 1) > 1 THEN 'draw' ELSE 'win' END) ORDER BY ms.seat), '[]'::json) FROM match_seats ms JOIN models md ON md.id = ms.model_id JOIN users u ON u.id = md.owner_id WHERE ms.match_id = p.id) ) ORDER BY p.played_at DESC, p.id DESC) FROM page p), '[]'::json), 'next_cursor', CASE WHEN (SELECT count(*) FROM page) = ($9)::int THEN (SELECT (to_json(x.played_at) #>> '{}') || '|' || x.id::text FROM page x ORDER BY x.played_at ASC, x.id ASC LIMIT 1) END) AS body",
           "params": [
+            {
+              "var": "metadata.query.game"
+            },
+            {
+              "var": "metadata.query.season"
+            },
+            {
+              "var": "metadata.query.ladder"
+            },
+            {
+              "var": "metadata.query.class"
+            },
+            {
+              "var": "metadata.query.preset"
+            },
+            {
+              "var": "metadata.query.outcome"
+            },
+            {
+              "var": "metadata.vars.forfeit_strikes"
+            },
+            {
+              "var": "metadata.query.cursor"
+            },
+            {
+              "var": "temp_data.q.limit"
+            },
             {
               "var": "metadata.query.model"
             },
             {
-              "var": "temp_data.q.limit"
+              "var": "metadata.query.owner"
             }
           ],
           "output": "temp_data.rows"

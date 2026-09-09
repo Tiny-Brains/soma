@@ -150,7 +150,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('number', s.number, 'state', CASE WHEN s.closed_at IS NOT NULL THEN 'closed' WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'closed_at', s.closed_at, 'close_requested_at', s.close_requested_at, 'engine_digest', s.engine_digest, 'rules', s.rules) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1",
+          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1",
           "params": [
             {
               "var": "metadata.params.game"

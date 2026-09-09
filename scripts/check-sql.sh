@@ -49,6 +49,21 @@ print(rf"\echo '{n} statements prepared'", file=sys.stderr)
 print(rf"\echo '-- {n} statements'")
 PY
 
+# Orion caps a workflow description at 2048 characters and REFUSES THE CREATE past it. That is a
+# lint error, but load-package.sh deletes every pkg object before it re-creates them, so hitting it
+# during a load leaves the API down until the next good one. Cheaper to fail here.
+python3 - workflows/*.json <<'DESCEOF'
+import json, sys
+bad = 0
+for path in sys.argv[1:]:
+    n = len(json.load(open(path)).get("description", ""))
+    if n > 2048:
+        print(f"  {path}: description is {n} characters, Orion's limit is 2048")
+        bad += 1
+if bad:
+    sys.exit(f"==> {bad} workflow description(s) too long")
+DESCEOF
+
 echo "==> preparing every query in workflows/*.json"
 psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1 < /tmp/soma-sqlcheck.sql
 

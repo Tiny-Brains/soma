@@ -60,33 +60,47 @@ request handling and response construction, with matching soma-prefixed filename
 |---|---|---|---|
 | GET | /v1/auth/github | Public | Redirect to GitHub with state and PKCE |
 | GET | /v1/auth/github/callback | Public OAuth callback | Complete sign-in and set the session cookie |
-| DELETE | /v1/session | Session | Revoke the session and clear the cookie |
-| GET | /v1/me | Session | Current user; 401 when unauthenticated |
-| GET | /v1/games | Public | Registered games |
-| GET | /v1/games/{game}/leaderboard | Public | Standings; ladder, season, limit, and cursor query parameters |
-| GET | /v1/games/{game}/seasons | Public | Game seasons |
+| GET | /v1/status | Public | Arena counters: queue, throughput, and what each clock is behind on |
+| GET | /v1/games | Public | Registered games, each with its current season |
+| GET | /v1/games/{game} | Public | One game: what it says about itself, its presets and limits, its season |
+| GET | /v1/games/{game}/seasons | Public | Game seasons, with version and match counts |
 | POST | /v1/games/{game}/seasons | Admin session | Create a season |
+| PATCH | /v1/games/{game}/seasons/{number} | Admin session | Edit a season that has not opened |
 | POST | /v1/games/{game}/seasons/current/close | Admin session | Request closure of the live season |
-| GET | /v1/models | Session | Caller's versions; optional game filter |
-| GET | /v1/models/{id} | Public | Version status, ladders, and trial information |
-| GET | /v1/matches | Public | Model history; model and limit parameters; finished and rated matches only |
-| GET | /v1/matches/{id} | Public | Match details, seats, and signed replay URL |
+| GET | /v1/games/{game}/leaderboard | Public | Standings; ladder, season, limit, and cursor query parameters |
+| GET | /v1/games/{game}/submission | Session | Whether the caller may submit, why not, and as which version |
+| GET | /v1/models | Session | Caller's versions, with ratings and ranks; optional game filter |
+| GET | /v1/models/{id} | Public | Version status, ladders with rank and field, and trial information |
+| GET | /v1/matches | Public | A season's matches with every seat; or one model's, or one owner's |
+| GET | /v1/matches/{id} | Public | Match details, seats, the ladders it counted on, and a signed replay URL |
+| GET | /v1/profiles/{username} | Public | A competitor's public page: their versions by game and season |
+| GET | /v1/me | Session | Current user and any candidate in flight; 401 when unauthenticated |
+| PATCH | /v1/me | Session | Edit the display name |
+| GET | /v1/me/matches | Session | The caller's matches in every state, queued and cancelled included |
+| GET | /v1/sessions | Session | The caller's live sessions |
+| DELETE | /v1/sessions/{sid} | Session | Revoke one session; `others` revokes all but the current |
+| DELETE | /v1/session | Session | Revoke the current session and clear the cookie |
 | POST | /v1/submissions | Session | Record a release and declared asset hashes as a testing version |
+
+Read routes are public unless they can return something private. The split is a property of the
+channel, never of a parameter: `GET /v1/matches` omits queued, cancelled and trial rows for
+everyone, and `GET /v1/me/matches` is a separate route rather than `?owner=me`, because a public
+route that quietly returns more to some callers is the shape a privacy bug arrives in.
 
 A submission must satisfy the open season's rules. Recording it does not imply acceptance:
 Jodi performs admission and the trial before promotion. The callback is served by the sign-in
-channel, so fourteen routes are implemented by thirteen channels.
+channel, so twenty-three routes are implemented by twenty-two channels.
 
 The migrations are also an interface. Apply both [0001_init.sql](migrations/0001_init.sql) and
 [0002_sessions.sql](migrations/0002_sessions.sql); the table below describes writer ownership.
 
 | Table or view | Purpose | Writers |
 |---|---|---|
-| users | Competitor identity and role | Soma sign-in; administrative provisioning for roles |
-| sessions | Revocable sessions | Soma |
+| users | Competitor identity, display name, and role | Soma sign-in and PATCH /v1/me; administrative provisioning for roles |
+| sessions | Revocable sessions, with the browser and when it was last used | Soma |
 | live_sessions | Unexpired, unrevoked session view | None directly; derived from sessions and users |
-| games | Cartridge registration and current engine | Deployment registration |
-| seasons | Competition windows, rules, and engine identity | Soma admin routes; Jodi closure; deployment engine updates |
+| games | Cartridge registration, its `about` copy, and current engine | Deployment registration |
+| seasons | Competition windows, rules, weight classes, and engine identity | Soma admin routes; Jodi closure; deployment engine updates |
 | models | Submitted versions and admission state | Soma inserts testing rows; Jodi admits and changes roster status |
 | matches | Queue, execution history, and count marker | Jodi inserts/counts/cancels; Kalam executes |
 | match_seats | Version snapshots and per-seat results | Jodi inserts; Kalam records results |
@@ -121,12 +135,15 @@ Check the definitions and their SQL:
 orion-server --version
 orion-server lint . --deny-warnings
 ./scripts/check-sql.sh
+./scripts/smoke.sh
 ```
 
 The SQL script prepares every shipped query against a scratch database created from both migrations.
 It catches missing tables, columns, functions, and incompatible parameters, but does not execute the
-REST workflows. There is no standalone HTTP behavior suite or meaningful unit-test count here.
-It recreates soma_sqlcheck; set DB_CONTAINER and DB_USER to a development Postgres container.
+REST workflows. It recreates soma_sqlcheck; set DB_CONTAINER and DB_USER to a development Postgres
+container. `smoke.sh` covers the half it cannot: it calls every route against a running stack and
+checks the status code, minting a real session row and cookie so the authenticated routes are
+exercised rather than asserted to be 401. It is a status-code suite, not a behaviour one.
 
 Package lint checks definition references. Orion clippy with the rendered instance configuration
 also checks `[vars]`; validate-config checks the instance itself. The deployment must run all
@@ -166,16 +183,20 @@ workflows/                   request handling, inline SQL, and response mapping
 connectors/soma-db.json       platform database connection
 connectors/github-api.json    GitHub API connection
 connectors/soma-blobs.json    replay GET signing; PUT disabled
-migrations/0001_init.sql      platform tables, constraints, fences, and grants
+migrations/0001_init.sql      platform tables, constraints, fences, grants, and the three shared functions
 migrations/0002_sessions.sql  sessions and live_sessions view
 scripts/load-package.sh      replacement of objects tagged pkg:soma
 scripts/check-sql.sh         preparation of every shipped query
+scripts/smoke.sh             every route called, against a running stack
 LICENSE                      repository licence
 ```
 
 ## What must stay true
 
 - **Soma does not write competitive results or ratings.** This is a review boundary; its current database role is not restricted to API-only writes.
+- **One definition of a rank, and one of a season.** `model_ratings()` and `season_json()` in the migration are where those two shapes are built. Six routes return a season and three print "rank 6 of 47"; a second copy of either is a page that disagrees with another page and no way to notice.
+- **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; Jodi's admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
+- **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
 - **Revocation remains effective before JWT expiry.** Session workflows consult live_sessions rather than trusting a signed token alone.
 - **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password.
@@ -184,10 +205,16 @@ LICENSE                      repository licence
 
 ## Status
 
-**8 September 2026.** The package implements fourteen routes, OAuth sessions, season administration,
-submission recording, replay signing, and the shared schema. Orion 1.7.0 package lint passes; check-sql.sh provides
-the database-dependent static check; authenticated HTTP behavior needs a configured stack and OAuth App. API tokens for
-SDK/CLI use and an owner-scoped view of queued, cancelled, and failed matches remain unimplemented.
+**9 September 2026.** The package implements twenty-three routes, OAuth sessions, season
+administration, submission recording, replay signing, and the shared schema. Orion 1.7.0 package
+lint passes at 22 channels and 22 workflows; `check-sql.sh` prepares every shipped statement;
+`smoke.sh` passes 33 checks against the local stack. Every gap the website's layout studies opened
+is closed except one, and that one is not Soma's: the OAuth callback cannot land its three failure
+states on a page, because `oauth2_login` answers a fixed 401 and never runs the workflow. The web
+proxy intercepts that one status and redirects to the page, which reaches it but cannot say which
+of the three failures it was; the fix is a `failure_redirect` on the channel, which is Orion's to
+grow. API tokens for SDK/CLI use remain unimplemented, and an authenticated end-to-end sign-in
+still needs a configured OAuth App rather than a minted cookie.
 
 ## More
 

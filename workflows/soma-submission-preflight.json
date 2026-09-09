@@ -1,0 +1,118 @@
+{
+  "workflow_id": "soma-submission-preflight",
+  "name": "May this competitor submit?",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "SOMA-GAPS 1.6. /submit renders its refusal ON LOAD, with the form shown and disabled, so the page reads as an explanation rather than a door that is shut -- and until this route existed the only way to learn the refusal was to POST a submission and read the 409. The verdict is the same one soma-submissions-create's `why` computes, in the same words, so the page cannot say one thing before the POST and another after it. `refusal` is null when a submission would be accepted. THREE OF THE FOUR REFUSALS ARE KNOWABLE HERE and the fourth is not: weights_already_entered depends on a hash the competitor has not typed yet, so it stays a POST refusal. `next_version` is what the button says before anything is filled in -- `Submit version 5` -- and nothing else reported it. `in_flight` is the one-in-flight rule made visible: a competitor with a candidate already waiting may not submit another, and being told that with the candidate named beats a unique-index violation. Like soma-models-list, live_sessions is the outer FROM rather than a join inside the aggregate: the scalar subquery yields NULL for an unknown game, which is a 404, while no row at all is a dead session, which is a 401, and the two must not be confused.",
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH ctx AS ( SELECT g.slug, s.id AS season_id, s.number, s.submissions_open_at, s.submissions_close_at, (s.id IS NOT NULL AND now() >= s.submissions_open_at AND now() < s.submissions_close_at) AS season_open, (s.id IS NOT NULL AND (NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($2)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids')))) AS participant, (SELECT json_build_object('model_id', m.id, 'version', m.version, 'phase', CASE WHEN m.status = 'testing' AND m.admit_started_at IS NULL THEN 'queued' WHEN m.status = 'testing' THEN 'verifying' ELSE 'awaiting_trial' END) FROM models m WHERE m.owner_id = ($2)::uuid AND m.game_id = g.id AND m.status IN ('testing', 'verified')) AS in_flight, (SELECT coalesce(max(m.version), 0) + 1 FROM models m WHERE m.owner_id = ($2)::uuid AND m.game_id = g.id) AS next_version FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text ) SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'season', CASE WHEN ctx.season_id IS NULL THEN NULL ELSE json_build_object( 'number', ctx.number, 'state', CASE WHEN now() < ctx.submissions_open_at THEN 'scheduled' WHEN now() < ctx.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', ctx.submissions_open_at, 'submissions_close_at', ctx.submissions_close_at) END, 'participant', ctx.participant, 'next_version', ctx.next_version, 'in_flight', ctx.in_flight, 'refusal', CASE WHEN NOT ctx.season_open THEN 'season_not_open' WHEN NOT ctx.participant THEN 'not_a_participant' WHEN ctx.in_flight IS NOT NULL THEN 'version_in_flight' END) FROM ctx) AS body FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($2)::uuid",
+          "params": [
+            {
+              "var": "metadata.params.game"
+            },
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "Reject an unknown game",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.body"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "unknown_game"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 404,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

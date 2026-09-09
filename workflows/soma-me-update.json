@@ -1,0 +1,162 @@
+{
+  "workflow_id": "soma-me-update",
+  "name": "Edit your own profile",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "SOMA-GAPS 1.2. The one field a competitor may change, and the first write route on `users`. ONE FIELD ON PURPOSE: website-structure.md's open question 1 asks which fields are editable and answers only display_name, and every field added here is a column, a validation rule and a line of this workflow. The handle is NOT among them -- it is GitHub's, it is the profile's URL, and it is re-read from GitHub on every sign-in. Empty or blank clears it back to null rather than storing a name made of spaces, and the profile then falls back to the handle. The UPDATE joins live_sessions so a revoked session cannot write, and the row is read back in the same statement so the response is what was stored rather than what was sent.",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": {
+        "name": "parse_json",
+        "input": {
+          "source": "payload",
+          "target": "req"
+        }
+      }
+    },
+    {
+      "id": "toolong",
+      "name": "Refuse an unusable name",
+      "condition": {
+        ">": [
+          {
+            "length": [
+              {
+                "or": [
+                  {
+                    "var": "data.req.display_name"
+                  },
+                  ""
+                ]
+              }
+            ]
+          },
+          60
+        ]
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "display_name_too_long",
+                "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography."
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 400,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "update",
+      "name": "Update",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE users u SET display_name = nullif(btrim(coalesce(($3)::text, '')), '') FROM live_sessions ls WHERE u.id = ($1)::uuid AND ls.sid = ($2)::uuid AND ls.user_id = u.id",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            },
+            {
+              "var": "data.req.display_name"
+            }
+          ],
+          "output": "temp_data.updated"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT ls.sid AS session_ok, json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'role', u.role, 'created_at', u.created_at) AS body FROM live_sessions ls JOIN users u ON u.id = ls.user_id WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

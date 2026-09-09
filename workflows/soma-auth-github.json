@@ -1,8 +1,10 @@
 {
   "workflow_id": "soma-auth-github",
   "name": "Complete GitHub sign-in",
-  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, the per-attempt nonce, PKCE, and the code exchange -- and hands the workflow a verified grant at metadata.oauth. Orion also retires the spent soma_oauth_state cookie on every outcome, so this response sets one cookie, not two. Before Orion 1.6 the same flow was thirteen tasks across two workflows, and the CSRF check had to be smuggled through jwt_verify because a failed validation rule did not halt the run. The session is server-side: `sid` names a row in `sessions`, which every authed statement joins through the `live_sessions` view, so DELETE /v1/session can revoke it. The row's expires_at must stay in step with jwt_sign's expires_in -- both are 30 days -- and it is written before the token is signed so a token can never name a row that does not exist. The cookie's `secure` attribute reads the instance's cookie_secure var: browsers refuse a Secure cookie from an http:// origin, so a plain-http development stack declares it false and a TLS deployment true, with no rewrite of the definition.",
-  "tags": ["pkg:soma"],
+  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, the per-attempt nonce, PKCE, and the code exchange -- and hands the workflow a verified grant at metadata.oauth. Orion also retires the spent soma_oauth_state cookie on every outcome, so this response sets one cookie, not two. Before Orion 1.6 the same flow was thirteen tasks across two workflows, and the CSRF check had to be smuggled through jwt_verify because a failed validation rule did not halt the run. The session is server-side: `sid` names a row in `sessions`, which every authed statement joins through the `live_sessions` view, so DELETE /v1/session can revoke it. The row's expires_at must stay in step with jwt_sign's expires_in -- both are 30 days -- and it is written before the token is signed so a token can never name a row that does not exist. The cookie's `secure` attribute reads the instance's cookie_secure var: browsers refuse a Secure cookie from an http:// origin, so a plain-http development stack declares it false and a TLS deployment true, with no rewrite of the definition. SOMA-GAPS 3.1/3.2: the upsert now seeds display_name from GitHub's `name`, and DELIBERATELY ONLY ON INSERT -- it is absent from the DO UPDATE, because a competitor who renames themselves through PATCH /v1/me must not have it silently undone by their next sign-in. The session row records the browser's user-agent verbatim, which is what makes the session list on the profile something a person can act on rather than a column of identical dates.",
+  "tags": [
+    "pkg:soma"
+  ],
   "condition": true,
   "tasks": [
     {
@@ -10,7 +12,18 @@
       "name": "Mint a session id",
       "function": {
         "name": "map",
-        "input": { "mappings": [{ "path": "temp_data.sid", "logic": { "random": ["uuid"] } }] }
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.sid",
+              "logic": {
+                "random": [
+                  "uuid"
+                ]
+              }
+            }
+          ]
+        }
       }
     },
     {
@@ -23,7 +36,14 @@
           "method": "GET",
           "path": "/user",
           "headers": {
-            "authorization": { "cat": ["Bearer ", { "var": "metadata.oauth.access_token" }] }
+            "authorization": {
+              "cat": [
+                "Bearer ",
+                {
+                  "var": "metadata.oauth.access_token"
+                }
+              ]
+            }
           },
           "output": "temp_data.gh"
         }
@@ -36,8 +56,18 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO users (github_id, handle) VALUES (($1)::bigint, ($2)::text) ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle",
-          "params": [{ "var": "temp_data.gh.id" }, { "var": "temp_data.gh.login" }],
+          "query": "INSERT INTO users (github_id, handle, display_name) VALUES (($1)::bigint, ($2)::text, ($3)::text) ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle",
+          "params": [
+            {
+              "var": "temp_data.gh.id"
+            },
+            {
+              "var": "temp_data.gh.login"
+            },
+            {
+              "var": "temp_data.gh.name"
+            }
+          ],
           "output": "temp_data.upsert"
         }
       }
@@ -50,7 +80,11 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT id FROM users WHERE github_id = ($1)::bigint",
-          "params": [{ "var": "temp_data.gh.id" }],
+          "params": [
+            {
+              "var": "temp_data.gh.id"
+            }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -62,8 +96,18 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO sessions (sid, user_id, expires_at) VALUES (($1)::uuid, ($2)::uuid, now() + interval '30 days')",
-          "params": [{ "var": "temp_data.sid" }, { "var": "temp_data.rows.0.id" }],
+          "query": "INSERT INTO sessions (sid, user_id, expires_at, user_agent) VALUES (($1)::uuid, ($2)::uuid, now() + interval '30 days', ($3)::text)",
+          "params": [
+            {
+              "var": "temp_data.sid"
+            },
+            {
+              "var": "temp_data.rows.0.id"
+            },
+            {
+              "var": "metadata.headers.user-agent"
+            }
+          ],
           "output": "temp_data.session_row"
         }
       }
@@ -77,9 +121,15 @@
           "algorithm": "HS256",
           "key": "env://SOMA_SESSION_SECRET",
           "claims": {
-            "sub": { "var": "temp_data.rows.0.id" },
-            "handle": { "var": "temp_data.gh.login" },
-            "sid": { "var": "temp_data.sid" }
+            "sub": {
+              "var": "temp_data.rows.0.id"
+            },
+            "handle": {
+              "var": "temp_data.gh.login"
+            },
+            "sid": {
+              "var": "temp_data.sid"
+            }
           },
           "expires_in": "30d",
           "issuer": "soma",
@@ -94,20 +144,31 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": {} },
+            {
+              "path": "data.body",
+              "logic": {}
+            },
             {
               "path": "data._orion.response",
               "logic": {
                 "status": 302,
                 "body_path": "data.body",
-                "headers": { "location": { "var": "metadata.vars.app_url" } },
+                "headers": {
+                  "location": {
+                    "var": "metadata.vars.app_url"
+                  }
+                },
                 "cookies": [
                   {
                     "name": "soma_session",
-                    "value": { "var": "temp_data.session" },
+                    "value": {
+                      "var": "temp_data.session"
+                    },
                     "path": "/",
                     "http_only": true,
-                    "secure": { "var": "metadata.vars.cookie_secure" },
+                    "secure": {
+                      "var": "metadata.vars.cookie_secure"
+                    },
                     "same_site": "Lax",
                     "max_age": 2592000
                   }

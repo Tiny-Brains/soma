@@ -85,6 +85,41 @@ CREATE TABLE games (
     created_at           timestamptz NOT NULL DEFAULT now()
 );
 
+-- ------------------------------------------------- what a weight-class table must be
+
+-- Checked by seasons.weight_classes, and the reason that column can be trusted by everything that
+-- reads it. A malformed table here is not a bad row: admission classifies against it, so a class
+-- name the `ladder` enum does not have would fail at the moment a competitor's version is judged,
+-- per version, having already been fetched and measured.
+--
+-- ASCENDING AND STRICT is the interesting clause. Admission takes the first class whose cap the
+-- size fits, so an out-of-order table silently makes a class unreachable -- put micro before nano
+-- and nothing is ever nano -- and equal caps make which of the two you land in an accident of
+-- array order. Neither is an error the database could otherwise notice.
+CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_typeof(wc) = 'array'
+       AND jsonb_array_length(wc) >= 1
+       -- every entry is {class: <a real ladder name>, max_bytes: <a positive whole number>}
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(wc) AS e
+           WHERE jsonb_typeof(e) <> 'object'
+              OR jsonb_typeof(e -> 'class') IS DISTINCT FROM 'string'
+              OR jsonb_typeof(e -> 'max_bytes') IS DISTINCT FROM 'number'
+              OR (e ->> 'class') NOT IN ('nano', 'micro', 'mini', 'small', 'large')
+              OR (e ->> 'max_bytes')::numeric <= 0
+              OR (e ->> 'max_bytes')::numeric <> trunc((e ->> 'max_bytes')::numeric))
+       -- no class named twice
+       AND (SELECT count(DISTINCT e ->> 'class') FROM jsonb_array_elements(wc) AS e)
+           = jsonb_array_length(wc)
+       -- strictly ascending by cap, in array order
+       AND NOT EXISTS (
+           SELECT 1 FROM (
+               SELECT (e ->> 'max_bytes')::bigint AS cap,
+                      lag((e ->> 'max_bytes')::bigint) OVER (ORDER BY ord) AS prev
+               FROM jsonb_array_elements(wc) WITH ORDINALITY AS t (e, ord)) z
+           WHERE z.prev IS NOT NULL AND z.cap <= z.prev);
+$$;
+
 -- -------------------------------------------------------------------- seasons
 
 -- jodi/docs/rating-and-seasons.md §4: a competition window for one game, created by an admin. The owner's four rules:
@@ -125,6 +160,28 @@ CREATE TABLE seasons (
     -- The check refuses a key this schema does not name, so a misspelt rule fails loudly.
     rules                jsonb       NOT NULL DEFAULT '{}'::jsonb,
 
+    -- THE WEIGHT CLASSES THIS SEASON IS PLAYED IN, smallest first, and the ONLY definition of them
+    -- anywhere. They were three hardcoded copies -- a JSONLogic ladder in Jodi's admission, a table
+    -- in the website, and a paragraph in the docs -- and the one that mattered was Jodi's, because
+    -- it is the only one that decides anything.
+    --
+    -- PER SEASON, and that is a deliberate reversal. The seasons-admin study wrote "fixed for every
+    -- season and every game, so that a nano result in season 1 means what a nano result means now",
+    -- and moving them here gives that up: two seasons may disagree about what nano is, and a nano
+    -- title is then only comparable within its own season. What it buys is a season that can be
+    -- FOCUSED -- a nano-only season, or one that shifts every cap down a notch to see what falls
+    -- out -- which the fixed table made impossible. A reader comparing across seasons has to read
+    -- the caps, which is why every route that returns a season returns these with it.
+    --
+    -- Smallest first is load-bearing, not cosmetic: admission takes the FIRST class whose cap the
+    -- measured size fits, so the order IS the ladder. The check below enforces it.
+    weight_classes       jsonb       NOT NULL DEFAULT
+        '[{"class": "nano",  "max_bytes": 8192},
+          {"class": "micro", "max_bytes": 65536},
+          {"class": "mini",  "max_bytes": 524288},
+          {"class": "small", "max_bytes": 4194304},
+          {"class": "large", "max_bytes": 67108864}]'::jsonb,
+
     -- The TinyBrain Index's lambda, fitted and published per season (the platform design §9). P7's.
     lambda               float8,
 
@@ -134,7 +191,8 @@ CREATE TABLE seasons (
     CONSTRAINT seasons_number_positive CHECK (number >= 1),
     CONSTRAINT seasons_window          CHECK (submissions_close_at > submissions_open_at),
     CONSTRAINT seasons_rules_known     CHECK (jsonb_typeof(rules) = 'object'
-                                          AND (rules - 'unique_weights' - 'participants') = '{}'::jsonb)
+                                          AND (rules - 'unique_weights' - 'participants') = '{}'::jsonb),
+    CONSTRAINT seasons_weight_classes_shape CHECK (weight_classes_ok(weight_classes))
 );
 
 -- Rule 3: at most one live season per game. This IS the non-overlap rule, as an index.
@@ -149,6 +207,14 @@ CREATE TABLE users (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     github_id   bigint      UNIQUE,
     handle      text        NOT NULL UNIQUE,
+
+    -- What a person is called, as opposed to what they are addressed by. SEEDED FROM GITHUB ON
+    -- INSERT ONLY (soma-gaps 3.1): the callback's upsert writes `name` when it creates the row and
+    -- never touches it again, because overwriting it on every sign-in would silently undo the one
+    -- field PATCH /v1/me lets a competitor edit. Nullable, because GitHub's `name` is: a profile
+    -- with none falls back to the handle, which every page has anyway.
+    display_name text,
+
     role        user_role   NOT NULL DEFAULT 'competitor',
     created_at  timestamptz NOT NULL DEFAULT now(),
 
@@ -488,6 +554,16 @@ CREATE INDEX matches_in_flight_idx
 CREATE INDEX matches_finished_idx
     ON matches (played_at, id) WHERE status = 'finished';
 
+-- The public match listing -- GET /v1/matches?game=&season=, a season's played matches newest
+-- first -- and the `matches_played` count every season object now carries, which reads the
+-- season_id prefix alone. The trailing id breaks the tie so the keyset cursor is total: two
+-- matches can share a played_at to the microsecond, and a page boundary that is not total either
+-- repeats a row or skips one. Trials are left out by predicate rather than by the index: they are
+-- a small fraction of the table and adding them to the WHERE would widen it for every reader.
+CREATE INDEX matches_season_played_idx
+    ON matches (season_id, played_at DESC, id DESC)
+    WHERE status IN ('finished', 'rated');
+
 -- One live trial per candidate. 'finished' is inside the predicate on purpose: a trial that has
 -- been played but not yet decided still counts as live, so pair cannot insert a second one in the
 -- window between Kalam finishing it and count deciding it.
@@ -519,6 +595,92 @@ CREATE INDEX rating_events_match_idx
 -- lives on models, and Postgres cannot build a partial index across a join -- so it would be
 -- walked past every superseded and rejected version. The leaderboard is a join filtered by
 -- models_season_class_active_idx, sorted afterward.
+
+-- ----------------------------------------------------- one definition of a season
+
+-- The season object every route returns, written once. It was written five times -- the games
+-- list, the seasons list, the create, the close and the edit all build it -- and adding the
+-- counts to it meant patching all five, twice, because the first patch counted trials the match
+-- listing excludes and the two disagreed by four rows. A shape that many routes return is a
+-- shape one of them will eventually get wrong on its own.
+--
+-- THE FOUR STATES ARE DERIVED, not stored (06 §4.2), and the derivation lives here so a route
+-- cannot invent a fifth. The counts are the ones the site actually prints: `active_versions` is
+-- the ladder's size, `entered_versions` is everything ever submitted -- the context strip says
+-- "47 active versions" of a live season and "38 versions entered" of a closed one, and those are
+-- different questions. `matches_played` EXCLUDES TRIALS so it agrees with what GET /v1/matches
+-- can reach; a trial is not a competitive game and is not listed. `in_flight_versions` is what
+-- the seasons admin means by "18 versions are mid-trial and will be cancelled, not admitted".
+CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'number', s.number,
+        'state', CASE WHEN s.closed_at IS NOT NULL          THEN 'closed'
+                      WHEN now() < s.submissions_open_at    THEN 'scheduled'
+                      WHEN now() < s.submissions_close_at   THEN 'open'
+                      ELSE                                       'settling' END,
+        'submissions_open_at',  s.submissions_open_at,
+        'submissions_close_at', s.submissions_close_at,
+        'closed_at',            s.closed_at,
+        'close_requested_at',   s.close_requested_at,
+        'engine_digest',        s.engine_digest,
+        'rules',                s.rules,
+        -- The caps this season is played under. Every route that returns a season returns
+        -- these, because they are per season now and a standing cannot be read without them.
+        'weight_classes',       s.weight_classes,
+        'active_versions',    (SELECT count(*) FROM models m
+                               WHERE m.season_id = s.id AND m.status = 'active'),
+        'entered_versions',   (SELECT count(*) FROM models m
+                               WHERE m.season_id = s.id),
+        'matches_played',     (SELECT count(*) FROM matches mt
+                               WHERE mt.season_id = s.id AND mt.status IN ('finished', 'rated')
+                                 AND mt.trial_model_id IS NULL),
+        'in_flight_versions', (SELECT count(*) FROM models m
+                               WHERE m.season_id = s.id AND m.status IN ('testing', 'verified')));
+$$;
+
+-- ------------------------------------------------------- one definition of a rank
+
+-- A rating is half a sentence; the Version screen, the profile and the home panel all print
+-- "rank 6 of 47" beside it (soma-gaps 2.5). Three routes needing the same three numbers is three
+-- chances to order them differently from the leaderboard, and a ladder that disagrees with itself
+-- by one row is the kind of bug nobody reports and nobody can reproduce. So the rank lives HERE,
+-- once, and soma-models-get, soma-profile-get and soma-models-list all call it.
+--
+-- THE ORDER IS THE LEADERBOARD'S ORDER, and it has to stay that way: `conservative DESC, id`, so
+-- rank is 1 + however many rows sort strictly ahead. The id tiebreak is not decoration -- two
+-- ratings can be equal to the last bit, and without it a version's own page and the ladder it
+-- appears on would disagree about which of the pair is fifth.
+--
+-- The field is the SEASON'S CURRENT field: only `active` versions are ranked, because only they
+-- are on a ladder. A superseded version keeps its ratings rows and therefore gets a rank too, and
+-- what that rank means is where its final rating would place it among the versions playing now --
+-- which is exactly what a profile prints beside a version its owner has replaced.
+CREATE FUNCTION model_ratings(p_model uuid, p_settled_sigma float8)
+RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT coalesce(json_object_agg(r.ladder, json_build_object(
+        'rating',      r.conservative,
+        'mu',          r.mu,
+        'sigma',       r.sigma,
+        'provisional', r.sigma > p_settled_sigma,
+        'matches',     r.matches_played,
+        'rank',  (SELECT count(*) + 1
+                  FROM models om JOIN ratings orr ON orr.model_id = om.id AND orr.ladder = r.ladder
+                  WHERE om.season_id = m.season_id AND om.status = 'active'
+                    AND (r.ladder = 'open' OR om.weight_class = r.ladder)
+                    AND (orr.conservative > r.conservative
+                     OR (orr.conservative = r.conservative AND om.id < m.id))),
+        -- The model itself counts, whether or not it is still active. Without the
+        -- second term a superseded version reads "rank 6 of 5", because it is ranked
+        -- against the live field but was not one of it. Adding itself back says the
+        -- true thing: dropped into the five playing now, it would be sixth of six.
+        'field', (SELECT count(*) + (CASE WHEN m.status = 'active' THEN 0 ELSE 1 END)
+                  FROM models om JOIN ratings orr ON orr.model_id = om.id AND orr.ladder = r.ladder
+                  WHERE om.season_id = m.season_id AND om.status = 'active'
+                    AND (r.ladder = 'open' OR om.weight_class = r.ladder))
+    )), '{}'::json)
+    FROM ratings r JOIN models m ON m.id = r.model_id
+    WHERE r.model_id = p_model;
+$$;
 
 -- ---------------------------------------------------------------- table storage
 

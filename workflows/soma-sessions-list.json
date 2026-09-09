@@ -1,0 +1,85 @@
+{
+  "workflow_id": "soma-sessions-list",
+  "name": "Your live sessions",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "SOMA-GAPS 1.3. The account panel on your own profile: every session that could be used to act as you, so that one you do not recognise can be ended. It reads live_sessions, not sessions: a revoked or expired row is not a way in and listing it would only invite someone to revoke what is already dead. `current` marks the session asking, which is the one row the page must not offer to end casually -- ending it is signing out, and DELETE /v1/session is the door marked for that. user_agent is returned verbatim; naming the browser is the page's job.",
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT me.sid AS session_ok, coalesce((SELECT json_agg(json_build_object('sid', ls.sid, 'issued_at', ls.issued_at, 'expires_at', ls.expires_at, 'last_seen_at', ls.last_seen_at, 'user_agent', ls.user_agent, 'current', ls.sid = me.sid) ORDER BY ls.last_seen_at DESC) FROM live_sessions ls WHERE ls.user_id = ($1)::uuid), '[]'::json) AS body FROM live_sessions me WHERE me.sid = ($2)::uuid AND me.user_id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

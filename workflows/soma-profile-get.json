@@ -1,0 +1,85 @@
+{
+  "workflow_id": "soma-profile-get",
+  "name": "A competitor's public page",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "SOMA-GAPS 1.1. One person's public page, and the only /me page there is: nothing before this could be asked about a competitor by handle. GROUPED BY GAME AND SEASON, newest season first, because a person who entered two seasons of one game has two standings and not one -- the page renders each group under its own season pill, which the study already draws. THIS ROUTE IS PUBLIC AND RETURNS ONLY WHAT IS PUBLIC: `active` and `superseded`. A `testing`, `verified` or `rejected` version is private to its owner -- a candidate mid-trial is a version nobody else may know exists yet, and a rejection is nobody else's business -- so the own-page view is this response merged with GET /v1/models and GET /v1/matches?owner=me, both of which are session scoped and both of which return the private rows. Splitting it that way rather than making one route optionally-authenticated is deliberate: a channel either verifies a session or it does not, and a public route that quietly returns more to some callers is the shape privacy bugs arrive in. `ratings` is model_ratings(), the same function the Version screen and the leaderboard rank through, so a rank on a profile and a rank on a ladder cannot disagree.",
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'role', u.role, 'baseline', u.role = 'baseline', 'created_at', u.created_at, 'games', coalesce((SELECT json_agg(x.section ORDER BY x.game, x.season DESC) FROM ( SELECT g.slug AS game, se.number AS season, json_build_object( 'game', g.slug, 'game_name', g.name, 'season', se.number, 'season_state', CASE WHEN se.closed_at IS NOT NULL THEN 'closed' WHEN now() < se.submissions_open_at THEN 'scheduled' WHEN now() < se.submissions_close_at THEN 'open' ELSE 'settling' END, 'versions', json_agg(json_build_object( 'model_id', m.id, 'version', m.version, 'class', m.weight_class, 'size_bytes', m.size_bytes, 'status', m.status, 'repo', m.repo, 'release_tag', m.release_tag, 'created_at', m.created_at, 'ratings', model_ratings(m.id, ($2)::float8)) ORDER BY m.version DESC)) AS section FROM models m JOIN games g ON g.id = m.game_id JOIN seasons se ON se.id = m.season_id WHERE m.owner_id = u.id AND m.status IN ('active', 'superseded') GROUP BY g.slug, g.name, se.number, se.closed_at, se.submissions_open_at, se.submissions_close_at) x), '[]'::json) ) AS body FROM users u WHERE u.handle = ($1)::text",
+          "params": [
+            {
+              "var": "metadata.params.username"
+            },
+            {
+              "var": "metadata.vars.settled_sigma"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "Reject an unknown handle",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.body"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "unknown_user"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 404,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

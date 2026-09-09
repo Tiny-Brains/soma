@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-submissions-create",
   "name": "Enter a GitHub release",
-  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. The one-in-flight and duplicate-release rules are partial unique indexes; a violation is integrity_unique and answers 409 on its own. Both statements join live_sessions: a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. `deny` shapes the 401 and is terminal. Decision 35 (jodi/docs/admission.md §3): both hashes are declared and `declared` refuses 400 before the insert. LAYER 06 (06 §4.8, §6.6): the insert joins the game's OPEN season -- live and inside its window -- stamps it, and carries the season's rules as predicates: `participants` (only the listed users) and `unique_weights` (no other user holds these weights; a competitor may resubmit their own; rejected rows do not count). Zero rows and `why` reads the state and the two verdicts, and `refused` answers 409 with one word: season_not_open, not_a_participant or weights_already_entered. The read-back is scoped to the live season, so a release entered last season cannot be reported as this season's.",
+  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. Both join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open; `deny` shapes the 401 and is terminal. Decision 35: both hashes are declared and `declared` refuses 400 before the insert. LAYER 06: the insert joins the game's OPEN season, stamps it, and carries the season's rules as predicates -- `participants` and `unique_weights` (no OTHER user holds these weights; a competitor may resubmit their own; rejected rows do not count). Zero rows and `why` reads the state and the verdicts, and `refused` answers 409 with one word.\n\nSOMA-GAPS 2.11: the one-in-flight rule now refuses with a WORD. It was enforced only by models_one_in_flight_uniq, so a competitor with a candidate already waiting got a bare integrity_unique 409 that named nothing and that the Submit screen has no state for. The insert carries it as a predicate and `refused` answers version_in_flight with the candidate; the index stays and is still what settles the race between two simultaneous posts.\n\nSOMA-GAPS 6.2: the duplicate refusal deliberately does NOT name the version it collided with. unique_weights excludes the caller, so the row it matched is always ANOTHER competitor's, and naming or dating it would report one competitor's submission to another. `unique_weights_scope` says whether the rule was read across the game or within the season, which is what the sentence needs and all it needs. The payload is `detail`, not `season`: it stopped being only the season the moment it carried three other verdicts, and soma-seasons-create already spells it that way.",
   "tags": [
     "pkg:soma"
   ],
@@ -118,7 +118,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, s.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text AND (NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($1)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids'))) AND (NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($6)::text AND o.owner_id <> ($1)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) GROUP BY g.id, s.id",
+          "query": "INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, s.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text AND (NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($1)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids'))) AND (NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($6)::text AND o.owner_id <> ($1)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AND NOT EXISTS (SELECT 1 FROM models f WHERE f.owner_id = ($1)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')) GROUP BY g.id, s.id",
           "params": [
             {
               "var": "metadata.auth.claims.sub"
@@ -163,7 +163,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NULL THEN NULL WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'participant', s.id IS NULL OR NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($2)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids')), 'unique_weights', s.id IS NULL OR NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($3)::text AND o.owner_id <> ($2)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NULL THEN NULL WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'participant', s.id IS NULL OR NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($2)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids')), 'in_flight', (SELECT json_build_object('model_id', f.id, 'version', f.version) FROM models f WHERE f.owner_id = ($2)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')), 'unique_weights_scope', coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game'), 'unique_weights', s.id IS NULL OR NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($3)::text AND o.owner_id <> ($2)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
           "params": [
             {
               "var": "data.req.game"
@@ -211,6 +211,11 @@
                 }
               },
               {
+                "!!": {
+                  "var": "temp_data.why.0.body.in_flight"
+                }
+              },
+              {
                 "!": {
                   "var": "temp_data.why.0.body.unique_weights"
                 }
@@ -242,12 +247,18 @@
                     }
                   },
                   "not_a_participant",
+                  {
+                    "!!": {
+                      "var": "temp_data.why.0.body.in_flight"
+                    }
+                  },
+                  "version_in_flight",
                   "weights_already_entered"
                 ]
               }
             },
             {
-              "path": "data.body.season",
+              "path": "data.body.detail",
               "logic": {
                 "var": "temp_data.why.0.body"
               }

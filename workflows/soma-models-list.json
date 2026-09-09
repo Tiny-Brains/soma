@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-models-list",
   "name": "My submission history",
-  "description": "The session check could not be a join inside the aggregate, as it is on the other authed reads: json_agg with no GROUP BY returns exactly one row whatever it is fed, so a revoked session would have got 200 with an empty list -- a rejection indistinguishable from having submitted nothing. The aggregate is therefore a scalar subquery and live_sessions is the outer FROM, which yields no row at all when the session is dead. A live session with no submissions still yields one row holding '[]'. The row is what distinguishes the two cases, so `deny` tests the `session_ok` marker projected from live_sessions rather than `body`: an empty list is falsy to the condition evaluator, and testing `body` would have rejected every user who has not submitted yet. It runs first and is terminal: a condition-gated terminal task is how a workflow refuses a request while choosing its own status code, which has to be 401 here. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body.",
+  "description": "The session check could not be a join inside the aggregate, as it is on the other authed reads: json_agg with no GROUP BY returns exactly one row whatever it is fed, so a revoked session would have got 200 with an empty list -- a rejection indistinguishable from having submitted nothing. The aggregate is therefore a scalar subquery and live_sessions is the outer FROM, which yields no row at all when the session is dead. A live session with no submissions still yields one row holding '[]'. The row is what distinguishes the two cases, so `deny` tests the `session_ok` marker projected from live_sessions rather than `body`: an empty list is falsy to the condition evaluator, and testing `body` would have rejected every user who has not submitted yet. It runs first and is terminal: a condition-gated terminal task is how a workflow refuses a request while choosing its own status code, which has to be 401 here. Postgres builds the response: the `body` column is json_agg, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body. SOMA-GAPS 2.6: the row carried no rating at all, and the profile's version table has two rating columns -- Open and the class -- each with its rank. `ratings` is model_ratings(), the same function the Version screen and the profile call, so the caller's own list cannot disagree with the public page about where a version stands. `season` is here because the profile groups by game AND season and the row could not say which one it belonged to.",
   "tags": [
     "pkg:soma"
   ],
@@ -14,7 +14,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT (SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json) FROM ( SELECT m.id, u.handle AS owner, g.slug AS game, m.version, m.repo, m.release_tag,        m.weight_class AS class, m.size_bytes, m.status, CASE WHEN m.status = 'testing' AND m.admit_started_at IS NULL THEN 'queued' WHEN m.status = 'testing' THEN 'verifying' WHEN m.status = 'verified' THEN 'awaiting_trial' WHEN m.status = 'active' THEN 'on_the_ladder' WHEN m.status = 'rejected' THEN 'rejected' ELSE 'superseded' END AS phase, m.reject_reason, m.created_at FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid   AND (($2)::text IS NULL OR g.slug = ($2)::text)) x) AS body, ls.sid AS session_ok FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($1)::uuid",
+          "query": "SELECT (SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json) FROM ( SELECT m.id, u.handle AS owner, g.slug AS game, m.version, m.repo, m.release_tag,        m.weight_class AS class, m.size_bytes, m.status, CASE WHEN m.status = 'testing' AND m.admit_started_at IS NULL THEN 'queued' WHEN m.status = 'testing' THEN 'verifying' WHEN m.status = 'verified' THEN 'awaiting_trial' WHEN m.status = 'active' THEN 'on_the_ladder' WHEN m.status = 'rejected' THEN 'rejected' ELSE 'superseded' END AS phase, m.reject_reason, m.created_at, (SELECT se.number FROM seasons se WHERE se.id = m.season_id) AS season, model_ratings(m.id, ($4)::float8) AS ratings, (SELECT max(mt.played_at) FROM match_seats ms JOIN matches mt ON mt.id = ms.match_id WHERE ms.model_id = m.id) AS last_played_at FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.owner_id = ($1)::uuid   AND (($2)::text IS NULL OR g.slug = ($2)::text)) x) AS body, ls.sid AS session_ok FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($1)::uuid",
           "params": [
             {
               "var": "metadata.auth.claims.sub"
@@ -24,6 +24,9 @@
             },
             {
               "var": "metadata.auth.claims.sid"
+            },
+            {
+              "var": "metadata.vars.settled_sigma"
             }
           ],
           "output": "temp_data.rows"

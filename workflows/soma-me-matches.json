@@ -1,0 +1,119 @@
+{
+  "workflow_id": "soma-me-matches",
+  "name": "The caller's own matches, in every state",
+  "tags": [
+    "pkg:soma"
+  ],
+  "condition": true,
+  "description": "SOMA-GAPS 2.2, the half GET /v1/matches cannot do. The public listing is finished and rated with no trials, and that is right: a queued match names a pairing nobody has played, a cancelled one names a version that was replaced, and a trial seats a candidate nobody else may know about. On your own profile all three are exactly what you came to see -- `cancelled 6m ago, replaced by 8f31c204`, `queued, not started` -- so this route lists EVERY state, and it is a route rather than an ?owner=me parameter because a channel either verifies a session or it does not. ORDERED BY coalesce(played_at, created_at): a queued match has never been played and would otherwise sort last under a NULL, when it is the newest thing on the page. The cursor keys on the same expression, so it stays total. `seats.mine` marks which seat is the caller's, because a page that shows both sides of a match still has to say which side is yours. No index is added for this: it is one person's matches, reached through match_seats_model_idx, and a competitor has hundreds of rows where a season has thousands.",
+  "tasks": [
+    {
+      "id": "defaults",
+      "name": "Apply query defaults",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.q.limit",
+              "logic": {
+                "or": [
+                  {
+                    "var": "metadata.query.limit"
+                  },
+                  "25"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH mine AS NOT MATERIALIZED ( SELECT mt.id, mt.game_id, mt.season_id, mt.status, mt.preset, mt.seed, mt.reason, mt.turns, mt.played_at, mt.created_at, mt.ladders, mt.trial_model_id, mt.withdrawn_reason, mt.successor_id, mt.fault_reason, mt.fault_seat, coalesce(mt.played_at, mt.created_at) AS at FROM matches mt WHERE EXISTS (SELECT 1 FROM match_seats ms JOIN models md ON md.id = ms.model_id WHERE ms.match_id = mt.id AND md.owner_id = ($1)::uuid) AND (($4)::text IS NULL OR mt.game_id = (SELECT g.id FROM games g WHERE g.slug = ($4)::text)) ), page AS ( SELECT * FROM mine WHERE ($5)::text IS NULL OR (at, id) < (split_part(($5)::text, '|', 1)::timestamptz, split_part(($5)::text, '|', 2)::uuid) ORDER BY at DESC, id DESC LIMIT ($6)::int ) SELECT ls.sid AS session_ok, json_build_object( 'total', CASE WHEN ($5)::text IS NULL THEN (SELECT count(*) FROM mine) END, 'matches', coalesce((SELECT json_agg(json_build_object( 'id', p.id, 'game', (SELECT g.slug FROM games g WHERE g.id = p.game_id), 'season', (SELECT se.number FROM seasons se WHERE se.id = p.season_id), 'status', p.status, 'preset', p.preset, 'seed', p.seed, 'reason', p.reason, 'turns', p.turns, 'played_at', p.played_at, 'created_at', p.created_at, 'ladders', array_to_json(p.ladders), 'is_trial', p.trial_model_id IS NOT NULL, 'withdrawn_reason', p.withdrawn_reason, 'fault_reason', p.fault_reason, 'fault_seat', p.fault_seat, 'successor', (SELECT json_build_object('model_id', sm.id, 'version', sm.version) FROM models sm WHERE sm.id = p.successor_id), 'seats', (SELECT coalesce(json_agg(json_build_object( 'seat', ms.seat, 'model_id', ms.model_id, 'owner', u.handle, 'baseline', u.role = 'baseline', 'class', md.weight_class, 'version', md.version, 'rank', ms.rank, 'score', ms.score, 'strikes', ms.strikes, 'mine', md.owner_id = ($1)::uuid, 'outcome', CASE WHEN ms.rank IS NULL THEN NULL WHEN ms.strikes >= ($3)::int THEN 'dq' WHEN ms.rank > 1 THEN 'loss' WHEN (SELECT count(*) FROM match_seats w WHERE w.match_id = ms.match_id AND w.rank = 1) > 1 THEN 'draw' ELSE 'win' END) ORDER BY ms.seat), '[]'::json) FROM match_seats ms JOIN models md ON md.id = ms.model_id JOIN users u ON u.id = md.owner_id WHERE ms.match_id = p.id) ) ORDER BY p.at DESC, p.id DESC) FROM page p), '[]'::json), 'next_cursor', CASE WHEN (SELECT count(*) FROM page) = ($6)::int THEN (SELECT (to_json(x.at) #>> '{}') || '|' || x.id::text FROM page x ORDER BY x.at ASC, x.id ASC LIMIT 1) END) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            },
+            {
+              "var": "metadata.vars.forfeit_strikes"
+            },
+            {
+              "var": "metadata.query.game"
+            },
+            {
+              "var": "metadata.query.cursor"
+            },
+            {
+              "var": "temp_data.q.limit"
+            }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
