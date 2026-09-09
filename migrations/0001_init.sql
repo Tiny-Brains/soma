@@ -744,5 +744,10 @@ GRANT USAGE ON SCHEMA public TO jodi;
 GRANT SELECT ON clocks, games, matches, match_seats, models, ratings, seasons, users TO jodi;
 GRANT INSERT ON matches, match_seats, rating_events, ratings TO jodi;
 GRANT UPDATE ON clocks, matches, models, ratings, seasons TO jodi;
+-- `nextval` needs the sequence as well as the table. Count stamps every match it folds with
+-- `rated_seq = nextval('rating_seq')`, so without this the fold fails on the FIRST finished match
+-- with "permission denied for sequence rating_seq" -- and because `finished` counts as in-flight
+-- when pair measures demand, the whole ladder then stops issuing matches behind it.
+GRANT USAGE ON SEQUENCE rating_seq TO jodi;
 
 COMMIT;
