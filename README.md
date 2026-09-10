@@ -213,6 +213,12 @@ LICENSE                      repository licence
 
 ## Status
 
+**Decision 46, 10 September 2026 — no compute cap.** `models.flops_estimate` became
+`models.infer_us` (microseconds, measured at admission, reported and never a gate);
+`soma-games-get` no longer joins the cartridge's per-class cap onto `weight_classes`, so a class is
+its byte limit and nothing else; `soma-models-get` and the `soma-seasons-create` baseline carry
+follow. `0001_init.sql` was rewritten in place, as a pre-release schema is. All 38 statements prepare.
+
 **10 September 2026.** The package implements twenty-three routes, OAuth sessions, season
 administration, submission recording, replay signing, and the shared schema. Orion 1.7.0 lint
 passes clean at 22 channels and 22 workflows; `check-sql.sh` prepares all 38 shipped statements;

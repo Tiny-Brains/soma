@@ -176,7 +176,12 @@ CREATE TABLE models (
     weight_class    ladder,
     size_bytes      bigint,
     param_count     bigint,
-    flops_estimate  bigint,
+    -- The slowest reference case's inference at admission, in microseconds. Reported to the
+    -- competitor, never a gate: there is no compute cap (decision 46) and wall clock belongs to
+    -- the admission host, so a verdict turning on it would depend on a noisy neighbour. It says
+    -- how much of the game's turn_ms a graph leaves itself, which is the bound that now decides
+    -- whether a seat forfeits.
+    infer_us        bigint,
     weights_hash    text,
     adapter_hash    text,
 

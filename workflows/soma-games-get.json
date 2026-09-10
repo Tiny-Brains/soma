@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-games-get",
   "name": "One game, and what it says about itself",
-  "description": "Everything a page needs about one game that is not a standing. `about`, `presets` and `limits` are the CARTRIDGE'S OWN COPY out of its manifest, so a second game is a registration and not a web deploy; a cartridge that ships no `about` gets null and the page drops the section. `weight_classes` joins the season's size caps to the cartridge's flop cap per class, ordered by cap -- the order admission classifies in.",
+  "description": "Everything a page needs about one game that is not a standing. `about`, `presets` and `limits` are the CARTRIDGE'S OWN COPY out of its manifest, so a second game is a registration and not a web deploy; a cartridge that ships no `about` gets null and the page drops the section. `weight_classes` is the season's size caps, ordered by cap -- the order admission classifies in. There is no compute cap to join to (decision 46).",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -11,7 +11,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'id', g.slug, 'name', g.name, 'about', g.manifest -> 'about', 'presets', g.manifest -> 'presets', 'limits', g.manifest -> 'limits', 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class', e ->> 'class', 'max_bytes', (e ->> 'max_bytes')::bigint, 'flop_cap', (g.manifest -> 'budgets' -> 'flop_caps' ->> (e ->> 'class'))::float8) ORDER BY (e ->> 'max_bytes')::bigint) FROM current_season(g.id) cs, jsonb_array_elements(cs.weight_classes) AS e), 'season', (SELECT season_json(s) FROM current_season(g.id) s)) AS body FROM games g WHERE g.slug = ($1)::text",
+          "query": "SELECT json_build_object( 'id', g.slug, 'name', g.name, 'about', g.manifest -> 'about', 'presets', g.manifest -> 'presets', 'limits', g.manifest -> 'limits', 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class', e ->> 'class', 'max_bytes', (e ->> 'max_bytes')::bigint) ORDER BY (e ->> 'max_bytes')::bigint) FROM current_season(g.id) cs, jsonb_array_elements(cs.weight_classes) AS e), 'season', (SELECT season_json(s) FROM current_season(g.id) s)) AS body FROM games g WHERE g.slug = ($1)::text",
           "params": [{ "var": "metadata.params.game" }, { "var": "metadata.vars.forfeit_strikes" }],
           "output": "temp_data.rows"
         }
