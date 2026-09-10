@@ -213,6 +213,16 @@ LICENSE                      repository licence
 
 ## Status
 
+**10 September 2026 — the package ships as an image.** Nothing here is generated, so nothing left
+git; this is the other half of the same change. `Dockerfile` carries `channels/`, `workflows/`,
+`connectors/`, `migrations/` and `load-package.sh`, and devops copies them into a volume it mounts
+where it used to mount this checkout. `../soma` was the last bind mount on the platform, and its two
+migration files were the last thing Postgres read by path.
+
+The migrations travel under **their own names**. DevOps slots them into Postgres's init directory as
+`20-soma-schema.sql` and `25-soma-sessions.sql`, between its own `10-` and `30-` scripts; that
+ordering is its decision, not this repository's, so the renaming happens there.
+
 **Per-seat cost on `match_seats`, 10 September 2026.** Three columns Kalam writes at finish —
 `infer_us_total`, `infer_us_max`, `infer_turns` — recording what each seat's model cost rather than
 only what it scored. Deliberately outside `match_seats_result_whole`: timing drives no rating and no
