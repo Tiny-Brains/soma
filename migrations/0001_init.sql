@@ -349,12 +349,41 @@ CREATE TABLE match_seats (
     score          int,                 -- integer by law: game state carries no floats
     strikes        smallint,
 
+    -- What this seat's model COST, summed over the turns it was actually played. Each turn's figure
+    -- is the loader's `infer_us` -- the row's share of its own group's inference -- and NOT the
+    -- row's elapsed time, which is a latency that includes waiting behind other competitors.
+    --
+    -- Comparable in a way no absolute measurement is: every seat of a match is a row of the same
+    -- /play call, on one replica, at one instant, so machine, load and thermal state are shared and
+    -- the comparison between seats is paired. Across matches it is only indicative.
+    --
+    -- `infer_turns` rather than reusing matches.turns: a seat that forfeited stopped being played,
+    -- so the match's turn count would understate its mean. Two seats naming the same weights_hash
+    -- batch into one inference and are charged an equal share of it.
+    infer_us_total bigint,
+    infer_us_max   int,
+    infer_turns    int,
+
     PRIMARY KEY (match_id, seat),
     CONSTRAINT match_seats_seat_nonneg    CHECK (seat >= 0),
+    -- Timing is deliberately NOT in here, though it is written by the same statement. It drives
+    -- nothing -- no rating, no rank, no verdict -- so binding it to the result would buy no
+    -- correctness and cost two things: a row finished by a Kalam that predates the columns would
+    -- violate the CHECK and halt the wave mid-deploy, and an unmeasured seat would have to carry a
+    -- fake 0 instead of an honest NULL.
     CONSTRAINT match_seats_result_whole   CHECK ((rank IS NULL) = (score IS NULL)
                                              AND (rank IS NULL) = (strikes IS NULL)),
     CONSTRAINT match_seats_rank_positive  CHECK (rank IS NULL OR rank >= 1),
-    CONSTRAINT match_seats_strikes_nonneg CHECK (strikes IS NULL OR strikes >= 0)
+    CONSTRAINT match_seats_strikes_nonneg CHECK (strikes IS NULL OR strikes >= 0),
+    CONSTRAINT match_seats_timing_whole   CHECK ((infer_us_total IS NULL) = (infer_us_max IS NULL)
+                                             AND (infer_us_total IS NULL) = (infer_turns IS NULL)),
+    CONSTRAINT match_seats_timing_nonneg  CHECK (infer_us_total IS NULL OR
+                                                (infer_us_total >= 0 AND infer_us_max >= 0
+                                                 AND infer_turns >= 0)),
+    -- The worst single turn cannot exceed the sum of every turn. Cheap, and it is the assertion that
+    -- catches an accumulator wired to the wrong field.
+    CONSTRAINT match_seats_timing_ordered CHECK (infer_us_total IS NULL
+                                                 OR infer_us_max <= infer_us_total)
 );
 
 -- -------------------------------------------------------------- rating_events
@@ -676,7 +705,7 @@ GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
               reason, turns, played_ms, engine_digest_played, evaluator_digest,
               replay_key, played_at, fault_reason, fault_seat, closed_at)
     ON matches TO kalam;
-GRANT UPDATE (rank, score, strikes)
+GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO kalam;
 
 -- Jodi runs the version life cycle. The verbs are DERIVED from jodi/workflows/*.json, and

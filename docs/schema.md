@@ -262,12 +262,35 @@ CREATE TABLE match_seats (
     score          int,
     strikes        smallint,
 
+    -- What this seat's model COST, summed over the turns it was played (decision 46). Each turn's
+    -- figure is the loader's `infer_us`, a row's share of its own group's inference -- not the row's
+    -- elapsed time, which is latency and includes waiting behind other competitors. Comparable
+    -- BETWEEN SEATS OF ONE MATCH, which are rows of one /play call on one replica at one instant;
+    -- only indicative across matches. `infer_turns` rather than matches.turns, because a forfeited
+    -- seat stopped being played and the match's count would understate its mean.
+    infer_us_total bigint,
+    infer_us_max   int,
+    infer_turns    int,
+
     PRIMARY KEY (match_id, seat),
     CONSTRAINT match_seats_seat_nonneg   CHECK (seat >= 0),
     CONSTRAINT match_seats_result_whole  CHECK ((rank IS NULL) = (score IS NULL)
                                             AND (rank IS NULL) = (strikes IS NULL)),
+    -- Timing is NOT bound to the result, though one statement writes both: it drives no rating, no
+    -- rank and no verdict, so binding it would buy no correctness and cost two things -- a row
+    -- finished by a Kalam predating the columns would violate the CHECK and halt the wave
+    -- mid-deploy, and an unmeasured seat would carry a fake 0 instead of an honest NULL.
+    CONSTRAINT match_seats_timing_whole   CHECK ((infer_us_total IS NULL) = (infer_us_max IS NULL)
+                                            AND (infer_us_total IS NULL) = (infer_turns IS NULL)),
     CONSTRAINT match_seats_rank_positive CHECK (rank IS NULL OR rank >= 1),
-    CONSTRAINT match_seats_strikes_nonneg CHECK (strikes IS NULL OR strikes >= 0)
+    CONSTRAINT match_seats_strikes_nonneg CHECK (strikes IS NULL OR strikes >= 0),
+    CONSTRAINT match_seats_timing_nonneg  CHECK (infer_us_total IS NULL OR
+                                                (infer_us_total >= 0 AND infer_us_max >= 0
+                                                 AND infer_turns >= 0)),
+    -- The worst single turn cannot exceed the sum of every turn: the assertion that catches an
+    -- accumulator wired to the wrong field.
+    CONSTRAINT match_seats_timing_ordered CHECK (infer_us_total IS NULL
+                                                 OR infer_us_max <= infer_us_total)
 );
 ```
 
@@ -403,7 +426,7 @@ GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
               reason, turns, played_ms, engine_digest_played, evaluator_digest,
               replay_key, played_at, fault_reason, fault_seat, closed_at)
     ON matches TO kalam;
-GRANT UPDATE (rank, score, strikes)
+GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO kalam;
 ```
 
@@ -669,9 +692,13 @@ WITH m AS (
  RETURNING id
 )
 UPDATE match_seats s
-   SET rank = v.rank, score = v.score, strikes = v.strikes
+   SET rank = v.rank, score = v.score, strikes = v.strikes,
+       infer_us_total = v.infer_us_total, infer_us_max = v.infer_us_max,
+       infer_turns = v.infer_turns
   FROM m,
-       jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int, strikes smallint)
+       jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int,
+                                             strikes smallint, infer_us_total bigint,
+                                             infer_us_max int, infer_turns int)
  WHERE s.match_id = m.id AND s.seat = v.seat
 ```
 
@@ -683,7 +710,8 @@ UPDATE match_seats s
 > by one accordingly.
 
 `$1` token · `$2` match · `$3` the result, one element per seat:
-`[{"seat": 0, "rank": 1, "score": 10, "strikes": 0}, …]`, forfeited seats ranked last (finding
+`[{"seat": 0, "rank": 1, "score": 10, "strikes": 0, "infer_us_total": 78360, "infer_us_max": 1001,
+"infer_turns": 150}, …]`, forfeited seats ranked last (finding
 12.5) · `$4` the engine's end reason · `$5`, `$6` turns and duration · `$7`, `$8` the digests that
 played it · `$9` the replay key. `rows_affected` is `seat_count`; zero means the token is stale or
 the result is malformed, and in both cases nothing was written. The replay `PUT` precedes it under

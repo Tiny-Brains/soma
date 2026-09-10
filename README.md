@@ -213,6 +213,14 @@ LICENSE                      repository licence
 
 ## Status
 
+**Per-seat cost on `match_seats`, 10 September 2026.** Three columns Kalam writes at finish —
+`infer_us_total`, `infer_us_max`, `infer_turns` — recording what each seat's model cost rather than
+only what it scored. Deliberately outside `match_seats_result_whole`: timing drives no rating and no
+rank, so binding it to the result would halt a wave mid-deploy for a row finished by a Kalam that
+predates the columns, and force an unmeasured seat to carry a fake `0`. Verified against the running
+stack: a match played by the fleet wrote 78,360 µs over 150 turns for one seat and 77,973 for the
+other, matching its replay envelope exactly.
+
 **Decision 46, 10 September 2026 — no compute cap.** `models.flops_estimate` became
 `models.infer_us` (microseconds, measured at admission, reported and never a gate);
 `soma-games-get` no longer joins the cartridge's per-class cap onto `weight_classes`, so a class is
