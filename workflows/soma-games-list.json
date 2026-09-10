@@ -1,11 +1,8 @@
 {
   "workflow_id": "soma-games-list",
   "name": "List games",
-  "description": "Postgres builds the response: the one `body` column is json_agg / json_build_object, and since Orion 1.6 a json column decodes as the document itself, so the respond task copies it into data.body and shapes the response. Keeping response construction in SQL is deliberate -- a mistyped operator inside a map mapping is written through as a literal object with a 200, where a mistyped SQL function is a loud error. Before 1.6 the column had to be cast ::text and parsed back by a parse_json task.",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
+  "description": "Every registered game with its current season. Kept lean deliberately: the shell calls this on every route, and GET /v1/games/{game} is what a page asks for once it knows which game it is showing.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -14,7 +11,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(json_build_object('id', g.slug, 'name', g.name, 'season', (SELECT season_json(s) FROM seasons s WHERE s.game_id = g.id ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1)) ORDER BY g.name), '[]'::json) AS body FROM games g",
+          "query": "SELECT coalesce(json_agg(json_build_object('id', g.slug, 'name', g.name, 'season', (SELECT season_json(s) FROM current_season(g.id) s)) ORDER BY g.name), '[]'::json) AS body FROM games g",
           "params": [],
           "output": "temp_data.rows"
         }
@@ -27,19 +24,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }

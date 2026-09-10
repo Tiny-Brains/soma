@@ -1,11 +1,8 @@
 {
   "workflow_id": "soma-seasons-list",
   "name": "List a game's seasons",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
-  "description": "Layer 06 §6.7: every season of the game, newest first, each with its derived state -- closed, scheduled, open or settling -- its window, its engine and its rules. The index of past seasons, whose standings are read by GET /v1/games/{game}/leaderboard?season=N and are kept for ever (rule 5).",
+  "description": "Every season of the game, newest first. The index of past seasons, whose standings GET /v1/games/{game}/leaderboard?season=N reads and which are kept for ever.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -15,11 +12,7 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT coalesce(json_agg(season_json(s) ORDER BY s.number DESC), '[]'::json) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            }
-          ],
+          "params": [{ "var": "metadata.params.game" }],
           "output": "temp_data.rows"
         }
       }
@@ -31,19 +24,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }

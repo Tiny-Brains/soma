@@ -78,9 +78,9 @@ Verified against the 1.7.0 source (`crates/orion-server/src/engine/functions/db_
 ## 3. The schema
 
 The initial schema for everything this page owns. `games`, `users`, `models`, `ratings` and
-`sessions` stay as `0001` and `0002` have them, with the additions in §3.2. The verification
-harness applies this over the current files by replacing `matches`, which is empty on every
-volume; the schema build folds it into a rewritten `0001_init.sql`.
+`sessions` stay as `0001` and `0002` have them, with the additions in §3.2. What ships is the
+rewritten [`migrations/0001_init.sql`](../migrations/0001_init.sql); this section says what its
+objects are for.
 
 ### 3.1 Enumerations
 
@@ -414,12 +414,34 @@ hashes are on the seat rows. With `matches_status_shape`, the grant is also what
 of states that are not its: a valid `cancelled` row needs `withdrawn_reason`, a valid `rated` row
 needs `rated_at`, and Kalam can write neither.
 
-### 3.9 Seeds (the schema build §5.1)
+### 3.9 Seeds
 
 `games.active_engine_digest = 'sha256:placeholder'` for `ants`, overwritten by the deploy step;
 the four `clocks` rows above; the three baseline users and a `models` row each. The seed is
-`devops/db-init/30-seed.sql`'s and is listed here only so the first pair run has a digest to
+`devops/compose/db-init/30-seed.sql`'s and is listed here only so the first pair run has a digest to
 stamp and a baseline to seat.
+
+### 3.10 The shared functions
+
+A shape several routes return is built once, in the migration, because a shape many routes build is
+one that a single route will eventually get wrong on its own — and a ladder that disagrees with
+itself by one row is the bug nobody reports and nobody can reproduce.
+
+| Function | What it settles | Called by |
+|---|---|---|
+| `season_state(seasons)` | the four states, derived from three timestamps rather than stored | `season_json`, the profile, the preflight, both season `why` reads |
+| `current_season(game, number?)` | the season a game is read through: the live one, else the latest closed; with `number`, the same selection pinned | the games list and page, the leaderboard, the match listing, both season read-backs |
+| `season_json(seasons)` | the season object, with the counts the site prints | six routes |
+| `model_phase(models)` | which of the two clocks a version waits on, in the page's words | the version page, the caller's list, `/v1/me`, the preflight |
+| `model_ratings(model, settled_sigma)` | a version's ladders, each with rank and field, in the leaderboard's order | the version page, the profile, the caller's list |
+| `match_seat_rows(match, strike_limit)` | a match's seats resolved, with `outcome` — telling a forfeit from a defeat needs the strike limit | the three match routes, which each shape their own keys from these rows |
+| `season_admits(seasons, user)` | the participants rule | the submission insert, and the read that says why it did not happen |
+| `season_admits_weights(seasons, user, hash)` | the unique-weights rule, in its scope | the same two |
+| `weight_classes_ok(jsonb)` | what a weight-class table must be: named classes, positive whole caps, strictly ascending | the `seasons.weight_classes` CHECK |
+
+The last two rule predicates are the load-bearing pair: each is asked twice per submission, once by
+the insert that must not happen and once by the read that says why it did not, and if the two ever
+disagreed a competitor would be refused for a reason the response denies.
 
 ---
 
@@ -999,8 +1021,8 @@ so `retired` in P7 fails closed without a change here. The reason words are prop
 
 ### 7.2 Soma's existing queries
 
-`matches` now holds queued rows and its seats live in a second table, so two workflows change in
-the schema build §5.3 and nothing else does — both get simpler:
+`matches` now holds queued rows and its seats live in a second table, so two of Soma's workflows
+change and nothing else does — both get simpler:
 
 - `soma-matches-list` becomes a join: `FROM match_seats s JOIN matches mt ON mt.id = s.match_id
   WHERE s.model_id = $1 AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC`, on

@@ -1,11 +1,8 @@
 {
   "workflow_id": "soma-status",
   "name": "Is the arena running?",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
-  "description": "SOMA-GAPS 1.4. /status reports the arena and the API APART, because the arena can be playing perfectly while the site cannot read it, and one green light would hide that.\n\nTHIS ROUTE IS THE ARENA HALF ONLY, and that is deliberate. The API half is median latency, the 99th percentile and errors in the last hour, and a route cannot honestly measure itself: when the API is down the numbers saying so are exactly the numbers that do not arrive. The page owns that half -- it re-checks every 30 seconds and can time its own calls, which is a measurement from where the reader actually stands. Everything here is a fact about the database instead.\n\nNO STATE IS NAMED -- no `up`, no `degraded`. Running, behind and down are a reading of these numbers, the thresholds are policy, and policy that lives in SQL cannot be changed without a package reload. The page has three states and the numbers to choose between them: a queue that dwarfs matches_last_hour is behind, a `finished` pile that is not shrinking is count falling behind rather than the arena, and last_played_at going stale is the arena itself. admission_queue and awaiting_trial are the same question asked of the other clock, which is what a competitor whose version has not moved actually wants to know.",
+  "description": "The arena half of /status, and only that half. A route cannot honestly measure its own API -- when it is down, the numbers saying so are the ones that do not arrive -- so the page times its own calls and this reports facts about the database. It NAMES NO STATE: running, behind and down are a reading of these numbers, and a threshold in SQL could not be changed without a package reload.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -27,19 +24,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }

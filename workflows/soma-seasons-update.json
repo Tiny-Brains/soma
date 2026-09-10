@@ -1,22 +1,13 @@
 {
   "workflow_id": "soma-seasons-update",
   "name": "Edit a season that has not opened",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
-  "description": "SOMA-GAPS 1.5, admin only. The Edit button on a `scheduled` row in the seasons table, and the ONLY row it may ever appear on: a season that has not opened has no submissions stamped into it, no matches paired against it and no standings, so its window and its rules are still safe to move. An open one is not -- competitors have already entered it under the rules it states -- and a closed one is the permanent record. The predicate `now() < submissions_open_at` in the UPDATE is what enforces that, so the refusal cannot be raced by a second caller arriving in the second the season opens; `why` then reads the state back and names it, and 409 carries which state it actually found.\n\nThe engine digest is NOT editable. It is pinned from games.active_engine_digest at creation and a season plays one engine from beginning to end or its standings mean nothing (06 \u00a74.4). The number is not editable either -- it is last+1 by construction.\n\nEvery field is coalesce'd against the stored value, so a PATCH that names one field leaves the others alone, which is what PATCH means. `rules` is replaced whole rather than merged: the seasons_rules_known CHECK refuses an unknown key, so a merge could only ever produce a document the constraint would reject anyway, and replacing it makes `remove the participants allowlist` expressible.\n\n`weight_classes` is editable here for the same reason the window is: a season that has not opened has nothing measured against its caps yet. Once it opens they are frozen by the same predicate, and they have to be -- every version in the season was placed on a ladder by them, and changing a cap afterwards would silently reclassify a field that has already played.",
+  "description": "Admin only, and the Edit button belongs on a `scheduled` row and no other: a season that has not opened has no submissions stamped into it, no matches paired against it and no standings, so its window, its rules and its caps are still safe to move. THE PREDICATE `now() < submissions_open_at` IN THE UPDATE is what enforces that, so the refusal cannot be raced by a caller arriving in the second the season opens; `why` then reads the state back and 409 carries which state it found. The engine digest is not editable -- a season plays one engine from beginning to end or its standings mean nothing -- and neither is the number. Every field is coalesced against the stored value, which is what PATCH means; `rules` is replaced whole rather than merged, because the seasons_rules_known CHECK refuses an unknown key and a merge could only produce a document the constraint would reject anyway.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "parse",
-      "name": "Parse",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "who",
@@ -26,14 +17,7 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT json_build_object('id', u.id, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
-          "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
-          ],
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
           "output": "temp_data.who"
         }
       }
@@ -41,62 +25,30 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.who.0.body"
-        }
-      },
+      "condition": { "!": { "var": "temp_data.who.0.body" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
           ]
         }
       }
     },
     {
       "id": "forbid",
-      "name": "Admin only",
-      "condition": {
-        "!=": [
-          {
-            "var": "temp_data.who.0.body.role"
-          },
-          "admin"
-        ]
-      },
+      "name": "Admins only",
+      "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request.",
+      "condition": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "admin_only"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 403,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "admin_only" } },
+            { "path": "data._orion.response", "logic": { "status": 403, "body_path": "data.body" } }
           ]
         }
       }
@@ -110,24 +62,12 @@
           "connector": "soma-db",
           "query": "UPDATE seasons s SET submissions_open_at = coalesce(($3)::timestamptz, s.submissions_open_at), submissions_close_at = coalesce(($4)::timestamptz, s.submissions_close_at), rules = coalesce(($5)::jsonb, s.rules), weight_classes = coalesce(($6)::jsonb, s.weight_classes) FROM games g WHERE g.id = s.game_id AND g.slug = ($1)::text AND s.number = ($2)::int AND s.closed_at IS NULL AND now() < s.submissions_open_at",
           "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.params.number"
-            },
-            {
-              "var": "data.req.submissions_open_at"
-            },
-            {
-              "var": "data.req.submissions_close_at"
-            },
-            {
-              "var": "data.req.rules"
-            },
-            {
-              "var": "data.req.weight_classes"
-            }
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.number" },
+            { "var": "data.req.submissions_open_at" },
+            { "var": "data.req.submissions_close_at" },
+            { "var": "data.req.rules" },
+            { "var": "data.req.weight_classes" }
           ],
           "output": "temp_data.edited"
         }
@@ -136,29 +76,13 @@
     {
       "id": "why",
       "name": "Why not",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.edited.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('number', s.number, 'state', CASE WHEN s.closed_at IS NOT NULL THEN 'closed' WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.number = ($2)::int",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.params.number"
-            }
-          ],
+          "query": "SELECT json_build_object('number', s.number, 'state', season_state(s)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.number = ($2)::int",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.number" }],
           "output": "temp_data.why"
         }
       }
@@ -168,21 +92,8 @@
       "name": "No such season",
       "condition": {
         "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.edited.rows_affected"
-                },
-                0
-              ]
-            }
-          },
-          {
-            "!": {
-              "var": "temp_data.why.0.body"
-            }
-          }
+          { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
+          { "!": { "var": "temp_data.why.0.body" } }
         ]
       },
       "terminal": true,
@@ -190,19 +101,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "unknown_season"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 404,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "unknown_season" } },
+            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
           ]
         }
       }
@@ -210,38 +110,15 @@
     {
       "id": "refused",
       "name": "It has already opened",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.edited.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body.error",
-              "logic": "season_not_scheduled"
-            },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "temp_data.why.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 409,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body.error", "logic": "season_not_scheduled" },
+            { "path": "data.body.detail", "logic": { "var": "temp_data.why.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
           ]
         }
       }
@@ -254,14 +131,7 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.number = ($2)::int",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.params.number"
-            }
-          ],
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.number" }],
           "output": "temp_data.rows"
         }
       }
@@ -273,19 +143,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }

@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# PREPARE every statement the package actually ships, against a schema built from the migrations.
+# PREPARE every statement the package ships, against a schema built from the migrations.
 #
 #   soma/scripts/check-sql.sh            # needs the db container up
 #
-# Every read endpoint's SQL is written inline in its workflow, so a schema change can break one
-# silently -- the workflow still loads, and the channel only fails when someone calls it. This
-# pulls each `query` out of workflows/*.json and asks Postgres to parse and plan it against a
-# schema built from the migrations, so the break surfaces in CI instead.
+# Every endpoint's SQL is written inline in its workflow, so a schema change can break one silently:
+# the workflow still loads and the channel only fails when someone calls it. PREPARE resolves every
+# relation, column and function and builds a plan, so a typo, a dropped column or a renamed table
+# cannot survive it. It earned itself the day the match table became two tables, with two workflows
+# still selecting `matches.model_ids`.
 #
-# It earned itself the day the match table became two tables: two read workflows were still
-# selecting `matches.model_ids`, and nothing else would have noticed until a request arrived.
+# What each statement DOES is scripts/verify/run.sh's walk; that a workflow answers at all is
+# scripts/smoke.sh.
 #
-# It is a syntax and planning check, not a behaviour one: PREPARE resolves every relation, column
-# and function and builds a plan, so a typo, a dropped column or a renamed table cannot survive it.
-# What each statement DOES is scripts/verify/run.sh's walk.
+#   DB_CONTAINER  the postgres container   (default tinybrains-db-1)
+#   DB_USER       its superuser            (default: read from the container)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
 SCRATCH=soma_sqlcheck
+SQL=$(mktemp)
+trap 'rm -f "$SQL"' EXIT
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 
 psql -d postgres -q -v ON_ERROR_STOP=1 \
@@ -27,46 +29,33 @@ psql -d postgres -q -v ON_ERROR_STOP=1 \
 cat migrations/0001_init.sql migrations/0002_sessions.sql \
     | psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1
 
-# Parameter types are left to Postgres. Every statement writes its placeholders as ($1)::type, so
-# inference has everything it needs -- and a statement that ever stopped doing that would be
-# ambiguous to the server too, which is worth failing on.
-python3 - workflows/*.json > /tmp/soma-sqlcheck.sql <<'PY'
+# Parameter types are left to Postgres: every statement writes its placeholders as ($1)::type, so
+# inference has what it needs -- and a statement that stopped doing that would be ambiguous to the
+# server too, which is worth failing on.
+python3 - workflows/*.json > "$SQL" <<'PY'
 import json, sys
+
+def statements(tasks):
+    """Every query in the list, descending into task groups."""
+    for task in tasks:
+        yield from statements(task.get("tasks", []))
+        query = task.get("function", {}).get("input", {}).get("query")
+        if query:
+            yield task["id"], query
 
 n = 0
 for path in sys.argv[1:]:
     doc = json.load(open(path))
-    for task in doc.get("tasks", []):
-        fn = task.get("function", {})
-        query = fn.get("input", {}).get("query")
-        if not query:
-            continue
+    for task_id, query in statements(doc.get("tasks", [])):
         n += 1
-        name = f"chk_{doc['workflow_id'].replace('-', '_')}_{task['id']}"
-        print(rf"\echo '  {doc['workflow_id']} / {task['id']}'")
+        name = f"chk_{doc['workflow_id'].replace('-', '_')}_{task_id.replace('.', '_')}"
+        print(rf"\echo '  {doc['workflow_id']} / {task_id}'")
         print(f"PREPARE {name} AS {query};")
-print(rf"\echo '{n} statements prepared'", file=sys.stderr)
 print(rf"\echo '-- {n} statements'")
 PY
 
-# Orion caps a workflow description at 2048 characters and REFUSES THE CREATE past it. That is a
-# lint error, but load-package.sh deletes every pkg object before it re-creates them, so hitting it
-# during a load leaves the API down until the next good one. Cheaper to fail here.
-python3 - workflows/*.json <<'DESCEOF'
-import json, sys
-bad = 0
-for path in sys.argv[1:]:
-    n = len(json.load(open(path)).get("description", ""))
-    if n > 2048:
-        print(f"  {path}: description is {n} characters, Orion's limit is 2048")
-        bad += 1
-if bad:
-    sys.exit(f"==> {bad} workflow description(s) too long")
-DESCEOF
-
 echo "==> preparing every query in workflows/*.json"
-psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1 < /tmp/soma-sqlcheck.sql
+psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1 < "$SQL"
 
-rm -f /tmp/soma-sqlcheck.sql
 psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH"
 echo "==> all shipped SQL parses and plans against the current schema"

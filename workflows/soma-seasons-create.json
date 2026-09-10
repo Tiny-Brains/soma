@@ -1,22 +1,13 @@
 {
   "workflow_id": "soma-seasons-create",
   "name": "Create a season",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
-  "description": "Layer 06 \u00a75.1, admin only. One statement creates the season -- number last+1, the engine pinned from games.active_engine_digest, the window and the rules -- carries every active baseline of the previous season into it as a new active version at the prior with its seed events, and bumps the roster epoch; its rows_affected is one on success and zero when refused, because db_write reports only that and a data-modifying CTE runs regardless. Three refusals, told apart by `why`: a season of the game is still live, the opening date is inside season_gap_days of the previous close, or the game has no engine declared. Participant handles in rules.participants.handles are resolved to user ids first (a handle can change; an id cannot). The prior comes from the same [vars] Jodi reads, so the carried baselines start where a promoted version would. WEIGHT CLASSES ARE THE SEASON'S NOW. `weight_classes` in the body sets them; absent, the season inherits the previous season's table rather than a constant, so a run of seasons stays comparable unless somebody deliberately changes it, and the very first season of a game falls back to the five the platform started with. THE CARRY-FORWARD IS FILTERED BY THEM: a baseline is only carried into a season that has a class for it, so a nano-only season carries the nano baselines and leaves the rest behind instead of seating a `large` version on a ladder that does not exist.",
+  "description": "Admin only. ONE STATEMENT creates the season -- number last+1, the engine pinned from games.active_engine_digest, the window and the rules -- carries every active baseline of the previous season into it at the prior with its seed events, and bumps the roster epoch. Three refusals, told apart by `why`: a season of the game is still live, the opening date is inside season_gap_days of the previous close, or the game has no engine declared. Participant handles are resolved to user ids first, because a handle can change and an id cannot. WEIGHT CLASSES ARE THE SEASON'S: absent from the body, it inherits the previous season's table rather than a constant, and the carry-forward is filtered by them, so a nano-only season carries the nano baselines and leaves the rest behind instead of seating a `large` version on a ladder that does not exist.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "parse",
       "name": "Parse payload",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "who",
@@ -26,14 +17,7 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT json_build_object('id', u.id, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
-          "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
-          ],
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
           "output": "temp_data.who"
         }
       }
@@ -41,29 +25,14 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.who.0.body"
-        }
-      },
+      "condition": { "!": { "var": "temp_data.who.0.body" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
           ]
         }
       }
@@ -71,55 +40,29 @@
     {
       "id": "forbid",
       "name": "Admins only",
-      "condition": {
-        "!=": [
-          {
-            "var": "temp_data.who.0.body.role"
-          },
-          "admin"
-        ]
-      },
+      "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request.",
+      "condition": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "admin_only"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 403,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "admin_only" } },
+            { "path": "data._orion.response", "logic": { "status": 403, "body_path": "data.body" } }
           ]
         }
-      },
-      "description": "users.role = 'admin' exists since the initial schema and this is the first thing that reads it. The role is read off the live session, not off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
     },
     {
       "id": "dates",
       "name": "Both dates, declared",
-      "terminal": true,
       "condition": {
         "or": [
-          {
-            "!": {
-              "var": "data.req.submissions_open_at"
-            }
-          },
-          {
-            "!": {
-              "var": "data.req.submissions_close_at"
-            }
-          }
+          { "!": { "var": "data.req.submissions_open_at" } },
+          { "!": { "var": "data.req.submissions_close_at" } }
         ]
       },
+      "terminal": true,
       "function": {
         "name": "map",
         "input": {
@@ -131,13 +74,7 @@
                 "detail": "submissions_open_at and submissions_close_at are required, as ISO-8601 timestamps."
               }
             },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 400,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
           ]
         }
       }
@@ -148,60 +85,44 @@
       "function": {
         "name": "map",
         "input": {
-          "mappings": [
-            {
-              "path": "temp_data.rules",
-              "logic": {
-                "var": "data.req.rules"
-              }
-            }
-          ]
+          "mappings": [{ "path": "temp_data.rules", "logic": { "var": "data.req.rules" } }]
         }
       }
     },
     {
-      "id": "resolve",
+      "id": "participants",
       "name": "Resolve participant handles to ids",
-      "condition": {
-        "!!": {
-          "var": "data.req.rules.participants.handles"
-        }
-      },
-      "function": {
-        "name": "db_read",
-        "input": {
-          "connector": "soma-db",
-          "query": "SELECT coalesce(jsonb_agg(u.id::text ORDER BY u.handle), '[]'::jsonb) AS ids FROM users u WHERE u.handle = ANY (($1)::text[])",
-          "params": [
-            {
-              "var": "data.req.rules.participants.handles"
+      "condition": { "!!": { "var": "data.req.rules.participants.handles" } },
+      "tasks": [
+        {
+          "id": "resolve",
+          "name": "Look the handles up",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT coalesce(jsonb_agg(u.id::text ORDER BY u.handle), '[]'::jsonb) AS ids FROM users u WHERE u.handle = ANY (($1)::text[])",
+              "params": [{ "var": "data.req.rules.participants.handles" }],
+              "output": "temp_data.resolved"
             }
-          ],
-          "output": "temp_data.resolved"
-        }
-      }
-    },
-    {
-      "id": "listed",
-      "name": "Put the ids on the rule",
-      "condition": {
-        "!!": {
-          "var": "data.req.rules.participants.handles"
-        }
-      },
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "temp_data.rules.participants.user_ids",
-              "logic": {
-                "var": "temp_data.resolved.0.ids"
-              }
+          }
+        },
+        {
+          "id": "listed",
+          "name": "Put the ids on the rule",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.rules.participants.user_ids",
+                  "logic": { "var": "temp_data.resolved.0.ids" }
+                }
+              ]
             }
-          ]
+          }
         }
-      }
+      ]
     },
     {
       "id": "create",
@@ -212,30 +133,14 @@
           "connector": "soma-db",
           "query": "WITH game AS ( SELECT g.id, g.active_engine_digest FROM games g WHERE g.slug = ($1)::text ), last AS ( SELECT max(s.number) AS number, max(s.closed_at) AS closed_at FROM seasons s JOIN game ON game.id = s.game_id ), created AS ( INSERT INTO seasons (game_id, number, engine_digest, submissions_open_at, submissions_close_at, rules, weight_classes) SELECT game.id, coalesce(last.number, 0) + 1, game.active_engine_digest, ($2)::timestamptz, ($3)::timestamptz, coalesce(($7)::jsonb, '{}'::jsonb), coalesce(($8)::jsonb, (SELECT s.weight_classes FROM seasons s WHERE s.game_id = game.id ORDER BY s.number DESC LIMIT 1), '[{\"class\": \"nano\", \"max_bytes\": 8192}, {\"class\": \"micro\", \"max_bytes\": 65536}, {\"class\": \"mini\", \"max_bytes\": 524288}, {\"class\": \"small\", \"max_bytes\": 4194304}, {\"class\": \"large\", \"max_bytes\": 67108864}]'::jsonb) FROM game, last WHERE game.active_engine_digest IS NOT NULL AND NOT EXISTS (SELECT 1 FROM seasons s WHERE s.game_id = game.id AND s.closed_at IS NULL) AND ($2)::timestamptz >= coalesce(last.closed_at, '-infinity'::timestamptz) + make_interval(days => ($4)::int) RETURNING id, number, game_id, weight_classes ), carried AS ( INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, commit_sha, status, weight_class, size_bytes, param_count, flops_estimate, weights_hash, adapter_hash, adapter, evaluator_digest) SELECT b.owner_id, b.game_id, created.id, (SELECT max(x.version) FROM models x WHERE x.owner_id = b.owner_id AND x.game_id = b.game_id) + 1, b.repo, b.release_tag, b.commit_sha, 'active', b.weight_class, b.size_bytes, b.param_count, b.flops_estimate, b.weights_hash, b.adapter_hash, b.adapter, b.evaluator_digest FROM created JOIN seasons prev ON prev.game_id = created.game_id AND prev.number = created.number - 1 JOIN models b ON b.season_id = prev.id AND b.status = 'active' AND b.weight_class::text IN (SELECT e ->> 'class' FROM created, jsonb_array_elements(created.weight_classes) AS e) JOIN users u ON u.id = b.owner_id AND u.role = 'baseline' RETURNING id, weight_class ), seeded AS ( INSERT INTO ratings (model_id, ladder, mu, sigma) SELECT c.id, l.ladder, ($5)::float8, ($6)::float8 FROM carried c CROSS JOIN LATERAL (VALUES (c.weight_class), ('open'::ladder)) AS l (ladder) RETURNING model_id, ladder, mu, sigma ), events AS ( INSERT INTO rating_events (model_id, ladder, seq, mu_after, sigma_after) SELECT model_id, ladder, 0, mu, sigma FROM seeded RETURNING model_id ) UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM created WHERE c.key = 'roster'",
           "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "data.req.submissions_open_at"
-            },
-            {
-              "var": "data.req.submissions_close_at"
-            },
-            {
-              "var": "metadata.vars.season_gap_days"
-            },
-            {
-              "var": "metadata.vars.prior_mu"
-            },
-            {
-              "var": "metadata.vars.prior_sigma"
-            },
-            {
-              "var": "temp_data.rules"
-            },
-            {
-              "var": "data.req.weight_classes"
-            }
+            { "var": "metadata.params.game" },
+            { "var": "data.req.submissions_open_at" },
+            { "var": "data.req.submissions_close_at" },
+            { "var": "metadata.vars.season_gap_days" },
+            { "var": "metadata.vars.prior_mu" },
+            { "var": "metadata.vars.prior_sigma" },
+            { "var": "temp_data.rules" },
+            { "var": "data.req.weight_classes" }
           ],
           "output": "temp_data.created"
         }
@@ -244,29 +149,13 @@
     {
       "id": "why",
       "name": "Why nothing was created",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.created.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.created.rows_affected" }, 0] } },
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
           "query": "SELECT json_build_object( 'live', (SELECT json_build_object('number', s.number, 'closed_at', s.closed_at) FROM seasons s WHERE s.game_id = g.id AND s.closed_at IS NULL), 'earliest_open', (SELECT max(s.closed_at) + make_interval(days => ($2)::int) FROM seasons s WHERE s.game_id = g.id), 'engine', g.active_engine_digest IS NOT NULL) AS body FROM games g WHERE g.slug = ($1)::text",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.vars.season_gap_days"
-            }
-          ],
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.vars.season_gap_days" }],
           "output": "temp_data.why"
         }
       }
@@ -274,43 +163,19 @@
     {
       "id": "unknown",
       "name": "No such game",
-      "terminal": true,
       "condition": {
         "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.created.rows_affected"
-                },
-                0
-              ]
-            }
-          },
-          {
-            "!": {
-              "var": "temp_data.why.0.body"
-            }
-          }
+          { "!": { ">": [{ "var": "temp_data.created.rows_affected" }, 0] } },
+          { "!": { "var": "temp_data.why.0.body" } }
         ]
       },
+      "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "unknown_game"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 404,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "unknown_game" } },
+            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
           ]
         }
       }
@@ -318,17 +183,8 @@
     {
       "id": "refused",
       "name": "Refused",
+      "condition": { "!": { ">": [{ "var": "temp_data.created.rows_affected" }, 0] } },
       "terminal": true,
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.created.rows_affected"
-            },
-            0
-          ]
-        }
-      },
       "function": {
         "name": "map",
         "input": {
@@ -337,35 +193,16 @@
               "path": "data.body.error",
               "logic": {
                 "if": [
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.live"
-                    }
-                  },
+                  { "!!": { "var": "temp_data.why.0.body.live" } },
                   "season_live",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.engine"
-                    }
-                  },
+                  { "!": { "var": "temp_data.why.0.body.engine" } },
                   "no_engine",
                   "inside_gap"
                 ]
               }
             },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "temp_data.why.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 409,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body.detail", "logic": { "var": "temp_data.why.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
           ]
         }
       }
@@ -377,12 +214,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            }
-          ],
+          "query": "SELECT season_json(s) AS body FROM games g, current_season(g.id) s WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }],
           "output": "temp_data.rows"
         }
       }
@@ -394,19 +227,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 201,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 201, "body_path": "data.body" } }
           ]
         }
       }

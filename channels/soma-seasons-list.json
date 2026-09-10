@@ -1,20 +1,11 @@
 {
   "channel_id": "soma-seasons-list",
   "name": "soma-seasons-list",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "channel_type": "sync",
   "protocol": "rest",
-  "methods": [
-    "GET"
-  ],
+  "methods": ["GET"],
   "route_pattern": "/v1/games/{game}/seasons",
   "workflow_id": "soma-seasons-list",
-  "config": {
-    "response": {
-      "mode": "shaped"
-    },
-    "timeout_ms": 10000
-  }
+  "config": { "response": { "mode": "shaped" }, "timeout_ms": 10000 }
 }

@@ -133,17 +133,23 @@ Check the definitions and their SQL:
 
 ```sh
 orion-server --version
-orion-server lint . --deny-warnings
+orion-server lint . --deny-warnings   # references, schemas, and every declared env var
+orion-server clippy .                 # advisory: duplication, dead conditions, unordered pages
+orion-server fmt --check .            # the house style for definition JSON; drop --check to apply
 ./scripts/check-sql.sh
 ./scripts/smoke.sh
+./scripts/verify/run.sh
 ```
 
-The SQL script prepares every shipped query against a scratch database created from both migrations.
-It catches missing tables, columns, functions, and incompatible parameters, but does not execute the
-REST workflows. It recreates soma_sqlcheck; set DB_CONTAINER and DB_USER to a development Postgres
-container. `smoke.sh` covers the half it cannot: it calls every route against a running stack and
-checks the status code, minting a real session row and cookie so the authenticated routes are
-exercised rather than asserted to be 401. It is a status-code suite, not a behaviour one.
+The SQL script prepares every shipped query -- task groups included -- against a scratch database
+created from both migrations. It catches missing tables, columns, functions, and incompatible
+parameters, but does not execute the REST workflows. It recreates soma_sqlcheck; set DB_CONTAINER
+and DB_USER to a development Postgres container. `smoke.sh` covers the half it cannot: it calls
+every route against a running stack and checks the status code, minting a real session row and
+cookie so the authenticated routes are exercised rather than asserted to be 401, and putting back
+what it borrowed. It is a status-code suite, not a behaviour one. `verify/run.sh` is the third:
+what the statements mean, walked against a scratch schema, with both fence races and the Kalam
+role exercised rather than asserted.
 
 Package lint checks definition references. Orion clippy with the rendered instance configuration
 also checks `[vars]`; validate-config checks the instance itself. The deployment must run all
@@ -183,18 +189,20 @@ workflows/                   request handling, inline SQL, and response mapping
 connectors/soma-db.json       platform database connection
 connectors/github-api.json    GitHub API connection
 connectors/soma-blobs.json    replay GET signing; PUT disabled
-migrations/0001_init.sql      platform tables, constraints, fences, grants, and the three shared functions
+migrations/0001_init.sql      platform tables, constraints, fences, grants, and the shared functions
 migrations/0002_sessions.sql  sessions and live_sessions view
 scripts/load-package.sh      replacement of objects tagged pkg:soma
 scripts/check-sql.sh         preparation of every shipped query
 scripts/smoke.sh             every route called, against a running stack
+scripts/verify/              the schema walk: the scenario, both fence races, the seed and the grants
+docs/schema.md               the schema's design, and every statement the three packages run
 LICENSE                      repository licence
 ```
 
 ## What must stay true
 
 - **Soma does not write competitive results or ratings.** This is a review boundary; its current database role is not restricted to API-only writes.
-- **One definition of a rank, and one of a season.** `model_ratings()` and `season_json()` in the migration are where those two shapes are built. Six routes return a season and three print "rank 6 of 47"; a second copy of either is a page that disagrees with another page and no way to notice.
+- **A shape many routes return is defined once, in the migration.** `season_json()` and `season_state()`, `model_ratings()`, `model_phase()`, `current_season()`, `match_seat_rows()` and the two `season_admits*()` rule predicates are where those shapes and judgements are built. Six routes return a season, three print "rank 6 of 47", three list a match's seats, and the submission rules are asked once by the insert that must not happen and once by the read that says why it did not. A second copy of any of them is a page that disagrees with another page, or a refusal whose reason denies it, with no way to notice.
 - **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; Jodi's admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
 - **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
@@ -205,16 +213,27 @@ LICENSE                      repository licence
 
 ## Status
 
-**9 September 2026.** The package implements twenty-three routes, OAuth sessions, season
-administration, submission recording, replay signing, and the shared schema. Orion 1.7.0 package
-lint passes at 22 channels and 22 workflows; `check-sql.sh` prepares every shipped statement;
-`smoke.sh` passes 33 checks against the local stack. Every gap the website's layout studies opened
-is closed except one, and that one is not Soma's: the OAuth callback cannot land its three failure
-states on a page, because `oauth2_login` answers a fixed 401 and never runs the workflow. The web
-proxy intercepts that one status and redirects to the page, which reaches it but cannot say which
-of the three failures it was; the fix is a `failure_redirect` on the channel, which is Orion's to
-grow. API tokens for SDK/CLI use remain unimplemented, and an authenticated end-to-end sign-in
-still needs a configured OAuth App rather than a minted cookie.
+**10 September 2026.** The package implements twenty-three routes, OAuth sessions, season
+administration, submission recording, replay signing, and the shared schema. Orion 1.7.0 lint
+passes clean at 22 channels and 22 workflows; `check-sql.sh` prepares all 38 shipped statements;
+`smoke.sh` passes every check against the local stack (32 with a competitor's handle, 33 with an
+admin's, which reaches one more); `verify/run.sh` walks the schema, both fence races, the seed and
+the Kalam role.
+
+Two things are known and open. The OAuth callback cannot land its three failure states on a page,
+because `oauth2_login` answers a fixed 401 and never runs the workflow: the web proxy intercepts
+that status and redirects, so the page is reached but cannot say which failure it was, and the fix
+is a `failure_redirect` on the channel, which is Orion's to grow. And `orion-server clippy` reports
+fourteen duplications this package cannot yet remove: the JWT auth block written out in twelve
+channels, and the response and session-guard steps repeated across the workflows. Orion 1.7 has the
+answer -- a shared `definitions/` document of `constants`, `errors` and `fragments`, referenced with
+`$from` and `use` -- but those resolve at `orion-server compile`, and the admin API this package is
+installed through takes one document at a time and resolves nothing. Adopting them means the
+DevOps loader image carrying the orion-server binary and `load-package.sh` compiling before it
+POSTs, which is a deployment change for all three packages rather than a Soma edit.
+
+API tokens for SDK/CLI use remain unimplemented, and an authenticated end-to-end sign-in still
+needs a configured OAuth App rather than a minted cookie.
 
 ## More
 

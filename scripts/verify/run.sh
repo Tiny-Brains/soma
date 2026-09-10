@@ -1,28 +1,33 @@
 #!/usr/bin/env bash
-# Re-run docs/schema.md's and jodi/docs/design.md's verification against the local compose stack's Postgres.
-#
-# Creates a scratch database beside `soma`, applies the migrations, prepares every statement in
-# docs/schema.md §4–§7 and jodi/docs/design.md §4–§6, walks the scenario, runs the two fence races with
-# concurrent sessions, then applies the devops seed to a second scratch database and checks what
-# it produced. Both databases are dropped at the end, and the `kalam` role with them where nothing
-# else grants to it. Nothing in `soma` or `orion_state` is touched.
+# Walk the schema: every statement the three packages run against it, the scenario, the two fence
+# races, and the Kalam role exercised rather than asserted.
 #
 #   soma/scripts/verify/run.sh            # from anywhere; needs the db container up
 #
-# NOTE ON 01_schema.sql: docs/schema.md's schema was verified as a delta over the pre-v2 0001 and 0002.
-# It has since been folded into soma/migrations/0001_init.sql as the initial schema -- nothing is
-# released, so there is no chain to keep -- and the delta file is gone. What this script applies
-# is now the real migration, which is the stronger check: it verifies what ships.
+# Creates a scratch database beside `soma`, applies the shipped migrations, PREPAREs every statement
+# in statements.sql, walks scenario.sql, runs the two fence races with concurrent sessions, then
+# applies the devops seed to a second scratch database and checks what it produced. Both databases
+# are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
+# `soma` or `orion_state` is touched.
+#
+# check-sql.sh checks what SOMA ships; this checks what the SCHEMA promises everyone -- which is why
+# the statements here are Jodi's and Kalam's as well. Those two repos verify their own copies.
 set -euo pipefail
 cd "$(dirname "$0")"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
-SCRATCH=l01_check
-SEEDCHK=l01_seed
+SCRATCH=soma_verify
+SEEDCHK=soma_verify_seed
 MIGRATIONS=../../migrations
-# The seed lives in devops. Override SEED, or check out devops beside soma, or the
-# seed half of this script is skipped with a notice.
-SEED="${SEED:-../../../devops/db-init/30-seed.sql}"
+# The seed lives in devops, which has moved it once. Override SEED, or check out devops beside
+# soma, or the seed half of this script is skipped with a notice.
+SEED="${SEED:-}"
+if [ -z "$SEED" ]; then
+  for candidate in ../../../devops/compose/db-init/30-seed.sql ../../../devops/db-init/30-seed.sql; do
+    [ -f "$candidate" ] && SEED="$candidate" && break
+  done
+  SEED="${SEED:-../../../devops/compose/db-init/30-seed.sql}"
+fi
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 

@@ -1,8 +1,7 @@
--- docs/schema.md draft 3 — every statement in §4–§7, PREPAREd so Postgres parses and plans each.
--- Since jodi/docs/rating-and-seasons.md (8 September 2026) the statements a season touches -- p_insert, w_sweep, c_pass,
--- d_demand, p_trials, p_demand_doc -- are pulled from jodi/scripts/gen-jodi.py's text or restated
--- from jodi/docs/rating-and-seasons.md §6, so this harness walks what ships.
--- Parameter types are the casts the document uses.
+-- Every statement docs/schema.md §4-§7 and jodi/docs/rating-and-seasons.md §6 specify, PREPAREd so
+-- Postgres parses and plans each, then EXECUTEd by scenario.sql and the race files. The statements
+-- a season touches are taken from jodi/scripts/gen-jodi.py's text, so this harness walks what ships.
+-- Parameter types are the casts those documents use.
 
 PREPARE k_reap AS
 UPDATE matches

@@ -5,14 +5,14 @@
 #
 # check-sql.sh proves every statement parses and plans; this proves the workflows around them
 # answer, which a package load alone does not. It is a status-code suite, not a behaviour one:
-# what a route MEANS is scripts/verify/run.sh's walk and the layout studies it feeds.
+# what a route MEANS is scripts/verify/run.sh's walk.
 #
 # The session it uses is a real row in `sessions` and a real HS256 cookie, minted here and revoked
 # at the end -- there is no way to sign in with GitHub from a script, and asserting anything about
 # an authed route without one would be asserting the 401.
 #
 #   BASE            where the API answers          (default http://127.0.0.1:8080)
-#   SMOKE_HANDLE    an existing admin's handle     (default codetiger)
+#   SMOKE_HANDLE    an existing competitor         (default codetiger)
 #   DB_CONTAINER    the postgres container         (default tinybrains-db-1)
 #   SOMA_ENV_FILE   whatever holds SOMA_SESSION_SECRET (default ../devops/.env)
 set -uo pipefail
@@ -46,8 +46,19 @@ p = b64(json.dumps({"sub":sub,"handle":handle,"sid":sid,"iss":"soma","iat":now,"
 print(f"{h}.{p}.{b64(hmac.new(secret.encode(), f'{h}.{p}'.encode(), hashlib.sha256).digest())}")
 PY
 )
-trap 'psql -c "UPDATE sessions SET revoked_at = now() WHERE sid='"'"'$SID'"'"';" >/dev/null' EXIT
 C=(-H "Cookie: soma_session=$TOKEN")
+
+# PATCH /v1/me with no fields clears the display name, so it is put back on the way out along with
+# the session: a status-code suite must not leave a mark on the account it borrowed.
+NAME=$(psql -c "SELECT coalesce(display_name,'') FROM users WHERE handle='$HANDLE';")
+restore() {
+  curl -sS -o /dev/null -X PATCH "${C[@]}" -H 'content-type: application/json' \
+       -d "$(python3 -c 'import json,sys; print(json.dumps({"display_name": sys.argv[1] or None}))' "$NAME")" \
+       "$BASE/v1/me"
+  psql -c "UPDATE sessions SET revoked_at = now() WHERE sid='$SID';" > /dev/null
+}
+trap restore EXIT
+
 GAME=$(curl -sS "$BASE/v1/games" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
 MODEL=$(psql -c "SELECT id FROM models WHERE status='active' LIMIT 1;")
 MATCH=$(psql -c "SELECT id FROM matches WHERE status IN ('finished','rated') LIMIT 1;")

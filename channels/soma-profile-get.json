@@ -1,20 +1,11 @@
 {
   "channel_id": "soma-profile-get",
   "name": "soma-profile-get",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "channel_type": "sync",
   "protocol": "rest",
-  "methods": [
-    "GET"
-  ],
+  "methods": ["GET"],
   "route_pattern": "/v1/profiles/{username}",
   "workflow_id": "soma-profile-get",
-  "config": {
-    "response": {
-      "mode": "shaped"
-    },
-    "timeout_ms": 10000
-  }
+  "config": { "response": { "mode": "shaped" }, "timeout_ms": 10000 }
 }

@@ -1,43 +1,26 @@
 {
   "channel_id": "soma-seasons-update",
   "name": "soma-seasons-update",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "channel_type": "sync",
   "protocol": "rest",
-  "methods": [
-    "PATCH"
-  ],
+  "methods": ["PATCH"],
   "route_pattern": "/v1/games/{game}/seasons/{number}",
   "workflow_id": "soma-seasons-update",
   "config": {
-    "response": {
-      "mode": "shaped"
-    },
+    "response": { "mode": "shaped" },
     "timeout_ms": 10000,
     "auth": {
       "mode": "jwt",
-      "algorithms": [
-        "HS256"
-      ],
-      "jwt_keys": [
-        {
-          "algorithm": "HS256",
-          "key": "env://SOMA_SESSION_SECRET"
-        }
-      ],
+      "algorithms": ["HS256"],
+      "jwt_keys": [{ "algorithm": "HS256", "key": "env://SOMA_SESSION_SECRET" }],
       "issuer": "soma",
-      "source": {
-        "cookie": "soma_session"
-      }
+      "source": { "cookie": "soma_session" }
     },
     "principal_rate_limit": {
       "requests_per_second": 1,
       "burst": 5,
-      "key_logic": {
-        "var": "auth.sub"
-      }
+      "key_logic": { "var": "auth.sub" }
     }
   }
 }

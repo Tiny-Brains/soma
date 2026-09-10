@@ -1,2 +1,2 @@
-# Local run artifacts
-.run/
+# Logs the verify harness writes while the two fence races run, and removes on success.
+scripts/verify/*.log

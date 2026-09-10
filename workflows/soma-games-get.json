@@ -1,11 +1,8 @@
 {
   "workflow_id": "soma-games-get",
   "name": "One game, and what it says about itself",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
-  "description": "One game, everything a page needs about it that is not a standing. GET /v1/games stays lean for the dropdown -- the shell calls it on every route -- and this is what the home page asks for once it knows which game it is showing.\n\nSOMA-GAPS 1.8: `about` IS THE GAME'S OWN COPY, out of its cartridge manifest. The provenance section on the home page -- what Ants was, who made it, and where to read about it -- was written into the layout study as literal HTML, which made a second game a web deploy rather than a registration. It travels with the cartridge now: ants/about.json is the one hand-written input to a manifest that is otherwise generated, build.sh folds it in, and whatever a game publishes is what its home page renders. A cartridge that ships no `about` gets null and the page drops the section.\n\nPROSE AND LINKS, NOTHING SHAPED. An earlier draft carried a comparison table -- before/after rows against two era labels -- and it was dropped: that structure only means anything for a game that is a remake of something, so a second cartridge would ship an empty one or bend its own story to fit a frame built for this one. A paragraph says whatever a game needs to. It is also PLAIN TEXT -- the fold admits only the keys it names, refuses a non-string and requires https on every link -- because this document is registered from a repository and rendered in a browser.\n\nSOMA-GAPS 6.3 and 6.5: `presets`, `limits` and `strike_limit` are here so two pages can stop hardcoding them -- the preset filter on /matches listed standard, maze and cell as literal options, and the seasons-admin form ASKED for a strike limit and a turn cap that seasons_rules_known refuses to store. `weight_classes` joins the two halves a page needs: the SIZE caps, which are the season's and the only definition of them anywhere, and the FLOP cap per class, which is the cartridge's. Ordered by cap, which is the order admission classifies in.",
+  "description": "Everything a page needs about one game that is not a standing. `about`, `presets` and `limits` are the CARTRIDGE'S OWN COPY out of its manifest, so a second game is a registration and not a web deploy; a cartridge that ships no `about` gets null and the page drops the section. `weight_classes` joins the season's size caps to the cartridge's flop cap per class, ordered by cap -- the order admission classifies in.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -14,15 +11,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'id', g.slug, 'name', g.name, 'about', g.manifest -> 'about', 'presets', g.manifest -> 'presets', 'limits', g.manifest -> 'limits', 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class', e ->> 'class', 'max_bytes', (e ->> 'max_bytes')::bigint, 'flop_cap', (g.manifest -> 'budgets' -> 'flop_caps' ->> (e ->> 'class'))::float8) ORDER BY (e ->> 'max_bytes')::bigint) FROM jsonb_array_elements((SELECT cs.weight_classes FROM seasons cs WHERE cs.game_id = g.id ORDER BY (cs.closed_at IS NULL) DESC, cs.number DESC LIMIT 1)) AS e), 'season', (SELECT season_json(s) FROM seasons s WHERE s.game_id = g.id ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1)) AS body FROM games g WHERE g.slug = ($1)::text",
-          "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.vars.forfeit_strikes"
-            }
-          ],
+          "query": "SELECT json_build_object( 'id', g.slug, 'name', g.name, 'about', g.manifest -> 'about', 'presets', g.manifest -> 'presets', 'limits', g.manifest -> 'limits', 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class', e ->> 'class', 'max_bytes', (e ->> 'max_bytes')::bigint, 'flop_cap', (g.manifest -> 'budgets' -> 'flop_caps' ->> (e ->> 'class'))::float8) ORDER BY (e ->> 'max_bytes')::bigint) FROM current_season(g.id) cs, jsonb_array_elements(cs.weight_classes) AS e), 'season', (SELECT season_json(s) FROM current_season(g.id) s)) AS body FROM games g WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.vars.forfeit_strikes" }],
           "output": "temp_data.rows"
         }
       }
@@ -30,29 +20,14 @@
     {
       "id": "unknown",
       "name": "Reject an unknown game",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
+      "condition": { "!": { "var": "temp_data.rows.0.body" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "unknown_game"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 404,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "unknown_game" } },
+            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
           ]
         }
       }
@@ -64,19 +39,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
           ]
         }
       }

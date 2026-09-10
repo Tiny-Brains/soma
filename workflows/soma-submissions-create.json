@@ -1,88 +1,32 @@
 {
   "workflow_id": "soma-submissions-create",
   "name": "Enter a GitHub release",
-  "description": "Two statements, not one: db_write returns only rows_affected, so the row is read back. Both join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open; `deny` shapes the 401 and is terminal. Decision 35: both hashes are declared and `declared` refuses 400 before the insert. LAYER 06: the insert joins the game's OPEN season, stamps it, and carries the season's rules as predicates -- `participants` and `unique_weights` (no OTHER user holds these weights; a competitor may resubmit their own; rejected rows do not count). Zero rows and `why` reads the state and the verdicts, and `refused` answers 409 with one word.\n\nSOMA-GAPS 2.11: the one-in-flight rule now refuses with a WORD. It was enforced only by models_one_in_flight_uniq, so a competitor with a candidate already waiting got a bare integrity_unique 409 that named nothing and that the Submit screen has no state for. The insert carries it as a predicate and `refused` answers version_in_flight with the candidate; the index stays and is still what settles the race between two simultaneous posts.\n\nSOMA-GAPS 6.2: the duplicate refusal deliberately does NOT name the version it collided with. unique_weights excludes the caller, so the row it matched is always ANOTHER competitor's, and naming or dating it would report one competitor's submission to another. `unique_weights_scope` says whether the rule was read across the game or within the season, which is what the sentence needs and all it needs. The payload is `detail`, not `season`: it stopped being only the season the moment it carried three other verdicts, and soma-seasons-create already spells it that way.",
-  "tags": [
-    "pkg:soma"
-  ],
-  "condition": true,
+  "description": "Recording a release as a testing version. Two statements, not one: db_write returns only rows_affected, so the row is read back, and both statements join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. The insert carries the open season's rules as PREDICATES, so a refusal is a row that was never written rather than a check that could be raced; zero rows then sends `why` to read the state back and `refused` answers 409 with one word. The duplicate refusal deliberately does not name the version it collided with: unique_weights excludes the caller, so the row it matched is always another competitor's, and naming or dating it would report one competitor's submission to another.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "parse",
       "name": "Parse payload",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "declared",
       "name": "Both hashes, declared and well formed",
+      "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator. The alphabet is checked where it matters: axon derives the object-store key from the hash and refuses anything that is not 64 hex digits, which is what stops a hash from being a path.",
       "condition": {
         "or": [
           {
             "or": [
-              {
-                "!": {
-                  "var": "data.req.weights_hash"
-                }
-              },
-              {
-                "!": {
-                  "starts_with": [
-                    {
-                      "var": "data.req.weights_hash"
-                    },
-                    "sha256:"
-                  ]
-                }
-              },
-              {
-                "!=": [
-                  {
-                    "length": [
-                      {
-                        "var": "data.req.weights_hash"
-                      }
-                    ]
-                  },
-                  71
-                ]
-              }
+              { "!": { "var": "data.req.weights_hash" } },
+              { "!": { "starts_with": [{ "var": "data.req.weights_hash" }, "sha256:"] } },
+              { "!=": [{ "length": [{ "var": "data.req.weights_hash" }] }, 71] }
             ]
           },
           {
             "or": [
-              {
-                "!": {
-                  "var": "data.req.adapter_hash"
-                }
-              },
-              {
-                "!": {
-                  "starts_with": [
-                    {
-                      "var": "data.req.adapter_hash"
-                    },
-                    "sha256:"
-                  ]
-                }
-              },
-              {
-                "!=": [
-                  {
-                    "length": [
-                      {
-                        "var": "data.req.adapter_hash"
-                      }
-                    ]
-                  },
-                  71
-                ]
-              }
+              { "!": { "var": "data.req.adapter_hash" } },
+              { "!": { "starts_with": [{ "var": "data.req.adapter_hash" }, "sha256:"] } },
+              { "!=": [{ "length": [{ "var": "data.req.adapter_hash" }] }, 71] }
             ]
           }
         ]
@@ -99,17 +43,10 @@
                 "detail": "weights_hash and adapter_hash are required, each as sha256:<64 hex>. Run `sha256sum model.onnx adapter.json` on the files you attached to the release."
               }
             },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 400,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
           ]
         }
-      },
-      "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator (`match` is a switch). The alphabet is checked where it MATTERS: axon derives the object-store key from the hash and refuses anything that is not 64 hex digits, which is what stops a hash from being a path. This guard exists to catch the obvious mistake at the edge, not to duplicate that check."
+      }
     },
     {
       "id": "insert",
@@ -118,29 +55,15 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, s.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text AND (NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($1)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids'))) AND (NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($6)::text AND o.owner_id <> ($1)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AND NOT EXISTS (SELECT 1 FROM models f WHERE f.owner_id = ($1)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')) GROUP BY g.id, s.id",
+          "query": "INSERT INTO models (owner_id, game_id, season_id, version, repo, release_tag, weights_hash, adapter_hash) SELECT ($1)::uuid, g.id, s.id, coalesce(max(m.version), 0) + 1, ($3)::text, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN models m ON m.owner_id = ($1)::uuid AND m.game_id = g.id WHERE g.slug = ($2)::text AND season_admits(s, ($1)::uuid) AND season_admits_weights(s, ($1)::uuid, ($6)::text) AND NOT EXISTS (SELECT 1 FROM models f WHERE f.owner_id = ($1)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')) GROUP BY g.id, s.id",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.repo"
-            },
-            {
-              "var": "data.req.release_tag"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            },
-            {
-              "var": "data.req.weights_hash"
-            },
-            {
-              "var": "data.req.adapter_hash"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.repo" },
+            { "var": "data.req.release_tag" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.adapter_hash" }
           ],
           "output": "temp_data.insert"
         }
@@ -149,31 +72,16 @@
     {
       "id": "why",
       "name": "Why nothing was inserted",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.insert.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NULL THEN NULL WHEN now() < s.submissions_open_at THEN 'scheduled' WHEN now() < s.submissions_close_at THEN 'open' ELSE 'settling' END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'participant', s.id IS NULL OR NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false) OR ($2)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids')), 'in_flight', (SELECT json_build_object('model_id', f.id, 'version', f.version) FROM models f WHERE f.owner_id = ($2)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')), 'unique_weights_scope', coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game'), 'unique_weights', s.id IS NULL OR NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false) OR NOT EXISTS (SELECT 1 FROM models o WHERE o.game_id = g.id AND o.weights_hash = ($3)::text AND o.owner_id <> ($2)::uuid AND o.status <> 'rejected' AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game' OR o.season_id = s.id))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NOT NULL THEN season_state(s) END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'in_flight', (SELECT json_build_object('model_id', f.id, 'version', f.version) FROM models f WHERE f.owner_id = ($2)::uuid AND f.game_id = g.id AND f.status IN ('testing', 'verified')), 'unique_weights_scope', coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game'), 'unique_weights', s.id IS NULL OR season_admits_weights(s, ($2)::uuid, ($3)::text)) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
           "params": [
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.weights_hash"
-            }
+            { "var": "data.req.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.weights_hash" }
           ],
           "output": "temp_data.why"
         }
@@ -182,48 +90,21 @@
     {
       "id": "refused",
       "name": "Refused by the season",
-      "terminal": true,
+      "description": "A revoked session also inserts nothing and is not this task's: with the season open and both rules satisfied it falls through to the read-back, whose empty result `deny` answers 401.",
       "condition": {
         "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.insert.rows_affected"
-                },
-                0
-              ]
-            }
-          },
+          { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
           {
             "or": [
-              {
-                "!=": [
-                  {
-                    "var": "temp_data.why.0.body.state"
-                  },
-                  "open"
-                ]
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.participant"
-                }
-              },
-              {
-                "!!": {
-                  "var": "temp_data.why.0.body.in_flight"
-                }
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.unique_weights"
-                }
-              }
+              { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
+              { "!": { "var": "temp_data.why.0.body.participant" } },
+              { "!!": { "var": "temp_data.why.0.body.in_flight" } },
+              { "!": { "var": "temp_data.why.0.body.unique_weights" } }
             ]
           }
         ]
       },
+      "terminal": true,
       "function": {
         "name": "map",
         "input": {
@@ -232,48 +113,21 @@
               "path": "data.body.error",
               "logic": {
                 "if": [
-                  {
-                    "!=": [
-                      {
-                        "var": "temp_data.why.0.body.state"
-                      },
-                      "open"
-                    ]
-                  },
+                  { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
                   "season_not_open",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.participant"
-                    }
-                  },
+                  { "!": { "var": "temp_data.why.0.body.participant" } },
                   "not_a_participant",
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.in_flight"
-                    }
-                  },
+                  { "!!": { "var": "temp_data.why.0.body.in_flight" } },
                   "version_in_flight",
                   "weights_already_entered"
                 ]
               }
             },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "temp_data.why.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 409,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body.detail", "logic": { "var": "temp_data.why.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
           ]
         }
-      },
-      "description": "A revoked session also inserts nothing, and is not this task's: with the season open and both rules satisfied it falls through to the read-back, whose empty result `deny` answers 401 as before."
+      }
     },
     {
       "id": "fetch",
@@ -284,21 +138,11 @@
           "connector": "soma-db",
           "query": "SELECT json_build_object('model_id', m.id, 'version', m.version, 'status', m.status, 'season', se.number, 'weights_hash', m.weights_hash, 'adapter_hash', m.adapter_hash) AS body FROM models m JOIN games g ON g.id = m.game_id JOIN seasons se ON se.id = m.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($5)::uuid AND s.user_id = m.owner_id WHERE m.owner_id = ($1)::uuid AND g.slug = ($2)::text AND m.repo = ($3)::text AND m.release_tag = ($4)::text",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.repo"
-            },
-            {
-              "var": "data.req.release_tag"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.repo" },
+            { "var": "data.req.release_tag" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.rows"
         }
@@ -307,29 +151,14 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
+      "condition": { "!": { "var": "temp_data.rows.0.body" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
           ]
         }
       }
@@ -341,19 +170,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 201,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 201, "body_path": "data.body" } }
           ]
         }
       }
