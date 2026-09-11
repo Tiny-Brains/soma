@@ -213,6 +213,26 @@ LICENSE                      repository licence
 
 ## Status
 
+**11 September 2026 — the handle is a label, not an identity.** `users.handle` is a cache of a
+mutable remote value refreshed only at sign-in, and three sign-ins were dying on it: a new account
+taking a login freed by a rename, an existing account renaming into a login a stale row still held,
+and a real GitHub account whose login happened to equal a seeded baseline handle — `baseline-nano-bc`
+was a perfectly mintable login, so that person could never sign in at all. Uniqueness moves to
+`lower(handle)`, which is the namespace every reader already compared in: a case-sensitive index
+with case-insensitive readers is how `Alice` and `alice` became two rows that answered to one login
+and both passed `repo_owned()` for the same repository. The baselines move to `baseline.<artifact>`
+and a released login is parked under `released.<github_id>` — a login is `[A-Za-z0-9-]`, so a dot is
+a namespace GitHub cannot mint against us. Sign-in now takes a login off the row that provably no
+longer holds it before claiming it, in a statement of its own: folded into the upsert as a
+data-modifying CTE the two would share a command id, and the release would not be reliably visible
+to the insert's uniqueness check. `scripts/verify/scenario.sql` walks all four cases.
+
+What this does **not** fix is the reason it matters. `repo_owned()` still decides whose repository a
+repository is by comparing login strings, so a handle that has gone stale is still an authorization:
+an account that renamed away from `alice` keeps passing the check for `alice/*` until it signs in
+again. The fix is to compare `users.github_id` against the owner GitHub reports for the repository,
+resolved once at entry creation — `design/tracker.md` carries it, with the two decisions it needs.
+
 **10 September 2026 — an entry and a version are two tables, and a season declares its own rules.**
 `models` is now the entry — a competitor's named lineage, keyed by the GitHub repository it
 publishes from — and `model_versions` is one submission of it. A competitor may hold as many models

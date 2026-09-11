@@ -12,7 +12,7 @@ INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, su
 VALUES ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 1, 'sha256:e1',
         now() - interval '1 hour', now() + interval '1 day');
 INSERT INTO users (id, github_id, handle, role) VALUES
-  ('00000000-0000-0000-0000-0000000000b1', NULL, 'baseline-random', 'baseline'),
+  ('00000000-0000-0000-0000-0000000000b1', NULL, 'baseline.random', 'baseline'),
   ('00000000-0000-0000-0000-0000000000a1', 1,    'alice',           'competitor');
 -- Two ENTRIES -- one baseline's, one alice's -- and three versions between them. Alice's two
 -- versions are the same entry, which is what makes the promotion below a supersede rather than two
@@ -278,3 +278,31 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
   '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
+
+\echo '===== identity: the handle is a label, and the index protects the namespace the readers use ====='
+
+\echo '--- a baseline handle must live in the reserved namespace (expect check violation)'
+INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline-legacy', 'baseline');
+
+\echo '--- `Alice` and `alice` are one name (expect duplicate key on users_handle_uniq)'
+-- Case-sensitive uniqueness with case-insensitive readers is how two rows came to answer to one
+-- login, and how both of them passed repo_owned() for the same repository.
+INSERT INTO users (github_id, handle) VALUES (77, 'Alice');
+
+\echo '--- sign-in takes a freed login off the row that provably no longer holds it:'
+\echo '    github_id 1 renamed on GitHub and has not signed back in, so its row still says `alice`,'
+\echo '    and the account that holds the login now signs in for the first time (expect released.1 / alice)'
+UPDATE users SET handle = 'released.' || github_id
+ WHERE lower(handle) = lower('alice') AND github_id IS NOT NULL AND github_id <> 99;
+INSERT INTO users (github_id, handle, display_name) VALUES (99, 'alice', NULL)
+ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
+SELECT github_id, handle FROM users WHERE github_id IN (1, 99) ORDER BY github_id;
+
+\echo '--- and the other half: an existing account renaming INTO a login a stale row holds'
+\echo '    (expect released.100 / bob -- without the release step both halves are a 500 that never clears)'
+INSERT INTO users (github_id, handle) VALUES (100, 'bob'), (101, 'carol');
+UPDATE users SET handle = 'released.' || github_id
+ WHERE lower(handle) = lower('bob') AND github_id IS NOT NULL AND github_id <> 101;
+INSERT INTO users (github_id, handle, display_name) VALUES (101, 'bob', NULL)
+ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
+SELECT github_id, handle FROM users WHERE github_id IN (100, 101) ORDER BY github_id;

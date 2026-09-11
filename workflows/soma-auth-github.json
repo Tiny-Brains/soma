@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-auth-github",
   "name": "Complete GitHub sign-in",
-  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, PKCE, and the code exchange -- and hands this workflow a verified grant at metadata.oauth; Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. display_name is seeded from GitHub ON INSERT ONLY, because a competitor who renames themselves through PATCH /v1/me must not have it undone by their next sign-in.",
+  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, PKCE, and the code exchange -- and hands this workflow a verified grant at metadata.oauth; Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. display_name is seeded from GitHub ON INSERT ONLY, because a competitor who renames themselves through PATCH /v1/me must not have it undone by their next sign-in. THE LOGIN IS RELEASED BEFORE IT IS CLAIMED: users.handle is unique, GitHub recycles logins, and the upsert alone cannot survive either half of a rename -- see the `release` task.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -25,6 +25,20 @@
             "authorization": { "cat": ["Bearer ", { "var": "metadata.oauth.access_token" }] }
           },
           "output": "temp_data.gh"
+        }
+      }
+    },
+    {
+      "id": "release",
+      "name": "Take the login back from the row that no longer holds it",
+      "description": "GitHub gives one login to one account at a time, so a DIFFERENT github_id holding this login is provably stale -- a rename whose owner has not signed in since. Without this the upsert below collides on users_handle_uniq, unhandled, and the sign-in is a 500 that never clears: a new account can never take a freed login, and a rename into a held one can never land. The row is parked under `released.<github_id>`, a prefix containing a `.`, which a GitHub login cannot, so the tombstone can never collide with a real login or with a `baseline.` handle. github_id IS NOT NULL keeps a baseline out of it; after the reserved prefixes a baseline cannot collide anyway. SEPARATE FROM THE UPSERT ON PURPOSE: folded into it as a data-modifying CTE the two would share one command id, so the released row's old index entry is not reliably dead to the insert's uniqueness check -- which is the collision this exists to remove. The gap where nobody holds the login is harmless; two accounts swapping logins in the same instant can still collide, and that is a sign-in to retry rather than one that can never succeed.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE users SET handle = 'released.' || github_id WHERE lower(handle) = lower(($2)::text) AND github_id IS NOT NULL AND github_id <> ($1)::bigint",
+          "params": [{ "var": "temp_data.gh.id" }, { "var": "temp_data.gh.login" }],
+          "output": "temp_data.released"
         }
       }
     },

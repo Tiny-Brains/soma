@@ -335,13 +335,28 @@ CREATE UNIQUE INDEX seasons_one_live_uniq ON seasons (game_id) WHERE closed_at I
 -- displays a model as its owner's handle. They never sign in, hence the nullable github_id.
 CREATE TABLE users (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- THE STABLE IDENTITY. GitHub guarantees an account id never changes and is never reused; the
+    -- login below is neither of those things. It is the conflict key of the sign-in upsert, so it
+    -- is the one thing recorded about a competitor that cannot go stale.
     github_id   bigint      UNIQUE,
 
     -- THE GITHUB LOGIN, not a nickname: soma-auth-github's upsert writes gh.login here on every
-    -- sign-in, not just the first. That is what lets repo_owned() decide whether a repository is
-    -- the caller's without a second table or a token -- and it is why a competitor who renames
-    -- themselves on GitHub is renamed here at their next sign-in.
-    handle      text        NOT NULL UNIQUE,
+    -- sign-in, not just the first. It is therefore a CACHE OF A MUTABLE REMOTE VALUE -- a
+    -- competitor who renames themselves on GitHub is renamed here at their next sign-in and not
+    -- before -- so it is a label, and anything decided by it is decided on a value that may be a
+    -- month old. github_id is what a decision about identity belongs on.
+    --
+    -- Uniqueness is on lower(handle), below, and not here. Every reader compares case-insensitively
+    -- (season_admits, repo_owned, the profile route); a case-sensitive index and case-insensitive
+    -- readers protect different namespaces, which is how `Alice` and `alice` could be two rows that
+    -- both answer to one login.
+    --
+    -- TWO RESERVED PREFIXES, both containing a `.`, which a GitHub login cannot: `baseline.` for
+    -- the seeded reference opponents, and `released.` for a login taken back from a row that
+    -- provably no longer holds it -- see soma-auth-github. A login is [A-Za-z0-9-], which
+    -- repo_path()'s own pattern asserts, so neither prefix can be minted against us.
+    handle      text        NOT NULL,
 
     -- Seeded from GitHub ON INSERT ONLY: overwriting it at every sign-in would silently undo the
     -- one field PATCH /v1/me lets a competitor edit. Null falls back to the handle.
@@ -351,8 +366,19 @@ CREATE TABLE users (
     created_at  timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT users_human_has_github_id
-        CHECK (role = 'baseline' OR github_id IS NOT NULL)
+        CHECK (role = 'baseline' OR github_id IS NOT NULL),
+
+    -- A baseline's handle lives in the reserved namespace and not in GitHub's. Without this a real
+    -- account whose login happened to equal a seeded handle -- `baseline-nano-bc` was one -- could
+    -- never sign in at all: the upsert would collide on the handle index, unhandled, for ever.
+    CONSTRAINT users_baseline_handle_reserved
+        CHECK (role <> 'baseline' OR handle LIKE 'baseline.%')
 );
+
+-- Case-insensitive, because every reader is. It is also the conflict target of every
+-- INSERT ... ON CONFLICT on this table, and must be spelled `ON CONFLICT (lower(handle))` -- an
+-- expression index is only a valid arbiter in the exact form it was declared in.
+CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 
 -- --------------------------------------------------------------- repositories
 

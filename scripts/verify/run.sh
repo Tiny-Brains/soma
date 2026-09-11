@@ -76,6 +76,13 @@ BEGIN
       WHERE u.role = 'baseline' AND m.status = 'active';
     ASSERT n = 3, format('expected 3 active baselines, found %s', n);
 
+    -- The entry is named for the artifact directory, taken off the reserved `baseline.` prefix.
+    -- A substring pattern that silently matched the whole handle would name three entries
+    -- `baseline.nano-bc` and nothing else in the seed would fail.
+    SELECT count(*) INTO n FROM models e JOIN users u ON u.id = e.owner_id
+      WHERE u.role = 'baseline' AND (e.name LIKE 'baseline%' OR e.name = u.handle);
+    ASSERT n = 0, format('%s baseline entries kept the handle prefix in their name', n);
+
     SELECT count(*) INTO n FROM ratings; ASSERT n = 6, format('expected 6 ratings, found %s', n);
 
     SELECT count(*) INTO n FROM ratings r
