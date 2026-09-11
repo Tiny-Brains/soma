@@ -1,38 +1,19 @@
 {
   "workflow_id": "soma-models-create",
   "name": "Create a model",
-  "description": "A competitor naming a model and the GitHub repository it will be published from. THE REPOSITORY IS THE KEY -- one entry per repository per owner -- and it is normalised by repo_path() before anything else looks at it, so a pasted browser URL, an ssh remote and a bare `owner/name` are one value in the column and a stored URL can never be pasted back into a release URL. The path's first segment must be the caller's own GitHub login, which is what users.handle IS, or an organisation the season allows: a competitor may not enter someone else's repository, and the check is at creation because the repository is the entry's and never a submission's. Write, then diagnose: the insert carries every rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was. A model is created empty -- creating one enters nothing and starts no clock; POST /v1/submissions is what puts a release under it.",
-  "tags": [
-    "pkg:soma"
-  ],
+  "description": "A competitor naming a model and the GitHub repository it will be published from. THE REPOSITORY IS THE KEY -- one entry per repository -- and it is normalised by repo_path() before anything else looks at it, so a pasted browser URL, an ssh remote and a bare `owner/name` are one value in the column and a stored URL can never be pasted back into a release URL. OWNERSHIP IS ASKED OF GITHUB, ONCE, AND COMPARED BY ACCOUNT ID: `GET /repos/{owner}/{name}` says which account owns the repository, and that id must be the caller's `users.github_id` -- or an organisation the season allows, to someone the season named. It used to compare the first path segment against users.handle, which is a cache of a mutable remote value refreshed only at sign-in, so an account that renamed away from `alice` went on owning `alice/*`. The answer is recorded on the row, so this is asked once and never again. IT FAILS CLOSED: when GitHub does not answer, the entry is refused with a 503 rather than falling back to the login comparison, because that fallback is the hole and anyone could open it by exhausting the rate limit. Write, then diagnose: the insert carries every rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was -- through the same functions, with the same GitHub answer. A model is created empty; POST /v1/submissions is what puts a release under it.",
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "parse",
       "name": "Parse payload",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "declared",
       "name": "A name and a repository, declared",
       "condition": {
-        "or": [
-          {
-            "!": {
-              "var": "data.req.name"
-            }
-          },
-          {
-            "!": {
-              "var": "data.req.url"
-            }
-          }
-        ]
+        "or": [{ "!": { "var": "data.req.name" } }, { "!": { "var": "data.req.url" } }]
       },
       "terminal": true,
       "function": {
@@ -46,13 +27,135 @@
                 "detail": "name is what you call this model; url is the GitHub repository it is published from, as a URL or as owner/name."
               }
             },
+            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "normalise",
+      "name": "Normalise the repository, and find the game",
+      "description": "BEFORE the call to GitHub, because a path is what the call is made with and a game that does not exist should not cost a request against the rate limit. repo_path() is SQL and not JSONLogic because Orion's dialect has no regex.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT repo_path(($2)::text) AS repo, g.id::text AS game_id FROM games g WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "data.req.url" }],
+          "output": "temp_data.path"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "No such game",
+      "condition": { "!": { "var": "temp_data.path.0.game_id" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "error": "unknown_game" } },
+            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "malformed",
+      "name": "That is not a repository",
+      "description": "repo_path() answers NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word -- so this is a 400 about what was typed and never a 409 about a rule.",
+      "condition": { "!": { "var": "temp_data.path.0.repo" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
             {
-              "path": "data._orion.response",
+              "path": "data.body",
               "logic": {
-                "status": 400,
-                "body_path": "data.body"
+                "error": "repo_invalid",
+                "detail": "url must name one GitHub repository: https://github.com/you/your-model, or you/your-model. A releases or tree URL names a page inside one, not the repository itself."
               }
-            }
+            },
+            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "resolve_auth",
+      "name": "Ask GitHub who owns it, as the platform",
+      "description": "TWO TASKS FOR ONE CALL, and the pair is the price of an optional token. A header cannot be conditionally omitted, and an unset token would send `authorization: Bearer ` -- which makes GitHub answer 401 to everything on this connector, sign-in included. Authenticated is 5,000 requests an hour; unauthenticated is 60 PER IP, and the IP is this server's, so it is 60 model creations an hour for everyone together. A deployment sets GITHUB_TOKEN; check/configs.sh says so out loud when it is missing.",
+      "condition": { "!!": { "var": "metadata.vars.github_token" } },
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "github-api",
+          "method": "GET",
+          "path": { "cat": ["/repos/", { "var": "temp_data.path.0.repo" }] },
+          "headers": {
+            "authorization": { "cat": ["Bearer ", { "var": "metadata.vars.github_token" }] }
+          },
+          "output": "temp_data.gh"
+        }
+      }
+    },
+    {
+      "id": "resolve_anon",
+      "name": "Ask GitHub who owns it, anonymously",
+      "description": "The same call without the token. See resolve_auth for why it is a second task and not a conditional header.",
+      "condition": { "!": { "var": "metadata.vars.github_token" } },
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "github-api",
+          "method": "GET",
+          "path": { "cat": ["/repos/", { "var": "temp_data.path.0.repo" }] },
+          "output": "temp_data.gh"
+        }
+      }
+    },
+    {
+      "id": "unverified",
+      "name": "GitHub did not answer for this repository",
+      "description": "Orion's http_call continues on a 4xx and writes no output, and does not surface the status, so a repository that does not exist and a rate limit arrive identically. Both refuse, and the refusal is TEMPORARY AND FAILS CLOSED -- it must never fall back to comparing logins, because that fallback is what this route stopped doing and anyone could reach it on demand by burning 60 requests.",
+      "condition": { "!": { "var": "temp_data.gh.owner.id" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "repo_unverified",
+                "detail": "GitHub did not confirm who owns this repository. Either it does not exist under that name, or it is private, or we are briefly over our rate limit with GitHub. Check the name; if it is right, try again shortly."
+              }
+            },
+            { "path": "data._orion.response", "logic": { "status": 503, "body_path": "data.body" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "private",
+      "name": "A private repository can never be admitted",
+      "description": "Refused HERE rather than discovered at the first submission, where it arrives as a loader ASSET_MISSING against a URL that looks fine.",
+      "condition": { "!!": { "var": "temp_data.gh.private" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "repo_private",
+                "detail": "Admission fetches your release assets anonymously, so the repository has to be public. Make it public, or publish the model from one that is."
+              }
+            },
+            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
           ]
         }
       }
@@ -64,23 +167,16 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, name, repo) SELECT ($1)::uuid, g.id, btrim(($3)::text), repo_path(($4)::text) FROM games g JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($2)::text AND repo_path(($4)::text) IS NOT NULL AND btrim(($3)::text) <> '' AND length(btrim(($3)::text)) <= 64 AND (s.id IS NULL OR season_admits(s, ($1)::uuid)) AND (s.id IS NULL OR season_admits_repo(s, ($1)::uuid, ($4)::text)) AND (s.id IS NULL OR season_admits_entry(s, ($1)::uuid)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($1)::uuid AND e.game_id = g.id AND (lower(e.repo) = lower(repo_path(($4)::text)) OR lower(e.name) = lower(btrim(($3)::text))))",
+          "query": "INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login) SELECT ($1)::uuid, g.id, btrim(($3)::text), ($4)::text, ($6)::bigint, ($8)::text FROM games g JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($2)::text AND ($4)::text = repo_path(($4)::text) AND ($6)::bigint IS NOT NULL AND btrim(($3)::text) <> '' AND length(btrim(($3)::text)) <= 64 AND (s.id IS NULL OR season_admits(s, ($1)::uuid)) AND season_admits_repo(s, ($1)::uuid, ($6)::bigint, ($7)::text, ($8)::text) AND (s.id IS NULL OR season_admits_entry(s, ($1)::uuid)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.game_id = g.id AND lower(e.repo) = lower(($4)::text)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($1)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "data.req.name"
-            },
-            {
-              "var": "data.req.url"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.game" },
+            { "var": "data.req.name" },
+            { "var": "temp_data.path.0.repo" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.gh.owner.id" },
+            { "var": "temp_data.gh.owner.type" },
+            { "var": "temp_data.gh.owner.login" }
           ],
           "output": "temp_data.written"
         }
@@ -89,127 +185,22 @@
     {
       "id": "why",
       "name": "Why nothing was created",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.written.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'repo', repo_path(($3)::text), 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'owned', s.id IS NULL OR season_admits_repo(s, ($2)::uuid, ($3)::text), 'room', s.id IS NULL OR season_admits_entry(s, ($2)::uuid), 'entries_max', (s.rules -> 'entries' ->> 'max_per_user')::int, 'entries_used', (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL), 'handle', (SELECT u.handle FROM users u WHERE u.id = ($2)::uuid), 'repo_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.repo) = lower(repo_path(($3)::text))), 'name_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($4)::text)))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": "SELECT json_build_object( 'repo', ($3)::text, 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'owned', season_admits_repo(s, ($2)::uuid, ($5)::bigint, ($6)::text, ($7)::text), 'room', s.id IS NULL OR season_admits_entry(s, ($2)::uuid), 'entries_max', (s.rules -> 'entries' ->> 'max_per_user')::int, 'entries_used', (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL), 'repo_owner', ($7)::text, 'repo_taken', EXISTS (SELECT 1 FROM models e WHERE e.game_id = g.id AND lower(e.repo) = lower(($3)::text)), 'repo_taken_by_you', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.repo) = lower(($3)::text)), 'name_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($4)::text)))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
           "params": [
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.url"
-            },
-            {
-              "var": "data.req.name"
-            }
+            { "var": "metadata.params.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "temp_data.path.0.repo" },
+            { "var": "data.req.name" },
+            { "var": "temp_data.gh.owner.id" },
+            { "var": "temp_data.gh.owner.type" },
+            { "var": "temp_data.gh.owner.login" }
           ],
           "output": "temp_data.why"
-        }
-      }
-    },
-    {
-      "id": "unknown",
-      "name": "No such game",
-      "condition": {
-        "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.written.rows_affected"
-                },
-                0
-              ]
-            }
-          },
-          {
-            "!": {
-              "var": "temp_data.why.0.body"
-            }
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "unknown_game"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 404,
-                "body_path": "data.body"
-              }
-            }
-          ]
-        }
-      }
-    },
-    {
-      "id": "malformed",
-      "name": "That is not a repository",
-      "description": "repo_path() answers NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word -- so this is a 400 about what was typed and never a 409 about a rule.",
-      "condition": {
-        "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.written.rows_affected"
-                },
-                0
-              ]
-            }
-          },
-          {
-            "!": {
-              "var": "temp_data.why.0.body.repo"
-            }
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body.error",
-              "logic": "repo_invalid"
-            },
-            {
-              "path": "data.body.detail",
-              "logic": "url must name one GitHub repository: https://github.com/you/your-model, or you/your-model. A releases or tree URL names a page inside one, not the repository itself."
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 400,
-                "body_path": "data.body"
-              }
-            }
-          ]
         }
       }
     },
@@ -218,43 +209,14 @@
       "name": "Refused",
       "condition": {
         "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.written.rows_affected"
-                },
-                0
-              ]
-            }
-          },
+          { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
           {
             "or": [
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.participant"
-                }
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.owned"
-                }
-              },
-              {
-                "!!": {
-                  "var": "temp_data.why.0.body.repo_taken"
-                }
-              },
-              {
-                "!!": {
-                  "var": "temp_data.why.0.body.name_taken"
-                }
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.room"
-                }
-              }
+              { "!": { "var": "temp_data.why.0.body.participant" } },
+              { "!": { "var": "temp_data.why.0.body.owned" } },
+              { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
+              { "!!": { "var": "temp_data.why.0.body.name_taken" } },
+              { "!": { "var": "temp_data.why.0.body.room" } }
             ]
           }
         ]
@@ -268,47 +230,20 @@
               "path": "data.body.error",
               "logic": {
                 "if": [
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.participant"
-                    }
-                  },
+                  { "!": { "var": "temp_data.why.0.body.participant" } },
                   "not_a_participant",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.owned"
-                    }
-                  },
+                  { "!": { "var": "temp_data.why.0.body.owned" } },
                   "repo_not_owned",
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.repo_taken"
-                    }
-                  },
+                  { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
                   "repo_taken",
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.name_taken"
-                    }
-                  },
+                  { "!!": { "var": "temp_data.why.0.body.name_taken" } },
                   "model_name_taken",
                   "entries_max"
                 ]
               }
             },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "temp_data.why.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 409,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body.detail", "logic": { "var": "temp_data.why.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
           ]
         }
       }
@@ -320,20 +255,12 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'versions', '[]'::json) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND lower(e.repo) = lower(repo_path(($3)::text))",
+          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'game', g.slug, 'owner', u.handle, 'repo_owner', e.owner_login, 'created_at', e.created_at, 'versions', '[]'::json) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND lower(e.repo) = lower(($3)::text)",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.params.game"
-            },
-            {
-              "var": "data.req.url"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.game" },
+            { "var": "temp_data.path.0.repo" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.rows"
         }
@@ -342,29 +269,14 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
+      "condition": { "!": { "var": "temp_data.rows.0.body" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "error": "session_revoked" } },
+            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
           ]
         }
       }
@@ -376,19 +288,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 201,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "status": 201, "body_path": "data.body" } }
           ]
         }
       }

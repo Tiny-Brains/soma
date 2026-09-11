@@ -268,7 +268,7 @@ EXECUTE k_claim ('sha256:e2', '{}', 1, '30000000-0000-0000-0000-000000000007', 6
 EXECUTE k_start ('30000000-0000-0000-0000-000000000007');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000007', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
-  'all_food', 90, 2500, 'sha256:e2', 'sha256:ev1', 'replays/ants/w/t7.json');
+  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', 'sha256:ev1', 'replays/ants/w/t7.json');
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
@@ -306,3 +306,39 @@ UPDATE users SET handle = 'released.' || github_id
 INSERT INTO users (github_id, handle, display_name) VALUES (101, 'bob', NULL)
 ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
 SELECT github_id, handle FROM users WHERE github_id IN (100, 101) ORDER BY github_id;
+
+\echo '===== ownership: an account id, asked of GitHub once, and recorded ====='
+
+\echo '--- a stale handle grants nothing. github_id 1 renamed away from `alice`; 99 holds it now.'
+\echo '    Who may enter github.com/alice/brain, which GitHub says account 99 owns? (expect f, t)'
+-- Under the login comparison BOTH answered t: users.handle is a cache refreshed only at sign-in,
+-- so the account that renamed away went on owning the repositories of the name it left behind.
+SELECT u.github_id, u.handle, season_admits_repo(s, u.id, 99::bigint, 'User', 'alice') AS may_enter
+  FROM users u, seasons s
+ WHERE u.github_id IN (1, 99) AND s.number = 1 ORDER BY u.github_id;
+
+\echo '--- one entry per repository, across owners (expect INSERT 0 1, then duplicate key on models_repo_uniq)'
+INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login)
+VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a',
+        'brain', 'alice/brain', 99, 'alice');
+INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login)
+VALUES ((SELECT id FROM users WHERE github_id = 101), '00000000-0000-0000-0000-00000000000a',
+        'not yours', 'alice/brain', 101, 'bob');
+
+\echo '--- and rows nothing vouched for still share one, which is how three baselines do (expect INSERT 0 1)'
+-- models_repo_uniq is partial on owner_github_id, and a null one means the row never went through
+-- the route that asks GitHub. That is the only exception, and it is this column.
+INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline.two', 'baseline');
+INSERT INTO models (owner_id, game_id, name, repo)
+VALUES ((SELECT id FROM users WHERE handle = 'baseline.two'),
+        '00000000-0000-0000-0000-00000000000a', 'two', 'tb/baselines');
+
+\echo '--- an organisation allowance with no cohort is an allowance to everyone (expect check violation)'
+UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"]}}'::jsonb
+ WHERE number = 1;
+
+\echo '--- with a cohort it is accepted, and admits the cohort only (expect UPDATE 1, then f for alice, t for bob)'
+UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"]}, "participants": {"enabled": true, "handles": ["bob"]}}'::jsonb
+ WHERE number = 1;
+SELECT u.handle, season_admits_repo(s, u.id, 424242::bigint, 'Organization', 'acme-lab') AS may_enter
+  FROM users u, seasons s WHERE u.github_id IN (99, 101) AND s.number = 1 ORDER BY u.handle;

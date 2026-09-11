@@ -122,18 +122,25 @@ CREATE TABLE models (              -- the entry
     created_at,
     retired_at                     -- "no more releases here"; not a delete, and reversible
 );
+CREATE UNIQUE INDEX models_repo_uniq
+    ON models (game_id, lower(repo)) WHERE owner_github_id IS NOT NULL;
 CREATE UNIQUE INDEX models_owner_game_repo_uniq ON models (owner_id, game_id, lower(repo));
 CREATE UNIQUE INDEX models_owner_game_name_uniq ON models (owner_id, game_id, lower(name));
 ```
 
-**The repository uniqueness index is keyed on the OWNER and deliberately not globally on
-`(game_id, lower(repo))`.** The cross-competitor half of "one entry per repository" follows from
-`repo_owned()` instead — a repository's first path segment must be the competitor's own GitHub
-login, which `users.handle` IS, because `soma-auth-github`'s upsert writes `gh.login` into it on
-every sign-in. Stating it as a global index as well would be a permanent claim on a namespace that
-is not ours: GitHub logins are recyclable and repositories transferable, so a global index would
-refuse a competitor the repository they now own because a stranger's retired entry named it two
-years ago. It is also what lets the three baselines — three users, one shared repository — exist.
+**One entry per repository, and it is an index rather than an argument.** It used to be the
+argument: the index was keyed on the owner, and the cross-competitor half was said to follow from
+`repo_owned()`, because a repository's first path segment had to be the competitor's own GitHub
+login. That was wrong. The check compared login *strings* against `users.handle`, which is
+case-insensitively compared but was case-sensitively unique, so `Alice` and `alice` were two rows
+that both passed it for one repository — demonstrated in `scripts/verify/scenario.sql`. Ownership
+now compares GitHub **account ids**, so exactly one account can pass for a given repository, and
+the index is how a true claim is kept true.
+
+`models_repo_uniq` is **partial on `owner_github_id`**. A row without one did not come through
+`soma-models-create` and GitHub vouched for nothing — which is the seeded baselines, and is how
+three of them share `Tiny-Brains/ants-baselines`. `models_owner_game_repo_uniq` stays because it
+covers exactly those rows, so one baseline user still cannot hold the shared repository twice.
 
 It is **not** partial on `retired_at`, because retiring must not become a way to restart a version
 series or re-enter a release tag.
@@ -462,7 +469,7 @@ itself by one row is the bug nobody reports and nobody can reproduce.
 | `ladder_field(season, ladder)` | **who is on one ladder**, with `standings.ranked_per_user_max` applied | the leaderboard AND `model_ratings` — see below |
 | `match_seat_rows(match)` | a match's seats resolved, with `outcome` | the three match routes, which each shape their own keys from these rows |
 | `repo_path(text)` | a GitHub URL, ssh remote or bare `owner/name` normalised to one canonical path; NULL for anything that is not exactly one repository | the `models.repo` CHECK, the entry create, the submission |
-| `repo_owned(repo, handle, rules)` | whether a repository is the competitor's to enter | the entry create, through `season_admits_repo` |
+| `season_admits_repo(season, user, owner_github_id, owner_type, owner_login)` | whether a repository is the competitor's to enter, by **account id** and never by login; the three GitHub values come from the route's `GET /repos/{owner}/{name}` | the entry create, and nothing else |
 | `season_rule_spec()` | **what a season's rules document may say**: one row per key, with its kind and range | `season_rules_ok` |
 | `season_rules_ok(jsonb)` | the rules document's shape, refusing an unknown key at both levels | the `seasons.rules` CHECK |
 | `season_rules_public(jsonb)` | the rules a season may show the world | `season_json` |

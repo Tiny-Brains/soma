@@ -37,10 +37,12 @@ if command -v jq > /dev/null 2>&1; then
   field() { jq -r ".$2" "$1"; }
   ids() { jq -r ".data[].$1"; }
   with_private_urls() { jq '.config.allow_private_urls = true' "$1"; }
+  with_url() { jq --arg u "$SUB_URL" '.config.url = $u' "$1"; }
 else
   field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
   ids() { python3 -c 'import json,sys; [print(o[sys.argv[1]]) for o in json.load(sys.stdin)["data"]]' "$1"; }
   with_private_urls() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["config"]["allow_private_urls"]=True; print(json.dumps(d))' "$1"; }
+  with_url() { python3 -c 'import json,os,sys; d=json.load(open(sys.argv[1])); d["config"]["url"]=os.environ["SUB_URL"]; print(json.dumps(d))' "$1"; }
 fi
 
 # Plugins are swept although the package ships none: its two moved to jodi with the clocks that
@@ -65,8 +67,15 @@ for f in connectors/*.json; do
   # Orion's SSRF guard refuses to dial a host resolving to a private address, which both
   # localhost:5432 and a compose service name like db:5432 are. The flag is a deployment property,
   # so it is applied here rather than committed in connectors/soma-db.json.
+  #
+  # github-api's base is substituted for the same reason kalam substitutes the loader's: Orion
+  # refuses an env:// reference in an http connector's url, so a deployment that wants to point the
+  # ownership check at a stand-in -- which is the only way to exercise soma-models-create end to
+  # end without a live GitHub account per case -- has to have it written in here.
   if [ "$id" = "soma-db" ] && [ "$ALLOW_PRIVATE" = "1" ]; then
     with_private_urls "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null
+  elif [ "$id" = "github-api" ] && [ -n "${GITHUB_API_BASE:-}" ]; then
+    SUB_URL="$GITHUB_API_BASE" with_url "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null
   else
     req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @"$f" > /dev/null
   fi

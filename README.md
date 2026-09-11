@@ -172,6 +172,8 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | cookie_secure | Boolean Orion var for cookie transport | Must match HTTP development or HTTPS deployment |
 | prior_mu, prior_sigma, settled_sigma | Orion vars for leaderboard priors and provisional status | Must match Jodi's rating policy |
 | season_gap_days | Orion var for the minimum gap between seasons | Missing or incorrect policy changes season-opening eligibility |
+| github_token | Orion var the entry create asks GitHub who owns a repository with | Empty works and is 60 requests/hour for the whole server, shared; model creation refuses when it runs out |
+| GITHUB_API_BASE | Load-script substitution for the github-api connector's base | Defaults to api.github.com; a stand-in is the only way to exercise the ownership check end to end |
 | ORION_ADMIN, ORION_ADMIN_API_KEY | Load-script destination and optional secret bearer token | Defaults target local admin; protected APIs require the token |
 | SOMA_ALLOW_PRIVATE_DB | Loader flag, 1 for a private database address | Orion blocks a private database connection |
 
@@ -227,11 +229,34 @@ longer holds it before claiming it, in a statement of its own: folded into the u
 data-modifying CTE the two would share a command id, and the release would not be reliably visible
 to the insert's uniqueness check. `scripts/verify/scenario.sql` walks all four cases.
 
-What this does **not** fix is the reason it matters. `repo_owned()` still decides whose repository a
-repository is by comparing login strings, so a handle that has gone stale is still an authorization:
-an account that renamed away from `alice` keeps passing the check for `alice/*` until it signs in
-again. The fix is to compare `users.github_id` against the owner GitHub reports for the repository,
-resolved once at entry creation — `design/tracker.md` carries it, with the two decisions it needs.
+**11 September 2026 — ownership is an account id, asked of GitHub once.** That was the reason the
+handle mattered. `POST /v1/games/{game}/models` now calls `GET /repos/{owner}/{name}` before it
+writes anything and compares `owner.id` with the caller's `users.github_id`, recording both the id
+and the login on `models`. `repo_owned()` is gone; `season_admits_repo()` takes GitHub's answer.
+Renaming yourself on GitHub no longer costs you your models, and no longer hands anyone the ones you
+left behind. Two refusals came with it, both of which used to be discovered at the first submission:
+`repo_private`, because release assets are fetched without a token, and `repo_unverified` — a 503
+when GitHub does not answer, which **never** falls back to comparing logins, because that fallback
+is the hole and anyone could reach it by exhausting the rate limit.
+
+The token is optional in code and required in practice. Unauthenticated GitHub is 60 requests an
+hour *per IP*, and the IP is this server's, so it is 60 model creations an hour for every competitor
+together; `github_token` is a `[vars]` value defaulting to empty and `devops/scripts/check/configs.sh`
+says out loud when it is unset. Two sibling tasks with opposite conditions make the header optional,
+because a header cannot be conditionally omitted and an empty `Bearer` would 401 sign-in as well.
+
+With that, decision 51's uniqueness claim is finally true, and `models_repo_uniq` states it:
+`UNIQUE (game_id, lower(repo)) WHERE owner_github_id IS NOT NULL`. One entry per repository,
+platform-wide. The partial predicate is the one exception and it names itself — a row without an
+`owner_github_id` never went through the route, which is the three seeded baselines sharing one
+repository.
+
+**And an allowance to everyone came out.** `repo.allow_orgs` had no membership check, and season 1
+shipped `allow_orgs: ["Tiny-Brains"]`, so any signed-in competitor could create an entry on
+`Tiny-Brains/ants-baselines` and submit the platform's own baseline release as their own model. The
+seeded line is gone — the baselines are INSERTed and never reach the route, so it bought nothing —
+`season_admits_repo` honours the key only for accounts the season also lists as participants, and
+`season_rules_ok` refuses it without them.
 
 **10 September 2026 — an entry and a version are two tables, and a season declares its own rules.**
 `models` is now the entry — a competitor's named lineage, keyed by the GitHub repository it

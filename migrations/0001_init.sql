@@ -269,9 +269,14 @@ CREATE FUNCTION season_rules_ok(r jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE 
                                                 AND (e ->> 'players')::numeric
                                                     = trunc((e ->> 'players')::numeric))))))
                   END)
-       -- the one cross-key rule: an opset window that is not a window admits nothing
+       -- two cross-key rules. An opset window that is not a window admits nothing --
        AND coalesce((r -> 'graph' ->> 'opset_min')::int, 0)
-           <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647);
+           <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647)
+       -- -- and an organisation allowance without a cohort is an allowance to everyone, which is
+       -- what season 1 shipped. See season_admits_repo().
+       AND (r -> 'repo' -> 'allow_orgs' IS NULL
+            OR jsonb_array_length(r -> 'repo' -> 'allow_orgs') = 0
+            OR coalesce((r -> 'participants' ->> 'enabled')::bool, false));
 $$;
 
 -- A competition window for one game, created by an admin. A version belongs to exactly one season;
@@ -404,24 +409,6 @@ CREATE FUNCTION repo_path(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
            ) AS t (m);
 $$;
 
--- Whether this competitor may enter this repository: the first path segment must be their own
--- GitHub login, or an organisation the season allows.
---
--- `enabled` DEFAULTS TRUE here, alone in the document, and the inconsistency is deliberate. The
--- other nine blocks are competition policy and a season silent about one does not play it; this is
--- the anti-impersonation rule, and a season created with no rules must not be a season in which
--- anyone may enter anyone's repository.
-CREATE FUNCTION repo_owned(p_repo text, p_handle text, p_rules jsonb)
-RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-    SELECT repo_path(p_repo) IS NOT NULL
-       AND (NOT coalesce((p_rules -> 'repo' ->> 'enabled')::bool, true)
-         OR NOT coalesce((p_rules -> 'repo' ->> 'must_be_owned')::bool, true)
-         OR lower(split_part(repo_path(p_repo), '/', 1)) = lower(coalesce(p_handle, ''))
-         OR lower(split_part(repo_path(p_repo), '/', 1)) IN (
-                SELECT lower(o) FROM jsonb_array_elements_text(
-                    coalesce(p_rules -> 'repo' -> 'allow_orgs', '[]'::jsonb)) AS o));
-$$;
-
 -- --------------------------------------------------------------------- models
 
 -- ONE ROW PER ENTRY, and AN ENTRY IS A REPOSITORY. A competitor makes one by naming it and giving a
@@ -438,13 +425,28 @@ CREATE TABLE models (
     game_id     uuid        NOT NULL REFERENCES games (id),
 
     -- The competitor's own word for it, and what the site prints beside the handle when one
-    -- competitor holds several. Not derived from the repo: a monorepo can hold two entries and they
-    -- still have to be told apart.
+    -- competitor holds several. Not derived from the repo, which is a path and not a name, and
+    -- which the three baselines share.
     name        text        NOT NULL,
 
     -- THE CANONICAL `owner/name` AND NOTHING ELSE. repo_path() is the one normaliser and the CHECK
     -- is what makes "this column is a path" a fact rather than a hope.
     repo        text        NOT NULL,
+
+    -- WHO GITHUB SAID OWNS `repo`, asked once, at the moment this entry was created. The ACCOUNT
+    -- ID and not the login, because a login is a label GitHub recycles and an account id is neither
+    -- renamed nor reissued -- which is the whole of why this column exists.
+    --
+    -- NULL means the row did not come through the route: the seeded baselines, and nothing else,
+    -- because soma-models-create refuses when GitHub does not answer. That makes this one column do
+    -- three jobs -- it is the proof, it is what a later transfer is noticed against, and it is the
+    -- predicate of models_repo_uniq -- so the one exception in this table is named once.
+    owner_github_id bigint,
+
+    -- GitHub's own spelling of that account at creation. Display and diagnosis only: a repository
+    -- whose owner_login no longer matches GitHub has been transferred or renamed, and no decision
+    -- is ever taken on this column.
+    owner_login text,
 
     created_at  timestamptz NOT NULL DEFAULT now(),
 
@@ -460,19 +462,27 @@ CREATE TABLE models (
     UNIQUE (id, game_id)
 );
 
--- ONE ENTRY PER REPOSITORY PER OWNER, case-insensitively -- GitHub's namespace is case-insensitive
--- and `Alice/Ants` is `alice/ants`.
+-- ONE ENTRY PER REPOSITORY, case-insensitively -- GitHub's namespace is case-insensitive and
+-- `Alice/Ants` is `alice/ants`.
 --
--- Keyed on the owner and DELIBERATELY NOT globally on (game_id, lower(repo)). The cross-user half
--- of "one entry per repository" follows from repo_owned(), because the first path segment must be
--- the competitor's own login; stating it as a global index as well would be a permanent claim on a
--- namespace that is not ours. GitHub logins are recyclable and repositories are transferable, so a
--- global index would refuse a competitor the repository they now own because a stranger's retired
--- entry named it two years ago. It is also what lets the three baselines -- three users, one shared
--- repository -- exist at all.
+-- This was argued rather than enforced, and the argument was wrong. It said the cross-competitor
+-- half followed from the ownership check, because a repository's first path segment had to be the
+-- competitor's own login -- but that check compared login STRINGS, and two rows holding one login
+-- in different cases both passed it for one repository. Ownership now compares GitHub account ids,
+-- so exactly one account can pass for a given repository and the claim is finally true. An index is
+-- how a true claim is kept true.
+--
+-- PARTIAL ON owner_github_id: a row without one did not come through the route and GitHub vouched
+-- for nothing, which is the seeded baselines and is why three of them can share one repository.
+-- Everything else is a row GitHub confirmed, and those are unique per game.
 --
 -- NOT partial on retired_at: retiring an entry must not be how its version numbers restart, nor how
 -- a release tag is entered twice in one season.
+CREATE UNIQUE INDEX models_repo_uniq
+    ON models (game_id, lower(repo)) WHERE owner_github_id IS NOT NULL;
+
+-- and the per-owner key, which still does work the global one cannot: it covers the rows outside
+-- that predicate, so one baseline user cannot hold the shared repository twice.
 CREATE UNIQUE INDEX models_owner_game_repo_uniq
     ON models (owner_id, game_id, lower(repo));
 
@@ -1032,11 +1042,43 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
                       END);
 $$;
 
--- repo.must_be_owned and .allow_orgs, with the caller's handle looked up. Asked by the ENTRY
--- create: the repository is the entry's, so this is never a submission-time question.
-CREATE FUNCTION season_admits_repo(s seasons, p_user uuid, p_repo text)
+-- repo.must_be_owned and .allow_orgs. Asked by the ENTRY create and by nothing else: the repository
+-- is the entry's, so this is never a submission-time question.
+--
+-- IT COMPARES ACCOUNT IDS. The three GitHub values come from `GET /repos/{owner}/{name}`, made by
+-- the route before the insert, and are passed in rather than derived here because they are not in
+-- this database. Comparing the login instead -- which is what this did -- decided ownership on
+-- users.handle, a cache of a mutable remote value refreshed only at sign-in: an account that
+-- renamed away from `alice` went on owning `alice/*` until it next signed in.
+--
+-- `enabled` DEFAULTS TRUE here, alone in the document, and the inconsistency is deliberate. The
+-- other nine blocks are competition policy and a season silent about one does not play it; this is
+-- the anti-impersonation rule, and a season created with no rules must not be a season in which
+-- anyone may enter anyone's repository.
+--
+-- A NULL season row answers the same way, which is why the route asks this unconditionally rather
+-- than under `s.id IS NULL OR`: `s.rules` is then null, both defaults hold, allow_orgs is empty and
+-- the org branch is dead. Between seasons an entry can still only be made on your own repository --
+-- and it had better be, because the entry it creates holds that repository in models_repo_uniq.
+--
+-- THE ORG BRANCH REQUIRES A COHORT. `allow_orgs` widens the rule to repositories nobody has proved
+-- they own, and on its own it widened it to EVERYONE: season 1 named `Tiny-Brains`, which let any
+-- signed-in competitor enter `Tiny-Brains/ants-baselines` and submit the platform's own baseline
+-- release as their own model. An organisation allowance is a cohort feature -- a lab publishing
+-- from a shared org -- so it is only honoured for people the season already named, and
+-- season_rules_ok() refuses the key without `participants`.
+CREATE FUNCTION season_admits_repo(s seasons, p_user uuid, p_owner_github_id bigint,
+                                   p_owner_type text, p_owner_login text)
 RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT repo_owned(p_repo, (SELECT u.handle FROM users u WHERE u.id = p_user), s.rules);
+    SELECT p_owner_github_id IS NOT NULL
+       AND (NOT coalesce((s.rules -> 'repo' ->> 'enabled')::bool, true)
+         OR NOT coalesce((s.rules -> 'repo' ->> 'must_be_owned')::bool, true)
+         OR p_owner_github_id = (SELECT u.github_id FROM users u WHERE u.id = p_user)
+         OR (lower(coalesce(p_owner_type, '')) = 'organization'
+             AND season_admits(s, p_user)
+             AND lower(coalesce(p_owner_login, '')) IN (
+                     SELECT lower(o) FROM jsonb_array_elements_text(
+                         coalesce(s.rules -> 'repo' -> 'allow_orgs', '[]'::jsonb)) AS o)));
 $$;
 
 -- entries.max_per_user -- asked by the ENTRY create. A retired entry frees its slot.
