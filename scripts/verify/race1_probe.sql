@@ -10,4 +10,4 @@ EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m52',
   '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000002","ladder":"nano","mu":31,"sigma":6},{"seat":0,"model_id":"20000000-0000-0000-0000-000000000002","ladder":"open","mu":32,"sigma":5.5},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"nano","mu":26,"sigma":5.5},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":25.5,"sigma":5.6}]');
 \timing off
 SELECT seed, status FROM matches WHERE seed = 52;
-SELECT model_id, ladder, mu FROM ratings WHERE model_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder;
+SELECT version_id, ladder, mu FROM ratings WHERE version_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder;

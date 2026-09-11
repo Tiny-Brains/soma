@@ -71,7 +71,8 @@ psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
 DO $$
 DECLARE n int;
 BEGIN
-    SELECT count(*) INTO n FROM models m JOIN users u ON u.id = m.owner_id
+    SELECT count(*) INTO n FROM model_versions m JOIN models e ON e.id = m.model_id
+      JOIN users u ON u.id = e.owner_id
       WHERE u.role = 'baseline' AND m.status = 'active';
     ASSERT n = 3, format('expected 3 active baselines, found %s', n);
 
@@ -79,7 +80,7 @@ BEGIN
 
     SELECT count(*) INTO n FROM ratings r
       WHERE NOT EXISTS (SELECT 1 FROM rating_events e
-                         WHERE e.model_id = r.model_id AND e.ladder = r.ladder AND e.seq = 0);
+                         WHERE e.version_id = r.version_id AND e.ladder = r.ladder AND e.seq = 0);
     ASSERT n = 0, format('%s seeded ratings have no seq-0 event', n);
 
     SELECT count(*) INTO n FROM games WHERE active_engine_digest IS NOT NULL;
@@ -89,7 +90,7 @@ BEGIN
     SELECT count(*) INTO n FROM seasons s JOIN games g ON g.id = s.game_id
       WHERE s.closed_at IS NULL AND s.engine_digest = g.active_engine_digest;
     ASSERT n = 1, 'the game must have exactly one live season, on its digest';
-    SELECT count(*) INTO n FROM models m JOIN seasons s ON s.id = m.season_id
+    SELECT count(*) INTO n FROM model_versions m JOIN seasons s ON s.id = m.season_id
       WHERE s.closed_at IS NULL AND m.status = 'active';
     ASSERT n = 3, format('the three baselines must be active in the live season, found %s', n);
 
@@ -111,7 +112,9 @@ BEGIN
             ('matches','turns'), ('matches','played_ms'), ('matches','engine_digest_played'),
             ('matches','evaluator_digest'), ('matches','replay_key'), ('matches','played_at'),
             ('matches','fault_reason'), ('matches','fault_seat'), ('matches','closed_at'),
-            ('match_seats','rank'), ('match_seats','score'), ('match_seats','strikes'));
+            ('match_seats','rank'), ('match_seats','score'), ('match_seats','strikes'),
+            ('match_seats','infer_us_total'), ('match_seats','infer_us_max'),
+            ('match_seats','infer_turns'));
     ASSERT n = 0, format('kalam can write %s columns outside its grant', n);
 
     RAISE NOTICE 'seed and grants: OK';
@@ -129,10 +132,10 @@ INSERT INTO matches (id, game_id, season_id, engine_digest, seed, preset, seat_c
 SELECT '11111111-1111-1111-1111-111111111111', g.id, s.id, s.engine_digest, 1, 'standard', 2,
        ARRAY['nano','open']::ladder[]
   FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = 'ants';
-INSERT INTO match_seats (match_id, seat, model_id, weights_hash, adapter_hash)
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, adapter_hash)
 SELECT '11111111-1111-1111-1111-111111111111', row_number() OVER (ORDER BY m.id) - 1,
        m.id, m.weights_hash, m.adapter_hash
-  FROM models m LIMIT 2;
+  FROM model_versions m LIMIT 2;
 
 DO $$
 DECLARE denied text;
@@ -153,16 +156,20 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN denied := 'ratings'; END;
     ASSERT denied = 'ratings', 'kalam must not be able to write a rating';
 
-    BEGIN  UPDATE models SET status = 'active';           denied := NULL;
+    BEGIN  UPDATE model_versions SET status = 'active';   denied := NULL;
+    EXCEPTION WHEN insufficient_privilege THEN denied := 'model_versions'; END;
+    ASSERT denied = 'model_versions', 'kalam must not be able to promote a version';
+    -- and it cannot reach the entry either, which is Soma's alone
+    BEGIN  PERFORM count(*) FROM models;                  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'models'; END;
-    ASSERT denied = 'models', 'kalam must not be able to promote a version';
+    ASSERT denied = 'models', 'kalam must not be able to read the entries';
 
     BEGIN  UPDATE clocks SET epoch = 99;                  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'clocks'; END;
     ASSERT denied = 'clocks', 'kalam must not be able to move a fence';
 
-    BEGIN  INSERT INTO rating_events (model_id, ladder, seq, mu_after, sigma_after)
-           SELECT id, 'open', 9, 1, 1 FROM models LIMIT 1;  denied := NULL;
+    BEGIN  INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after)
+           SELECT id, 'open', 9, 1, 1 FROM model_versions LIMIT 1;  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'rating_events'; END;
     ASSERT denied = 'rating_events', 'kalam must not be able to write a rating event';
 
@@ -181,7 +188,7 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN denied := 'matches.withdrawn_reason'; END;
     ASSERT denied = 'matches.withdrawn_reason', 'kalam must not be able to cancel a match';
 
-    RAISE NOTICE 'kalam is refused ratings, models, clocks, rating_events, users, and the columns that are not its own: OK';
+    RAISE NOTICE 'kalam is refused ratings, models, model_versions, clocks, rating_events, users, and the columns that are not its own: OK';
 END $$;
 SQL
 

@@ -213,6 +213,26 @@ LICENSE                      repository licence
 
 ## Status
 
+**10 September 2026 — an entry and a version are two tables, and a season declares its own rules.**
+`models` is now the entry — a competitor's named lineage, keyed by the GitHub repository it
+publishes from — and `model_versions` is one submission of it. A competitor may hold as many models
+as the season allows; version numbers restart per model; one version of a model is in admission at
+a time. Everything a rating, a seat or a match points at is a version (`ratings.version_id`,
+`match_seats.version_id`, `matches.trial_version_id`), and the API keys that name them on the wire
+were deliberately left alone so the two Rust plugins, axon and the replay envelope needed no change.
+
+`seasons.rules` became the whole description of a contest: ten blocks validated by
+`season_rules_ok()` against a `season_rule_spec()` VALUES table, every one optional and every one
+read `coalesce(rule, <the deploy's value>)`, so a season that declares nothing behaves exactly as
+before. Three new routes carry it — `POST`/`GET`/`PATCH` on `/v1/games/{game}/models` — and
+`GET /v1/versions/{id}` is the old `GET /v1/models/{id}` under its true name.
+
+**Two bugs came out with it.** Count's predecessor read was scoped by owner with no season term, so
+it would have raised "more than one row" the first time a second season opened and taken the ladder
+down with it; `scripts/verify/scenario.sql` now asserts the fix. And `season_json()` returned
+`rules` verbatim to six public routes, which published the participant list of a private cohort to
+anyone who asked for the game.
+
 **10 September 2026 — the package ships as an image.** Nothing here is generated, so nothing left
 git; this is the other half of the same change. `Dockerfile` carries `channels/`, `workflows/`,
 `connectors/`, `migrations/` and `load-package.sh`, and devops copies them into a volume it mounts

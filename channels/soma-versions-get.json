@@ -1,6 +1,6 @@
 {
-  "channel_id": "soma-models-get",
-  "name": "soma-models-get",
+  "channel_id": "soma-versions-get",
+  "name": "soma-versions-get",
   "tags": [
     "pkg:soma"
   ],
@@ -9,8 +9,8 @@
   "methods": [
     "GET"
   ],
-  "route_pattern": "/v1/games/{game}/models/{owner}/{repo}",
-  "workflow_id": "soma-models-get",
+  "route_pattern": "/v1/versions/{id}",
+  "workflow_id": "soma-versions-get",
   "config": {
     "response": {
       "mode": "shaped"

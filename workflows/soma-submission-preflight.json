@@ -2,7 +2,9 @@
   "workflow_id": "soma-submission-preflight",
   "name": "May this competitor submit?",
   "description": "The refusal, on load, so /submit reads as an explanation rather than a door that is shut. The verdict is the one soma-submissions-create computes, in the same words, so the page cannot say one thing before the POST and another after it. THREE OF THE FOUR REFUSALS ARE KNOWABLE HERE; the fourth is not, because weights_already_entered depends on a hash the competitor has not typed yet. Like soma-models-list, live_sessions is the outer FROM: a NULL body is an unknown game and a 404, no row at all is a dead session and a 401, and the two must not be confused.",
-  "tags": ["pkg:soma"],
+  "tags": [
+    "pkg:soma"
+  ],
   "tasks": [
     {
       "id": "query",
@@ -11,11 +13,20 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "WITH ctx AS ( SELECT g.slug, s.id AS season_id, s.number, s.submissions_open_at, s.submissions_close_at, CASE WHEN s.id IS NOT NULL THEN season_state(s) END AS state, (s.id IS NOT NULL AND now() >= s.submissions_open_at AND now() < s.submissions_close_at) AS season_open, (s.id IS NOT NULL AND season_admits(s, ($2)::uuid)) AS participant, (SELECT json_build_object('model_id', m.id, 'version', m.version, 'phase', model_phase(m)) FROM models m WHERE m.owner_id = ($2)::uuid AND m.game_id = g.id AND m.status IN ('testing', 'verified')) AS in_flight, (SELECT coalesce(max(m.version), 0) + 1 FROM models m WHERE m.owner_id = ($2)::uuid AND m.game_id = g.id) AS next_version FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text ) SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'season', CASE WHEN ctx.season_id IS NULL THEN NULL ELSE json_build_object( 'number', ctx.number, 'state', ctx.state, 'submissions_open_at', ctx.submissions_open_at, 'submissions_close_at', ctx.submissions_close_at) END, 'participant', ctx.participant, 'next_version', ctx.next_version, 'in_flight', ctx.in_flight, 'refusal', CASE WHEN NOT ctx.season_open THEN 'season_not_open' WHEN NOT ctx.participant THEN 'not_a_participant' WHEN ctx.in_flight IS NOT NULL THEN 'version_in_flight' END) FROM ctx) AS body FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($2)::uuid",
+          "query": "WITH ctx AS ( SELECT g.id AS game_id, g.slug, s.id AS season_id, s.number, s.submissions_open_at, s.submissions_close_at, CASE WHEN s.id IS NOT NULL THEN season_state(s) END AS state, (s.id IS NOT NULL AND now() >= s.submissions_open_at AND now() < s.submissions_close_at) AS season_open, (s.id IS NOT NULL AND season_admits(s, ($2)::uuid)) AS participant, (SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'retired', e.retired_at IS NOT NULL, 'next_version', (SELECT coalesce(max(v.version), 0) + 1 FROM model_versions v WHERE v.model_id = e.id), 'in_flight', (SELECT json_build_object('version_id', f.id, 'version', f.version, 'phase', model_phase(f)) FROM model_versions f WHERE f.model_id = e.id AND f.status IN ('testing', 'verified')), 'cooldown_until', season_cooldown_until(s, e.id), 'versions_ok', s.id IS NULL OR season_admits_version(s, ($2)::uuid, e.id)) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text)))) AS model, (SELECT coalesce(json_agg(json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'retired', e.retired_at IS NOT NULL) ORDER BY e.name), '[]'::json) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid) AS models, (s.id IS NULL OR season_admits_entry(s, ($2)::uuid)) AS may_add_model, (s.id IS NULL OR season_admits_in_flight(s, ($2)::uuid)) AS in_flight_ok, (SELECT count(*) FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.owner_id = ($2)::uuid AND fe.game_id = g.id AND f.status IN ('testing', 'verified')) AS in_flight_used, (s.rules -> 'entries' ->> 'in_flight_max')::int AS in_flight_max, (s.rules -> 'entries' ->> 'max_per_user')::int AS entries_max, (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL) AS entries_used FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text ) SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'season', CASE WHEN ctx.season_id IS NULL THEN NULL ELSE json_build_object( 'number', ctx.number, 'state', ctx.state, 'submissions_open_at', ctx.submissions_open_at, 'submissions_close_at', ctx.submissions_close_at) END, 'participant', ctx.participant, 'models', ctx.models, 'model', ctx.model, 'may_add_model', ctx.may_add_model, 'entries_used', ctx.entries_used, 'entries_max', ctx.entries_max, 'in_flight_used', ctx.in_flight_used, 'in_flight_max', ctx.in_flight_max, 'refusal', CASE WHEN NOT ctx.season_open THEN 'season_not_open' WHEN NOT ctx.participant THEN 'not_a_participant' WHEN ($3)::text IS NOT NULL AND ctx.model IS NULL THEN 'unknown_model' WHEN (ctx.model ->> 'retired')::bool THEN 'model_retired' WHEN ctx.model -> 'in_flight' IS NOT NULL AND jsonb_typeof((ctx.model -> 'in_flight')::jsonb) <> 'null' THEN 'version_in_flight' WHEN NOT ctx.in_flight_ok THEN 'too_many_in_flight' WHEN NOT coalesce((ctx.model ->> 'versions_ok')::bool, true) THEN 'too_many_versions' WHEN (ctx.model ->> 'cooldown_until')::timestamptz > now() THEN 'cooling_down' END) FROM ctx) AS body FROM live_sessions ls WHERE ls.sid = ($4)::uuid AND ls.user_id = ($2)::uuid",
           "params": [
-            { "var": "metadata.params.game" },
-            { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.auth.claims.sid" }
+            {
+              "var": "metadata.params.game"
+            },
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.query.model"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
           ],
           "output": "temp_data.rows"
         }
@@ -24,14 +35,29 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }
@@ -39,14 +65,29 @@
     {
       "id": "unknown",
       "name": "Reject an unknown game",
-      "condition": { "!": { "var": "temp_data.rows.0.body" } },
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.body"
+        }
+      },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "error": "unknown_game" } },
-            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "unknown_game"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 404,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }
@@ -58,8 +99,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

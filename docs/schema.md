@@ -103,71 +103,73 @@ pending ──claim──▶ claimed ──start──▶ running ──finish�
 
 `finished`, `rated`, `cancelled` and `failed` are permanent. Nothing here is deleted.
 
-### 3.2 `games` and `models`
+### 3.2 `games`, `models` and `model_versions`
 
-> These are shown as deltas because that is how they were designed — over the tables that already
-> existed. **The shipped migration has folded them into the `CREATE TABLE`s**, so no `ALTER` below
-> runs today; the columns, constraints and indexes are what to check against
-> [`0001_init.sql`](../migrations/0001_init.sql).
+**An entry and a version are two tables** (decision 51). `models` is the ENTRY — a competitor's
+named lineage, keyed by the GitHub repository it publishes from — and `model_versions` is one
+submission of it. Everything a rating, a seat or a match points at is a VERSION; a rename, a
+retirement and a quota are about the ENTRY.
+
+Before the split there was one table, and "the entry" was spelled `(owner_id, game_id)` inside
+seven statements. That is exactly why a competitor could hold only one: the identity had nowhere
+to live but a pair of foreign keys, so every rule that should have been per lineage was per person.
 
 ```sql
-ALTER TABLE games
-    ADD COLUMN active_engine_digest text;          -- written by the deploy step (deployment);
-                                                   -- seeded with a placeholder until then
-
--- the model walk gains a state: testing → verified → active | rejected. In the rewritten
--- 0001_init.sql the value is simply in CREATE TYPE; over the current files it is added, on its
--- own outside the transaction, since a new enum value cannot be used in the one that adds it.
-ALTER TYPE model_status ADD VALUE 'verified' AFTER 'testing';
-
-ALTER TABLE models
-    ADD COLUMN adapter          text,              -- the competitor's transform: the release asset's exact bytes
-    ADD COLUMN evaluator_digest text,              -- the evaluator it was validated under
-    ADD CONSTRAINT models_past_testing_has_contents
-        CHECK (status IN ('testing', 'rejected')
-            OR (weights_hash IS NOT NULL AND adapter_hash IS NOT NULL
-                AND evaluator_digest IS NOT NULL AND weight_class IS NOT NULL)),
-    ADD CONSTRAINT models_adapter_matches_hash     -- the row's copy is the admitted artifact, or absent
-        CHECK (adapter IS NULL
-            OR adapter_hash = 'sha256:' || encode(sha256(convert_to(adapter, 'UTF8')), 'hex'));
-
--- one submission in flight, whichever of the two waits it is in
-DROP INDEX models_one_testing_uniq;
-CREATE UNIQUE INDEX models_one_in_flight_uniq
-    ON models (owner_id, game_id) WHERE status IN ('testing', 'verified');
-
--- one active version, checked at commit rather than per row, so promotion's single statement
--- may flip the two rows in either order (§5.3)
-DROP INDEX models_one_active_uniq;
-ALTER TABLE models
-    ADD CONSTRAINT models_one_active_excl
-        EXCLUDE USING btree (owner_id WITH =, game_id WITH =) WHERE (status = 'active')
-        DEFERRABLE INITIALLY DEFERRED;
+CREATE TABLE models (              -- the entry
+    id, owner_id, game_id,
+    name,                          -- the competitor's own word for it, theirs to edit
+    repo,                          -- CANONICAL owner/name, CHECK (repo = repo_path(repo))
+    created_at,
+    retired_at                     -- "no more releases here"; not a delete, and reversible
+);
+CREATE UNIQUE INDEX models_owner_game_repo_uniq ON models (owner_id, game_id, lower(repo));
+CREATE UNIQUE INDEX models_owner_game_name_uniq ON models (owner_id, game_id, lower(name));
 ```
 
-`verified` is finding 6a's "explicit column" taken as a status value rather than a timestamp or a
-derived signal (decision 21 — see §8). `testing` now means admission has not finished; `verified`
-means it passed and the version waits for, or is playing, its trial. Admission's own statement
-makes that move (admission); count's verdicts move `verified` to `active` or `rejected` (§5.3). The
-constraint says every version past `testing` carries what pair's insert and the loader read off
-the row — `active` and `superseded` included, which no constraint said before. The one-in-flight
-index covers both waits, so a competitor still has one submission at a time from submit to
-verdict.
+**The repository uniqueness index is keyed on the OWNER and deliberately not globally on
+`(game_id, lower(repo))`.** The cross-competitor half of "one entry per repository" follows from
+`repo_owned()` instead — a repository's first path segment must be the competitor's own GitHub
+login, which `users.handle` IS, because `soma-auth-github`'s upsert writes `gh.login` into it on
+every sign-in. Stating it as a global index as well would be a permanent claim on a namespace that
+is not ours: GitHub logins are recyclable and repositories transferable, so a global index would
+refuse a competitor the repository they now own because a stranger's retired entry named it two
+years ago. It is also what lets the three baselines — three users, one shared repository — exist.
+
+It is **not** partial on `retired_at`, because retiring must not become a way to restart a version
+series or re-enter a release tag.
+
+`model_versions` carries what `models` used to, plus `model_id`, plus a denormalised `game_id` that
+is **proved** rather than trusted: with `FOREIGN KEY (model_id, game_id) → models (id, game_id)` and
+`FOREIGN KEY (season_id, game_id) → seasons (id, game_id)`, a version cannot belong to one game's
+entry and another game's season — a disagreement the schema could not previously notice at all.
+
+Every rule that was scoped `(owner_id, game_id)` is scoped `model_id`:
+
+```sql
+model_versions_model_version_uniq    (model_id, version)          -- numbers restart per entry
+model_versions_one_in_flight_uniq    (model_id) WHERE status IN ('testing', 'verified')
+model_versions_release_uniq          (model_id, season_id, release_tag)
+model_versions_one_active_excl       EXCLUDE (model_id =, season_id =) WHERE status = 'active'
+                                       DEFERRABLE INITIALLY DEFERRED
+```
+
+A per-USER ceiling on any of them is a cardinality over an owner's entries, not a property of one
+row, so it is a season predicate (§3.11) and never an index.
+
+**The exclusion constraint also fixes a latent bug.** Count's predecessor read is a scalar
+subquery, and before the split it was scoped by owner with **no season term** — unlike `C_PASS`'s
+`pred` CTE, `W_SWEEP`'s successor join and `soma-models-get`'s successor, which all had one. Since
+a competitor holds an `active` version in every season they ever finished (a closed season's active
+version IS its standing), that subquery would have raised `more than one row returned by a subquery
+used as an expression` the first time a second season opened, and taken the count clock — and the
+whole ladder behind it — down with it. Entry-and-season scoping makes it provably single-row.
+`scripts/verify/scenario.sql` asserts it.
 
 `adapter` is the document as the competitor shipped it — the exact bytes of the release asset, as
 `text` rather than `jsonb`, because jsonb normalises key order and whitespace and the stored form
 would no longer hash to `adapter_hash`. Stored as text, the constraint makes the row's copy
-self-verifying: Postgres refuses a copy that is not the admitted artifact. The play path never
-reads it — the loader fetches by hash from the object store (finding 12.3) — so it serves the
-Version screen, an operator with `psql`, and the re-validation sweep (finding 5 A′). Axon caps
-its size.
-
-The one-active rule moves from a partial unique index to a **deferrable exclusion constraint**
-with the same predicate. A unique index is checked as each row changes, so a single statement that
-activates the candidate before it demotes the predecessor fails on a rule that holds at its end; an
-exclusion constraint deferred to commit is checked once, when both rows have moved. The rule is
-the same; what changes is that §5.3's statement no longer depends on the order Postgres runs its
-CTEs in. The constraint's index serves the same lookups the old one did.
+self-verifying. The play path never reads it — the loader fetches by hash from the object store —
+so it serves the Version screen, an operator with `psql`, and the re-validation sweep.
 
 ### 3.3 `matches` — one row per match, the facts that are about the match
 
@@ -184,7 +186,7 @@ CREATE TABLE matches (
     preset               text         NOT NULL,
     seat_count           smallint     NOT NULL,      -- how many rows match_seats holds for it
     ladders              ladder[]     NOT NULL,      -- derived at insert; '{}' for a trial
-    trial_model_id       uuid         REFERENCES models (id),   -- the candidate, when a trial
+    trial_version_id       uuid         REFERENCES models (id),   -- the candidate, when a trial
     pairing_id           uuid,                       -- the pairing plugin's seed
 
     -- who is playing it — Kalam
@@ -207,7 +209,7 @@ CREATE TABLE matches (
 
     -- why it will not be played — Jodi
     withdrawn_reason     text,
-    successor_id         uuid         REFERENCES models (id),
+    successor_version_id         uuid         REFERENCES models (id),
 
     -- what it did to the ladder — Jodi's count clock
     rated_at             timestamptz,
@@ -300,7 +302,7 @@ CREATE TABLE match_seats (
 | `paired_ratings` as jsonb | keyed by ladder, of which a match has one or two; written once by pair and read by nobody but an auditor. Columns per ladder would be half null |
 | what the match did to a seat's ratings | not on the seat: a row per ladder in `rating_events` (§3.5), joined on `(match_id, seat)`, because it is a step in a chain rather than a fact about the seat |
 | `ladders` on the match | derived once at insert from the seats' classes (schema §3), so count never re-derives it and a class change on promotion cannot re-label history |
-| `trial_model_id` on the match | the one-live-trial rule needs a key on the match; the candidate's seat is a join |
+| `trial_version_id` on the match | the one-live-trial rule needs a key on the match; the candidate's seat is a join |
 | `seat_count` on the match | written in the same statement as the seats; makes three guards plain — the fault seat's range, "the result names every seat", "one posterior per seat per ladder" |
 | `lapses` and `refusals` apart | finding 7c: a memory refusal is the platform's, a lapse is a crash's; only lapses fail a row |
 | `fault_*` and `withdrawn_*` apart | two writers, two vocabularies, two grants; the competitor sees one "why" (finding 12.4), assembled by Soma |
@@ -325,7 +327,7 @@ CREATE TABLE rating_events (
     sigma_after  float8      NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (model_id, ladder, seq),
+    PRIMARY KEY (version_id, ladder, seq),
     FOREIGN KEY (match_id, seat) REFERENCES match_seats (match_id, seat),
     CONSTRAINT rating_events_seq_nonneg CHECK (seq >= 0),
     CONSTRAINT rating_events_seed_shape
@@ -387,16 +389,16 @@ CREATE INDEX matches_finished_idx
 
 -- one live trial row per candidate — the rule, not a convention
 CREATE UNIQUE INDEX matches_one_live_trial_uniq
-    ON matches (trial_model_id)
-    WHERE trial_model_id IS NOT NULL AND status IN ('pending', 'claimed', 'running', 'finished');
+    ON matches (trial_version_id)
+    WHERE trial_version_id IS NOT NULL AND status IN ('pending', 'claimed', 'running', 'finished');
 
 -- every trial a candidate has had, for the verdict and the re-pair cap
 CREATE INDEX matches_trial_history_idx
-    ON matches (trial_model_id) WHERE trial_model_id IS NOT NULL;
+    ON matches (trial_version_id) WHERE trial_version_id IS NOT NULL;
 
--- a version's matches: GET /matches?model=, withdraw, in-flight per version
-CREATE INDEX match_seats_model_idx
-    ON match_seats (model_id, match_id);
+-- a version's matches: GET /matches?version=, withdraw, in-flight per version
+CREATE INDEX match_seats_version_idx
+    ON match_seats (version_id, match_id);
 
 -- the claim's affinity and its fill: which pending rows share a resident model
 CREATE INDEX match_seats_weights_idx
@@ -455,16 +457,37 @@ itself by one row is the bug nobody reports and nobody can reproduce.
 | `season_state(seasons)` | the four states, derived from three timestamps rather than stored | `season_json`, the profile, the preflight, both season `why` reads |
 | `current_season(game, number?)` | the season a game is read through: the live one, else the latest closed; with `number`, the same selection pinned | the games list and page, the leaderboard, the match listing, both season read-backs |
 | `season_json(seasons)` | the season object, with the counts the site prints | six routes |
-| `model_phase(models)` | which of the two clocks a version waits on, in the page's words | the version page, the caller's list, `/v1/me`, the preflight |
-| `model_ratings(model, settled_sigma)` | a version's ladders, each with rank and field, in the leaderboard's order | the version page, the profile, the caller's list |
-| `match_seat_rows(match, strike_limit)` | a match's seats resolved, with `outcome` — telling a forfeit from a defeat needs the strike limit | the three match routes, which each shape their own keys from these rows |
-| `season_admits(seasons, user)` | the participants rule | the submission insert, and the read that says why it did not happen |
-| `season_admits_weights(seasons, user, hash)` | the unique-weights rule, in its scope | the same two |
+| `model_phase(model_versions)` | which of the two clocks a version waits on, in the page's words | the version page, the caller's list, `/v1/me`, the preflight |
+| `model_ratings(version, settled_sigma)` | a version's ladders, each with rank and field, in the leaderboard's order | the version page, the profile, the caller's list |
+| `ladder_field(season, ladder)` | **who is on one ladder**, with `standings.ranked_per_user_max` applied | the leaderboard AND `model_ratings` — see below |
+| `match_seat_rows(match)` | a match's seats resolved, with `outcome` | the three match routes, which each shape their own keys from these rows |
+| `repo_path(text)` | a GitHub URL, ssh remote or bare `owner/name` normalised to one canonical path; NULL for anything that is not exactly one repository | the `models.repo` CHECK, the entry create, the submission |
+| `repo_owned(repo, handle, rules)` | whether a repository is the competitor's to enter | the entry create, through `season_admits_repo` |
+| `season_rule_spec()` | **what a season's rules document may say**: one row per key, with its kind and range | `season_rules_ok` |
+| `season_rules_ok(jsonb)` | the rules document's shape, refusing an unknown key at both levels | the `seasons.rules` CHECK |
+| `season_rules_public(jsonb)` | the rules a season may show the world | `season_json` |
+| `season_admits*` ×7 | one predicate per rule: participants, weights, repository, entries, in-flight, versions, class | the writes that must not happen, and the reads that say why |
+| `season_cooldown_until(season, model)` | when a model may submit again | the submission `why` read |
 | `weight_classes_ok(jsonb)` | what a weight-class table must be: named classes, positive whole caps, strictly ascending | the `seasons.weight_classes` CHECK |
 
-The last two rule predicates are the load-bearing pair: each is asked twice per submission, once by
-the insert that must not happen and once by the read that says why it did not, and if the two ever
-disagreed a competitor would be refused for a reason the response denies.
+**The rule predicates are the load-bearing set**: each is asked twice per attempt, once by the
+write that must not happen and once by the read that says why it did not, and if the two ever
+disagreed a competitor would be refused for a reason the response denies. `season_cooldown_until`
+is the exception that proves it — the cooldown is a function of `now()`, so the two calls a moment
+apart genuinely differ at the boundary, which is why the read returns the INSTANT and never the
+boolean.
+
+**`ladder_field()` is the other one worth naming.** Two readers rank against a ladder — the
+leaderboard, and a version's own "rank 6 of 47" — and before it they each built the membership set
+themselves. That was survivable while a ladder was one row per competitor. It is not now:
+`standings.ranked_per_user_max` exists because one active version per ENTRY per season means a
+competitor with five models holds five rows, and a cap applied in one reader and not the other
+would print a rank the other page cannot justify.
+
+**`match_seat_rows` lost its `strike_limit` parameter.** Telling a forfeit from a defeat needs the
+ceiling, and it used to be plumbed from Jodi's `[vars]` through every Soma route that called it —
+so Soma's rendering of a forfeit depended on a number in another package's config. It is read off
+`matches.strike_ceiling` now: the rule the wave actually played by, and nothing else.
 
 ---
 
@@ -500,7 +523,7 @@ WITH first AS MATERIALIZED (
     SELECT m.id, m.preset
       FROM matches m
      WHERE m.status = 'pending' AND m.engine_digest = ($1)::text
-     ORDER BY (m.trial_model_id IS NOT NULL) DESC,                    -- trials first
+     ORDER BY (m.trial_version_id IS NOT NULL) DESC,                    -- trials first
               EXISTS (SELECT 1 FROM match_seats s                      -- then what this loader holds
                        WHERE s.match_id = m.id
                          AND s.weights_hash = ANY (($2)::text[])) DESC,
@@ -516,7 +539,7 @@ WITH first AS MATERIALIZED (
             OR EXISTS (SELECT 1 FROM match_seats a                      -- rows sharing the first row's models
                          JOIN match_seats b ON b.weights_hash = a.weights_hash
                         WHERE a.match_id = f.id AND b.match_id = m.id))
-     ORDER BY (m.id = f.id) DESC, (m.trial_model_id IS NOT NULL) DESC, m.created_at, m.id
+     ORDER BY (m.id = f.id) DESC, (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id
      LIMIT ($3)::int
        FOR UPDATE OF m SKIP LOCKED
 )
@@ -560,15 +583,15 @@ zero ends the run.
 >
 >   ```sql
 >   WITH w AS (
->       SELECT m.id, m.seed, m.preset, m.seat_count, m.trial_model_id,
+>       SELECT m.id, m.seed, m.preset, m.seat_count, m.trial_version_id,
 >              (row_number() OVER (ORDER BY m.id) - 1)::int AS m
 >         FROM matches m
 >        WHERE m.claim_token = ($1)::uuid AND m.status = 'running'
 >   )
 >   SELECT json_build_object('m', w.m, 'id', w.id, 'seed', w.seed, 'preset', w.preset,
->            'seat_count', w.seat_count, 'trial_model_id', w.trial_model_id,
+>            'seat_count', w.seat_count, 'trial_version_id', w.trial_version_id,
 >            'seats', (SELECT json_agg(json_build_object('m', w.m, 'seat', s.seat,
->                         'model_id', s.model_id, 'weights_hash', s.weights_hash,
+>                         'model_id', s.version_id, 'weights_hash', s.weights_hash,
 >                         'adapter_hash', s.adapter_hash) ORDER BY s.seat)
 >                        FROM match_seats s WHERE s.match_id = w.id)) AS row
 >     FROM w ORDER BY w.m
@@ -579,9 +602,9 @@ zero ends the run.
 
 ```sql
 SELECT json_build_object(
-         'id', m.id, 'seed', m.seed, 'preset', m.preset, 'trial_model_id', m.trial_model_id,
+         'id', m.id, 'seed', m.seed, 'preset', m.preset, 'trial_version_id', m.trial_version_id,
          'seats', (SELECT json_agg(json_build_object(
-                      'seat', s.seat, 'model_id', s.model_id,
+                      'seat', s.seat, 'model_id', s.version_id,
                       'weights_hash', s.weights_hash, 'adapter_hash', s.adapter_hash)
                     ORDER BY s.seat)
                      FROM match_seats s WHERE s.match_id = m.id)
@@ -744,15 +767,15 @@ call, because a model in two consecutive matches has a different prior for the s
 
 ```sql
 SELECT json_build_object(
-         'id', m.id, 'trial_model_id', m.trial_model_id, 'ladders', m.ladders,
+         'id', m.id, 'trial_version_id', m.trial_version_id, 'ladders', m.ladders,
          'seat_count', m.seat_count,
          'seats', (SELECT json_agg(json_build_object(
-                      'seat', s.seat, 'model_id', s.model_id, 'rank', s.rank, 'strikes', s.strikes,
+                      'seat', s.seat, 'model_id', s.version_id, 'rank', s.rank, 'strikes', s.strikes,
                       'ratings', (SELECT json_agg(json_build_object(
                                             'ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma)
                                           ORDER BY r.ladder)
                                     FROM ratings r
-                                   WHERE r.model_id = s.model_id AND r.ladder = ANY (m.ladders)))
+                                   WHERE r.version_id = s.version_id AND r.ladder = ANY (m.ladders)))
                     ORDER BY s.seat)
                      FROM match_seats s WHERE s.match_id = m.id)
        ) AS row
@@ -772,7 +795,7 @@ WITH fence AS (
        SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq')
       FROM fence
      WHERE m.id = ($3)::uuid AND m.status = 'finished'
-       AND m.trial_model_id IS NULL                                     -- trials take §5.3, never this
+       AND m.trial_version_id IS NULL                                     -- trials take §5.3, never this
        AND jsonb_array_length(($4)::jsonb) = m.seat_count * cardinality(m.ladders)
  RETURNING m.id
 ), post AS (
@@ -785,12 +808,12 @@ WITH fence AS (
        SET mu = post.mu, sigma = post.sigma,
            matches_played = r.matches_played + 1, updated_at = now()
       FROM post, ratings old                                             -- the row as it stood
-     WHERE r.model_id = post.model_id AND r.ladder = post.ladder::ladder
-       AND old.model_id = r.model_id AND old.ladder = r.ladder
- RETURNING r.model_id, r.ladder, r.matches_played AS seq, post.seat,
+     WHERE r.version_id = post.version_id AND r.ladder = post.ladder::ladder
+       AND old.model_id = r.version_id AND old.ladder = r.ladder
+ RETURNING r.version_id, r.ladder, r.matches_played AS seq, post.seat,
            old.mu AS mu_before, old.sigma AS sigma_before, r.mu AS mu_after, r.sigma AS sigma_after
 )
-INSERT INTO rating_events (model_id, ladder, seq, match_id, seat,
+INSERT INTO rating_events (version_id, ladder, seq, match_id, seat,
                            mu_before, sigma_before, mu_after, sigma_after)
 SELECT a.model_id, a.ladder, a.seq, mark.id, a.seat,
        a.mu_before, a.sigma_before, a.mu_after, a.sigma_after
@@ -819,18 +842,18 @@ Count decides a candidate whose trial is terminal and whose `models` row is stil
 
 ```sql
 SELECT json_build_object('model_id', c.id, 'owner_id', c.owner_id, 'game_id', c.game_id,
-         'trials', (SELECT count(*) FROM matches t WHERE t.trial_model_id = c.id),
+         'trials', (SELECT count(*) FROM matches t WHERE t.trial_version_id = c.id),
          'last', (SELECT json_build_object('id', t.id, 'status', t.status,
                           'fault_seat', t.fault_seat, 'fault_reason', t.fault_reason,
                           'candidate_seat', cs.seat, 'candidate_rank', cs.rank,
                           'candidate_strikes', cs.strikes)
                     FROM matches t
-                    JOIN match_seats cs ON cs.match_id = t.id AND cs.model_id = c.id
-                   WHERE t.trial_model_id = c.id
+                    JOIN match_seats cs ON cs.match_id = t.id AND cs.version_id = c.id
+                   WHERE t.trial_version_id = c.id
                    ORDER BY t.created_at DESC LIMIT 1)) AS row
-  FROM models c
+  FROM model_versions c
  WHERE c.status = 'verified'
-   AND EXISTS (SELECT 1 FROM matches t WHERE t.trial_model_id = c.id
+   AND EXISTS (SELECT 1 FROM matches t WHERE t.trial_version_id = c.id
                 AND t.status IN ('finished', 'failed', 'cancelled'))
 ```
 
@@ -849,7 +872,7 @@ WITH fence AS (
     UPDATE matches m
        SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq')
       FROM fence
-     WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_model_id = ($4)::uuid
+     WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id = ($4)::uuid
  RETURNING m.id
 ), bump AS (
     UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now()
@@ -857,19 +880,19 @@ WITH fence AS (
      WHERE c.key = 'roster'
  RETURNING c.epoch
 ), pred AS (
-    UPDATE models p SET status = 'superseded'
+    UPDATE model_versions p SET status = 'superseded'
       FROM bump, models cand
      WHERE cand.id = ($4)::uuid
        AND p.owner_id = cand.owner_id AND p.game_id = cand.game_id AND p.status = 'active'
  RETURNING p.id
 ), cand AS (
-    UPDATE models c SET status = 'active'
+    UPDATE model_versions c SET status = 'active'
       FROM bump
      WHERE c.id = ($4)::uuid AND c.status = 'verified'
        AND (SELECT count(*) FROM pred) >= 0            -- runs pred to completion first
  RETURNING c.id, c.weight_class
 ), seeded AS (
-    INSERT INTO ratings (model_id, ladder, mu, sigma, seed_mu, seed_sigma)
+    INSERT INTO ratings (version_id, ladder, mu, sigma, seed_mu, seed_sigma)
     SELECT cand.id, l.ladder,
            coalesce(prev.mu, ($5)::float8),                      -- the prior when no predecessor
            coalesce(seed.sigma, ($6)::float8),
@@ -887,7 +910,7 @@ WITH fence AS (
       ) seed
  RETURNING model_id, ladder, mu, sigma
 )
-INSERT INTO rating_events (model_id, ladder, seq, mu_after, sigma_after)
+INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after)
 SELECT model_id, ladder, 0, mu, sigma FROM seeded                  -- the history starts at the seed
 ```
 
@@ -920,7 +943,7 @@ WITH fence AS (
      WHERE c.key = 'roster' AND (SELECT count(*) FROM mark) >= 0
  RETURNING c.epoch
 )
-UPDATE models md
+UPDATE model_versions md
    SET status = 'rejected', reject_reason = ($5)::text
   FROM bump
  WHERE md.id = ($4)::uuid AND md.status = 'verified'
@@ -936,9 +959,9 @@ Jodi's number without a pass, the reject statement runs with the unplayable reas
 ```sql
 UPDATE matches m
    SET status = 'cancelled', withdrawn_reason = 'SUPERSEDED',
-       successor_id = ($2)::uuid, closed_at = now()
+       successor_version_id = ($2)::uuid, closed_at = now()
  WHERE m.status = 'pending'
-   AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.model_id = ($1)::uuid)
+   AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.version_id = ($1)::uuid)
 ```
 
 `$1` the predecessor · `$2` the candidate. Unfenced on purpose: a superseded version stays
@@ -965,13 +988,13 @@ Held in `data` for the run. The demand view and the depth read are Jodi's.
 WITH seated AS MATERIALIZED (
     SELECT seat.ord - 1 AS seat, md.id AS model_id, md.weights_hash, md.adapter_hash, md.weight_class
       FROM unnest(($5)::uuid[]) WITH ORDINALITY AS seat (model_id, ord)
-      JOIN models md ON md.id = seat.model_id
+      JOIN model_versions md ON md.id = seat.model_id
       JOIN games g ON g.id = md.game_id AND g.slug = ($2)::text
      WHERE md.status = 'active'                                          -- contesting, by inclusion
         OR (md.status = 'verified' AND md.id = ($6)::uuid)                -- the candidate of a trial
 ), m AS (
     INSERT INTO matches (game_id, engine_digest, seed, preset, seat_count, ladders,
-                         trial_model_id, pairing_id)
+                         trial_version_id, pairing_id)
     SELECT g.id, g.active_engine_digest, ($3)::bigint, ($4)::text, cardinality(($5)::uuid[]),
            CASE WHEN ($6)::uuid IS NOT NULL THEN '{}'::ladder[]          -- a trial feeds no ladder
                 WHEN (SELECT count(DISTINCT weight_class) FROM seated) = 1
@@ -987,11 +1010,11 @@ WITH seated AS MATERIALIZED (
        AND (SELECT count(*) FROM seated) = cardinality(($5)::uuid[])    -- every seat found, contesting, verified
  RETURNING id
 )
-INSERT INTO match_seats (match_id, seat, model_id, weights_hash, adapter_hash, paired_ratings)
-SELECT m.id, s.seat, s.model_id, s.weights_hash, s.adapter_hash,
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, adapter_hash, paired_ratings)
+SELECT m.id, s.seat, s.version_id, s.weights_hash, s.adapter_hash,
        (SELECT jsonb_agg(jsonb_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma)
                          ORDER BY r.ladder)
-          FROM ratings r WHERE r.model_id = s.model_id)
+          FROM ratings r WHERE r.version_id = s.version_id)
   FROM m, seated s
 ```
 
@@ -1019,17 +1042,17 @@ UPDATE matches m
                                             WHEN 'rejected'   THEN 'REJECTED'
                                             ELSE 'SEAT_LEFT' END
                         FROM match_seats s
-                        JOIN models md ON md.id = s.model_id
+                        JOIN model_versions md ON md.id = s.version_id
                        WHERE s.match_id = m.id
                          AND NOT (md.status = 'active'
-                               OR (md.status = 'verified' AND md.id = m.trial_model_id))
+                               OR (md.status = 'verified' AND md.id = m.trial_version_id))
                        ORDER BY s.seat LIMIT 1)
            END,
-       successor_id =
+       successor_version_id =
            (SELECT succ.id
               FROM match_seats s
-              JOIN models gone ON gone.id = s.model_id AND gone.status = 'superseded'
-              JOIN models succ ON succ.owner_id = gone.owner_id AND succ.game_id = gone.game_id
+              JOIN model_versions gone ON gone.id = s.version_id AND gone.status = 'superseded'
+              JOIN model_versions succ ON succ.owner_id = gone.owner_id AND succ.game_id = gone.game_id
                               AND succ.status = 'active'
              WHERE s.match_id = m.id
              ORDER BY s.seat LIMIT 1)
@@ -1037,10 +1060,10 @@ UPDATE matches m
  WHERE g.id = m.game_id AND m.status = 'pending'
    AND (m.engine_digest <> g.active_engine_digest          -- <> not IS DISTINCT FROM: a null digest pauses, never cancels
      OR EXISTS (SELECT 1 FROM match_seats s
-                  JOIN models md ON md.id = s.model_id
+                  JOIN model_versions md ON md.id = s.version_id
                  WHERE s.match_id = m.id
                    AND NOT (md.status = 'active'
-                         OR (md.status = 'verified' AND md.id = m.trial_model_id))))
+                         OR (md.status = 'verified' AND md.id = m.trial_version_id))))
 ```
 
 "Contesting" is written by inclusion — `active`, or `verified` for the candidate seat of a trial —
@@ -1053,15 +1076,15 @@ so `retired` in P7 fails closed without a change here. The reason words are prop
 change and nothing else does — both get simpler:
 
 - `soma-matches-list` becomes a join: `FROM match_seats s JOIN matches mt ON mt.id = s.match_id
-  WHERE s.model_id = $1 AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC`, on
-  `match_seats_model_idx`. Queued rows on request, for the owner, per finding 12.4. The GIN
+  WHERE s.version_id = $1 AND mt.status IN ('finished', 'rated') ORDER BY mt.played_at DESC`, on
+  `match_seats_version_idx`. Queued rows on request, for the owner, per finding 12.4. The GIN
   containment scan and its sort are gone.
 - `soma-matches-get` reads its players from `match_seats` ordered by seat and each seat's rating
   change from `rating_events` on `(match_id, seat)`, and gains the additive fields: `status`,
-  `withdrawn_reason`, `successor_id`, `strikes`, the rating change, the digests.
+  `withdrawn_reason`, `successor_version_id`, `strikes`, the rating change, the digests.
 
 "In flight per version" — what decision 1's policy will count — is `SELECT count(*) FROM
-match_seats s JOIN matches m ON m.id = s.match_id WHERE s.model_id = $1 AND m.status IN
+match_seats s JOIN matches m ON m.id = s.match_id WHERE s.version_id = $1 AND m.status IN
 ('pending', 'claimed', 'running')`. Layer 01 needs no column for it.
 
 ---
@@ -1109,9 +1132,9 @@ statement in §4–§7 `PREPARE`d with the parameter types written here, then th
   and with the new one is not. The sweep cancels a row on a retired digest and does nothing when
   the digest is null. A trial failed with `fault_seat = 0` is read and rejected, bumping the
   roster to 2. A memory refusal returns a row to `pending` with `refusals = 1` and no lapse, and
-  the ceiling fails it `UNLOADABLE`. A version's history is one join on `match_seats_model_idx`.
+  the ceiling fails it `UNLOADABLE`. A version's history is one join on `match_seats_version_idx`.
 - **The adapter copy** is accepted when its text hashes to `adapter_hash` and refused by
-  `models_adapter_matches_hash` when one byte differs.
+  `model_versions_adapter_matches_hash` when one byte differs.
 - **Promotion in the reverse order** — a variant of §5.3's statement that activates the candidate
   before demoting the predecessor — commits under the deferred exclusion constraint, which it could
   not under a partial unique index.

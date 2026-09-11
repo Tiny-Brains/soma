@@ -2,11 +2,17 @@
 -- released, so 0001 is rewritten in place until it is. Postgres 13+.
 --
 -- Three writers share this database, each confined by its grant (bottom of the file):
---   soma   -- users, sessions, and the INSERT of a models row.
+--   soma   -- users, sessions, the INSERT of a models row (an entry) and of a model_versions row.
 --   jodi   -- the version life cycle: matches, match_seats, ratings, rating_events, clocks.
 --   kalam  -- the match player. SELECT on two tables, UPDATE on the columns it reports.
 -- Nothing above is trusted to enforce one-active-version, one-submission-in-flight or
 -- one-live-trial. The partial unique indexes and the exclusion constraint are.
+--
+-- AN ENTRY AND A VERSION ARE TWO TABLES. `models` is the entry -- a competitor's named model, keyed
+-- by the GitHub repository it is published from -- and `model_versions` is one submission of it.
+-- Everything a rating, a seat or a match points at is a VERSION; everything a rename, a retirement
+-- or a quota is about is an ENTRY. Before the split the two were one row and `(owner_id, game_id)`
+-- was the entry's only name, which is why a competitor could hold exactly one.
 --
 -- Design: docs/schema.md. Verified against Postgres 16 by scripts/verify/run.sh.
 
@@ -80,6 +86,194 @@ CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTAB
            WHERE z.prev IS NOT NULL AND z.cap <= z.prev);
 $$;
 
+-- ------------------------------------------------------- the season rules document
+
+-- WHAT A SEASON'S RULES DOCUMENT MAY SAY: one row per key, and the reason every predicate further
+-- down can read `rules` with a plain `->>` and a cast without a defensive coalesce around the
+-- shape. A document that reached the column is a document of this shape.
+--
+-- Ten blocks, each with its own `enabled`, so a rule is turned on or off per season without a
+-- schema change -- and so one season can be a nano-only cohort and the next an open field with no
+-- code between them.
+--
+-- A VALUES list and not a table: a CHECK constraint that reads a table is a constraint whose truth
+-- depends on rows a restore may not have loaded yet. This list IS the documentation of the rules
+-- document, and season_rules_ok() below is only the walker over it -- so a rule that is not in this
+-- table does not exist, and one that is cannot be misspelt into silence.
+CREATE FUNCTION season_rule_spec()
+RETURNS TABLE (block text, key text, kind text, lo float8, hi float8, allowed text[])
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT * FROM (VALUES
+    -- ---- entries: how many models and versions a competitor may hold. Asked by the entry create
+    --      and by the submission insert, and by the reads that say why either did not happen.
+      ('entries', 'enabled',                'bool', NULL::float8, NULL::float8, NULL::text[]),
+      ('entries', 'max_per_user',           'int',      1,    1000, NULL),
+      ('entries', 'max_per_class',          'int',      1,    1000, NULL),
+      ('entries', 'in_flight_max',          'int',      1,     100, NULL),
+      ('entries', 'versions_max_per_model', 'int',      1,   10000, NULL),
+      ('entries', 'versions_max_per_user',  'int',      1,   10000, NULL),
+      ('entries', 'cooldown_s',             'int',      0, 2592000, NULL),
+    -- ---- repo: whose repository a competitor may enter. THE ONE BLOCK WHOSE `enabled` DEFAULTS
+    --      TRUE -- see repo_owned(). Every other block is competition policy and a season silent
+    --      about it does not play it; this one is the anti-impersonation rule, and a season created
+    --      with no document must not be a season in which anyone may enter anyone's repository.
+      ('repo', 'enabled',       'bool', NULL, NULL, NULL),
+      ('repo', 'must_be_owned', 'bool', NULL, NULL, NULL),
+      ('repo', 'allow_orgs',    'strs', NULL, NULL, NULL),
+    -- ---- unique_weights: no two entries stand on one set of weights, within the scope.
+      ('unique_weights', 'enabled', 'bool', NULL, NULL, NULL),
+      ('unique_weights', 'scope',   'enum', NULL, NULL, ARRAY['game', 'season', 'user']),
+    -- ---- participants: a cohort season. Either list admits, and `handles` is resolved AT THE TIME
+    --      OF ASKING -- a cohort is a list of GitHub logins written before the term starts, and
+    --      resolving it once would silently refuse every member who signed in afterwards.
+      ('participants', 'enabled',  'bool',  NULL, NULL, NULL),
+      ('participants', 'handles',  'strs',  NULL, NULL, NULL),
+      ('participants', 'user_ids', 'uuids', NULL, NULL, NULL),
+    -- ---- classes: which of the season's weight classes may be entered. NARROWS weight_classes and
+    --      never redefines it: that column stays the only definition of the class table, because
+    --      its ascending CHECK is what makes admission's `ORDER BY max_bytes LIMIT 1` correct.
+    --      Asked by ADMISSION and by nothing else -- a submission cannot state its class.
+      ('classes', 'enabled', 'bool',    NULL, NULL, NULL),
+      ('classes', 'allow',   'ladders', NULL, NULL, NULL),
+    -- ---- graph: the ONNX surface a submission may use. Asked by admission's judge.
+      ('graph', 'enabled',         'bool', NULL, NULL, NULL),
+      ('graph', 'opset_min',       'int',     1,    30, NULL),
+      ('graph', 'opset_max',       'int',     1,    30, NULL),
+      ('graph', 'op_allowlist',    'strs', NULL, NULL, NULL),
+      ('graph', 'params_max',      'int',     1, 1e12, NULL),
+      ('graph', 'adapter_ops_max', 'int',     1,  1e9, NULL),
+      -- The element types the WEIGHTS may be stored in -- a quantised-only season. Read off
+      -- axon's /inspect `weight_dtypes`, which is the initializers' declared types and NOT the
+      -- graph's port dtypes: a network with float32 inputs may hold int8 weights, which is what
+      -- quantisation is. Listing 'int8' alone is how a season says "quantised or nothing".
+      ('graph', 'dtypes',          'strs', NULL, NULL, NULL),
+      -- Advisory by default and null in every season the platform ships. Decision 46 removed the
+      -- compute cap on measurement: wall clock belongs to the admission host, so a verdict turning
+      -- on it depends on a noisy neighbour and a re-run can flip it. A season that sets this is
+      -- choosing load-dependent admission, deliberately.
+      ('graph', 'infer_us_max',    'int',     1,  1e9, NULL),
+      ('graph', 'size_metric',     'enum', NULL, NULL, ARRAY['zstd19', 'raw']),
+    -- ---- pairing: what the ladder asks for. Read by pair, and by count's verdict.
+      ('pairing', 'enabled',              'bool',    NULL, NULL, NULL),
+      ('pairing', 'self_pairing',         'bool',    NULL, NULL, NULL),
+      ('pairing', 'queue_share_max',      'int',        1, 1000, NULL),
+      ('pairing', 'presets',              'presets', NULL, NULL, NULL),
+      ('pairing', 'cross_class_fraction', 'num',        0,    1, NULL),
+      ('pairing', 'burst',                'int',        0, 1000, NULL),
+      ('pairing', 'steady_cap',           'int',        0, 1000, NULL),
+      ('pairing', 'trial_opponents',      'enum',    NULL, NULL, ARRAY['baselines','field','both']),
+      -- One key where the deploy has two names for one number: `repair_cap` is both count's
+      -- UNPLAYABLE ceiling and pair's re-pair cap, and they have never been allowed to differ.
+      ('pairing', 'trials_max',           'int',        1,  100, NULL),
+      ('pairing', 'forfeit_strikes',      'int',        1, 1000, NULL),
+    -- ---- rating: TrueSkill's parameters, and what "settled" means.
+      ('rating', 'enabled',          'bool', NULL, NULL, NULL),
+      ('rating', 'prior_mu',         'num',     0, 1000, NULL),
+      ('rating', 'prior_sigma',      'num',  1e-9, 1000, NULL),
+      ('rating', 'beta',             'num',  1e-9, 1000, NULL),
+      ('rating', 'tau',              'num',     0, 1000, NULL),
+      ('rating', 'draw_probability', 'num',     0,    1, NULL),
+      ('rating', 'sigma_inflation',  'num',     1,  100, NULL),
+      ('rating', 'settled_sigma',    'num',  1e-9, 1000, NULL),
+    -- ---- standings: how the ladder is read. `ranked_per_user_max` is work the entry split makes
+    --      necessary: one active version per ENTRY per season means one competitor with five
+    --      entries holds five ladder rows, which without a cap is a top ten of one name.
+      ('standings', 'enabled',             'bool', NULL, NULL, NULL),
+      ('standings', 'basis',               'enum', NULL, NULL,
+                                            ARRAY['best_version', 'best_per_class', 'top_k_sum']),
+      ('standings', 'k',                   'int',     1,  100, NULL),
+      ('standings', 'ranked_per_user_max', 'int',     1, 1000, NULL),
+      ('standings', 'headline',            'enum', NULL, NULL,
+                                            ARRAY['nano','micro','mini','small','large','open']),
+      ('standings', 'lambda',              'num',     0, 1000, NULL),
+      ('standings', 'visibility',          'enum', NULL, NULL, ARRAY['live', 'hidden_until_close']),
+    -- ---- closure: when the season ends.
+      ('closure', 'enabled',           'bool', NULL, NULL, NULL),
+      ('closure', 'policy',            'enum', NULL, NULL, ARRAY['settle', 'deadline', 'admin']),
+      ('closure', 'settle_grace_days', 'int',     0,  365, NULL)
+    ) AS t (block, key, kind, lo, hi, allowed);
+$$;
+
+-- Refuses an unknown key AT BOTH LEVELS, and every value that is not of its declared kind inside
+-- its declared range. Both halves are the point: the CHECK this replaces enumerated two block names
+-- and looked no further, so `{"participants": {"enabld": true}}` stored cleanly and then admitted
+-- the world -- the rule read as off through the coalesce every predicate uses, silently.
+--
+-- A block present without `enabled` is refused for the same reason: it is the one shape whose
+-- failure is invisible at every later read.
+CREATE FUNCTION season_rules_ok(r jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_typeof(r) = 'object'
+       -- no block this schema does not name
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_object_keys(r) AS k
+            WHERE k NOT IN (SELECT DISTINCT s.block FROM season_rule_spec() s))
+       -- every block is an object, and every block carries `enabled`
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_each(r) AS b (block, doc)
+            WHERE jsonb_typeof(b.doc) <> 'object'
+               OR jsonb_typeof(b.doc -> 'enabled') IS DISTINCT FROM 'boolean')
+       -- no key its block does not name
+       AND NOT EXISTS (
+           SELECT 1 FROM jsonb_each(r) AS b (block, doc), jsonb_object_keys(b.doc) AS k
+            WHERE NOT EXISTS (SELECT 1 FROM season_rule_spec() s
+                               WHERE s.block = b.block AND s.key = k))
+       -- and every value present is of its kind, in its range
+       AND NOT EXISTS (
+           SELECT 1
+             FROM jsonb_each(r) AS b (block, doc)
+             JOIN season_rule_spec() s ON s.block = b.block
+            CROSS JOIN LATERAL (SELECT b.doc -> s.key AS v) x
+            WHERE x.v IS NOT NULL AND jsonb_typeof(x.v) <> 'null'
+              AND NOT CASE s.kind
+                  WHEN 'bool' THEN jsonb_typeof(x.v) = 'boolean'
+                  WHEN 'int'  THEN jsonb_typeof(x.v) = 'number'
+                               AND (x.v #>> '{}')::numeric = trunc((x.v #>> '{}')::numeric)
+                               AND (x.v #>> '{}')::float8 BETWEEN s.lo AND s.hi
+                  WHEN 'num'  THEN jsonb_typeof(x.v) = 'number'
+                               AND (x.v #>> '{}')::float8 BETWEEN s.lo AND s.hi
+                  WHEN 'enum' THEN jsonb_typeof(x.v) = 'string'
+                               AND (x.v #>> '{}') = ANY (s.allowed)
+                  WHEN 'strs' THEN jsonb_typeof(x.v) = 'array'
+                               AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(x.v) e
+                                                WHERE jsonb_typeof(e) <> 'string'
+                                                   OR btrim(e #>> '{}') = '')
+                  -- a weight class, and never 'open': open is a ladder, not a class
+                  WHEN 'ladders' THEN jsonb_typeof(x.v) = 'array'
+                               AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(x.v) e
+                                                WHERE jsonb_typeof(e) <> 'string'
+                                                   OR (e #>> '{}') NOT IN
+                                                      ('nano','micro','mini','small','large'))
+                  -- resolved by season_admits() with a cast, so a string that is not a uuid would
+                  -- be a 22P02 at read time -- on the submission path, as a 500
+                  WHEN 'uuids' THEN jsonb_typeof(x.v) = 'array'
+                               AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(x.v) e
+                                                WHERE jsonb_typeof(e) <> 'string'
+                                                   OR (e #>> '{}') !~*
+                               '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+                  -- exactly what pair parses: {name, players} or a bare string meaning two seats.
+                  -- THE PRESET DECIDES THE SEAT COUNT, so fewer than two is a pairing that can
+                  -- never be filled and is refused here rather than left unpaired for ever.
+                  WHEN 'presets' THEN jsonb_typeof(x.v) = 'array'
+                               AND jsonb_array_length(x.v) >= 1
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM jsonb_array_elements(x.v) e
+                                    WHERE NOT (
+                                      (jsonb_typeof(e) = 'string' AND btrim(e #>> '{}') <> '')
+                                   OR (jsonb_typeof(e) = 'object'
+                                       AND (e - 'name' - 'players') = '{}'::jsonb
+                                       AND jsonb_typeof(e -> 'name') = 'string'
+                                       AND btrim(e ->> 'name') <> ''
+                                       AND (e -> 'players' IS NULL
+                                            OR (jsonb_typeof(e -> 'players') = 'number'
+                                                AND (e ->> 'players')::numeric >= 2
+                                                AND (e ->> 'players')::numeric
+                                                    = trunc((e ->> 'players')::numeric))))))
+                  END)
+       -- the one cross-key rule: an opset window that is not a window admits nothing
+       AND coalesce((r -> 'graph' ->> 'opset_min')::int, 0)
+           <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647);
+$$;
+
 -- A competition window for one game, created by an admin. A version belongs to exactly one season;
 -- seasons of a game never overlap (the partial unique index below IS that rule) and the next opens
 -- at least season_gap_days after the previous closed; a season closes when its scores have settled
@@ -99,15 +293,20 @@ CREATE TABLE seasons (
     -- as the record that the close was asked for rather than reached.
     close_requested_at   timestamptz,
 
-    -- One document, each rule under its own key with an `enabled` flag, so a rule is turned on or
-    -- off per season without a schema change. Checked as predicates in the submission insert.
-    --   unique_weights  { enabled, scope: 'game' | 'season' }  -- no two users hold one weights hash
-    --   participants    { enabled, user_ids: [...] }           -- only the listed users may submit
+    -- THE WHOLE DESCRIPTION OF THIS CONTEST. One document, each rule under its own block with an
+    -- `enabled` flag; season_rule_spec() is what it may say and season_rules_ok() is the CHECK.
+    -- Every rule that supersedes a [vars] value is read `coalesce(rule, var)`, so a season that
+    -- declares nothing behaves exactly as the deploy does.
+    --
+    -- IMMUTABLE ONCE THE SEASON OPENS -- soma-seasons-update carries `now() < submissions_open_at`
+    -- -- and that predicate is load-bearing far from here: it is what lets count read a season's
+    -- rating constants at fold time instead of pinning them onto every match row.
     rules                jsonb       NOT NULL DEFAULT '{}'::jsonb,
 
     -- THE ONLY DEFINITION OF THE WEIGHT CLASSES, smallest first. Per season deliberately: a season
     -- can be focused (nano-only, or every cap a notch down) at the price of comparability across
-    -- seasons, which is why every route returning a season returns these with it.
+    -- seasons, which is why every route returning a season returns these with it. `classes.allow`
+    -- narrows this table for entry; it never adds to it.
     weight_classes       jsonb       NOT NULL DEFAULT
         '[{"class": "nano",  "max_bytes": 8192},
           {"class": "micro", "max_bytes": 65536},
@@ -115,16 +314,15 @@ CREATE TABLE seasons (
           {"class": "small", "max_bytes": 4194304},
           {"class": "large", "max_bytes": 67108864}]'::jsonb,
 
-    lambda               float8,     -- the TinyBrain Index's, fitted and published per season
-
     created_at           timestamptz NOT NULL DEFAULT now(),
 
     UNIQUE (game_id, number),
+    -- Not a second key: the composite target model_versions pins its game to, so a version cannot
+    -- belong to one game's entry and another game's season.
+    UNIQUE (id, game_id),
     CONSTRAINT seasons_number_positive CHECK (number >= 1),
     CONSTRAINT seasons_window          CHECK (submissions_close_at > submissions_open_at),
-    -- Refuses a key this schema does not name, so a misspelt rule fails loudly.
-    CONSTRAINT seasons_rules_known     CHECK (jsonb_typeof(rules) = 'object'
-                                          AND (rules - 'unique_weights' - 'participants') = '{}'::jsonb),
+    CONSTRAINT seasons_rules_shape     CHECK (season_rules_ok(rules)),
     CONSTRAINT seasons_weight_classes_shape CHECK (weight_classes_ok(weight_classes))
 );
 
@@ -138,6 +336,11 @@ CREATE UNIQUE INDEX seasons_one_live_uniq ON seasons (game_id) WHERE closed_at I
 CREATE TABLE users (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     github_id   bigint      UNIQUE,
+
+    -- THE GITHUB LOGIN, not a nickname: soma-auth-github's upsert writes gh.login here on every
+    -- sign-in, not just the first. That is what lets repo_owned() decide whether a repository is
+    -- the caller's without a second table or a token -- and it is why a competitor who renames
+    -- themselves on GitHub is renamed here at their next sign-in.
     handle      text        NOT NULL UNIQUE,
 
     -- Seeded from GitHub ON INSERT ONLY: overwriting it at every sign-in would silently undo the
@@ -151,23 +354,139 @@ CREATE TABLE users (
         CHECK (role = 'baseline' OR github_id IS NOT NULL)
 );
 
+-- --------------------------------------------------------------- repositories
+
+-- A GitHub repository as the one form everything downstream can paste: `owner/name`, never a URL.
+-- Admission builds `release_base || repo || '/releases/download/...'` and the commit read builds
+-- `/repos/' || repo || '/commits/...', so a stored `https://github.com/alice/ants` would build
+-- `https://github.com/https://github.com/alice/ants` -- a 404 the competitor is told is their fault.
+--
+-- SQL and not JSONLogic because Orion's dialect has NO REGEX: a normaliser written in a workflow
+-- would be a chain of substr and if that is wrong on the case nobody tried.
+--
+-- NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word --
+-- so every caller fails closed and the CHECK on models.repo cannot be satisfied by a near miss.
+-- Extra path segments are refused deliberately: someone pasting the releases page should be told to
+-- paste the repository, not silently truncated to it.
+CREATE FUNCTION repo_path(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN t.m[2] IN ('.', '..') THEN NULL ELSE t.m[1] || '/' || t.m[2] END
+      FROM regexp_match(
+               btrim(coalesce(p, '')),
+               '^(?:(?:https?://)?(?:[A-Za-z0-9._~-]+@)?(?:www\.)?github\.com[/:])?' ||
+               '([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)' ||   -- a login: 1-39, no edge hyphen
+               '/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?$'               -- lazy, so `ants.git` is `ants`
+           ) AS t (m);
+$$;
+
+-- Whether this competitor may enter this repository: the first path segment must be their own
+-- GitHub login, or an organisation the season allows.
+--
+-- `enabled` DEFAULTS TRUE here, alone in the document, and the inconsistency is deliberate. The
+-- other nine blocks are competition policy and a season silent about one does not play it; this is
+-- the anti-impersonation rule, and a season created with no rules must not be a season in which
+-- anyone may enter anyone's repository.
+CREATE FUNCTION repo_owned(p_repo text, p_handle text, p_rules jsonb)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT repo_path(p_repo) IS NOT NULL
+       AND (NOT coalesce((p_rules -> 'repo' ->> 'enabled')::bool, true)
+         OR NOT coalesce((p_rules -> 'repo' ->> 'must_be_owned')::bool, true)
+         OR lower(split_part(repo_path(p_repo), '/', 1)) = lower(coalesce(p_handle, ''))
+         OR lower(split_part(repo_path(p_repo), '/', 1)) IN (
+                SELECT lower(o) FROM jsonb_array_elements_text(
+                    coalesce(p_rules -> 'repo' -> 'allow_orgs', '[]'::jsonb)) AS o));
+$$;
+
 -- --------------------------------------------------------------------- models
 
--- One row per submission. Everything from commit_sha down is null at insert -- a submission names
--- a GitHub release and cannot state its own size, class or hashes. Admission fills them and moves
--- the row 'testing' -> 'verified'; promotion to 'active' is count's, after the trial match.
+-- ONE ROW PER ENTRY, and AN ENTRY IS A REPOSITORY. A competitor makes one by naming it and giving a
+-- GitHub URL; from then on every release they cut is a version OF this row. This id -- not a
+-- version's -- is what a rename, a retirement and a quota are about.
+--
+-- The entry holds what does not change between releases, and nothing a release decides: `repo` is
+-- here and `release_tag` is on the version, and that division IS the split. Nothing is ever
+-- deleted -- ratings, matches and the audit trail all reach this row through its versions -- so
+-- `retired_at` is how a competitor puts one down.
 CREATE TABLE models (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id    uuid        NOT NULL REFERENCES users (id),
+    game_id     uuid        NOT NULL REFERENCES games (id),
+
+    -- The competitor's own word for it, and what the site prints beside the handle when one
+    -- competitor holds several. Not derived from the repo: a monorepo can hold two entries and they
+    -- still have to be told apart.
+    name        text        NOT NULL,
+
+    -- THE CANONICAL `owner/name` AND NOTHING ELSE. repo_path() is the one normaliser and the CHECK
+    -- is what makes "this column is a path" a fact rather than a hope.
+    repo        text        NOT NULL,
+
+    created_at  timestamptz NOT NULL DEFAULT now(),
+
+    -- "No more releases here." Not a delete: every version keeps its ratings and its place in every
+    -- match it played. A retired entry frees its slot under entries.max_per_user and KEEPS its repo
+    -- path -- retirement is not how a version history is restarted.
+    retired_at  timestamptz,
+
+    CONSTRAINT models_name_shape     CHECK (btrim(name) <> '' AND length(name) <= 64),
+    CONSTRAINT models_repo_canonical CHECK (repo = repo_path(repo)),
+
+    -- Not a second key: the composite target model_versions pins its game to.
+    UNIQUE (id, game_id)
+);
+
+-- ONE ENTRY PER REPOSITORY PER OWNER, case-insensitively -- GitHub's namespace is case-insensitive
+-- and `Alice/Ants` is `alice/ants`.
+--
+-- Keyed on the owner and DELIBERATELY NOT globally on (game_id, lower(repo)). The cross-user half
+-- of "one entry per repository" follows from repo_owned(), because the first path segment must be
+-- the competitor's own login; stating it as a global index as well would be a permanent claim on a
+-- namespace that is not ours. GitHub logins are recyclable and repositories are transferable, so a
+-- global index would refuse a competitor the repository they now own because a stranger's retired
+-- entry named it two years ago. It is also what lets the three baselines -- three users, one shared
+-- repository -- exist at all.
+--
+-- NOT partial on retired_at: retiring an entry must not be how its version numbers restart, nor how
+-- a release tag is entered twice in one season.
+CREATE UNIQUE INDEX models_owner_game_repo_uniq
+    ON models (owner_id, game_id, lower(repo));
+
+-- and one entry per NAME per owner, so the caller's own list is readable and a rename cannot
+-- produce two rows a page has no way to tell apart
+CREATE UNIQUE INDEX models_owner_game_name_uniq
+    ON models (owner_id, game_id, lower(name));
+
+-- the caller's entries, and a public profile's
+CREATE INDEX models_owner_idx ON models (owner_id, game_id);
+
+-- ------------------------------------------------------------- model_versions
+
+-- ONE ROW PER SUBMISSION: what `models` held before the entry was split out of it. Everything from
+-- commit_sha down is null at insert -- a submission names a GitHub release and cannot state its own
+-- size, class or hashes. Admission fills them and moves the row 'testing' -> 'verified'; promotion
+-- to 'active' is count's, after the trial match.
+--
+-- EVERY RULE THAT WAS SCOPED (owner_id, game_id) IS SCOPED model_id HERE, and that is the change:
+-- version numbers restart per entry, one submission is in flight per entry, one version is active
+-- per entry per season. A per-USER ceiling on any of them is a cardinality over an owner's entries
+-- and not a property of one row, so it is a season predicate and never an index.
+CREATE TABLE model_versions (
     id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id        uuid         NOT NULL REFERENCES users (id),
-    game_id         uuid         NOT NULL REFERENCES games (id),
+    model_id        uuid         NOT NULL,
+
+    -- Carried from the entry and PROVED equal to it rather than trusted: with (model_id, game_id)
+    -- and (season_id, game_id) both foreign-keyed, a version cannot belong to one game's entry and
+    -- another game's season -- a disagreement the schema could not previously notice. It also earns
+    -- its keep, since the admission batch, the demand read and the trial pick all want the game id.
+    game_id         uuid         NOT NULL,
 
     -- Stamped from the game's open season at submission, or by the season create for a carried
     -- baseline; never changed. A closed season's `active` versions are its final standing, which
     -- is why the one-active and release-uniqueness rules below are per season.
-    season_id       uuid         NOT NULL REFERENCES seasons (id),
+    season_id       uuid         NOT NULL,
     version         int          NOT NULL,
 
-    repo            text         NOT NULL,
+    -- The release under THE ENTRY'S repository. The repo is the entry's: one repository is one
+    -- entry, and a version free to name its own would be a second entry wearing this one's ratings.
     release_tag     text         NOT NULL,
     commit_sha      text,
 
@@ -177,9 +496,10 @@ CREATE TABLE models (
     size_bytes      bigint,
     param_count     bigint,
     -- The slowest reference case's inference at admission, in microseconds. Reported to the
-    -- competitor, never a gate: there is no compute cap (decision 46) and wall clock belongs to
-    -- the admission host, so a verdict turning on it would depend on a noisy neighbour. It says
-    -- how much of the game's turn_ms a graph leaves itself, which is the bound that now decides
+    -- competitor, and a gate only where a season deliberately makes it one (graph.infer_us_max,
+    -- null everywhere the platform ships): there is no compute cap (decision 46) and wall clock
+    -- belongs to the admission host, so a verdict turning on it depends on a noisy neighbour. It
+    -- says how much of the game's turn_ms a graph leaves itself, which is the bound that decides
     -- whether a seat forfeits.
     infer_us        bigint,
     weights_hash    text,
@@ -205,34 +525,37 @@ CREATE TABLE models (
 
     created_at      timestamptz  NOT NULL DEFAULT now(),
 
-    CONSTRAINT models_weight_class_not_open
+    FOREIGN KEY (model_id, game_id)  REFERENCES models  (id, game_id),
+    FOREIGN KEY (season_id, game_id) REFERENCES seasons (id, game_id),
+
+    CONSTRAINT model_versions_weight_class_not_open
         CHECK (weight_class <> 'open'),
 
-    CONSTRAINT models_version_positive
+    CONSTRAINT model_versions_version_positive
         CHECK (version >= 1),
 
     -- Past 'testing' a row must know what it is: pair joins on status and would otherwise seat a
     -- null weights_hash.
-    CONSTRAINT models_past_testing_has_contents
+    CONSTRAINT model_versions_past_testing_has_contents
         CHECK (status IN ('testing', 'rejected')
             OR (weights_hash IS NOT NULL AND adapter_hash IS NOT NULL
                 AND evaluator_digest IS NOT NULL AND weight_class IS NOT NULL)),
 
-    CONSTRAINT models_adapter_matches_hash
+    CONSTRAINT model_versions_adapter_matches_hash
         CHECK (adapter IS NULL
             OR adapter_hash = 'sha256:' || encode(sha256(convert_to(adapter, 'UTF8')), 'hex'))
 );
 
 -- -------------------------------------------------------------------- ratings
 
--- Two rows per promoted model: its weight class, and open. Created at promotion, so a testing,
--- verified or rejected model has none.
+-- Two rows per promoted VERSION: its weight class, and open. Created at promotion, so a testing,
+-- verified or rejected version has none.
 --
 -- seed_mu / seed_sigma record what this version inherited from the one it replaced, at the instant
 -- it was promoted. They are not derivable: the predecessor keeps rating on matches already in
 -- flight, so its final mu is not the number its successor started from.
 CREATE TABLE ratings (
-    model_id        uuid    NOT NULL REFERENCES models (id) ON DELETE CASCADE,
+    version_id      uuid    NOT NULL REFERENCES model_versions (id) ON DELETE CASCADE,
     ladder          ladder  NOT NULL,
 
     mu              float8  NOT NULL,
@@ -245,7 +568,7 @@ CREATE TABLE ratings (
     matches_played  int         NOT NULL DEFAULT 0,
     updated_at      timestamptz NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (model_id, ladder)
+    PRIMARY KEY (version_id, ladder)
 );
 
 -- -------------------------------------------------------------------- matches
@@ -266,8 +589,19 @@ CREATE TABLE matches (
     preset               text         NOT NULL,
     seat_count           smallint     NOT NULL,
     ladders              ladder[]     NOT NULL,   -- derived at insert; empty for a trial
-    trial_model_id       uuid         REFERENCES models (id),
+    trial_version_id     uuid         REFERENCES model_versions (id),
     pairing_id           uuid,                    -- the pairing run that proposed it, for audit
+
+    -- THE RULE THE WAVE PLAYS BY, pinned here rather than read at judging time -- the same reason
+    -- engine_digest is a copy and not a lookup. Kalam applies it turn by turn and count reads its
+    -- consequences off the seat, and neither may consult a config the other cannot see: before this
+    -- column the two agreed only because devops/scripts/check/configs.sh asserted two [vars] equal.
+    --
+    -- NOT NULL is the point. `coalesce(rule, var)` with both null yields null, and on this column
+    -- that is a constraint violation at pair's insert -- which halts loudly, in the right place --
+    -- instead of Kalam's `{">=": [1, null]}` forfeiting every seat on turn 0 and the wave dying two
+    -- turns later at `step`, naming neither the variable nor the cause.
+    strike_ceiling       smallint     NOT NULL DEFAULT 5,
 
     -- ---- the lease
     claim_token          uuid,
@@ -289,13 +623,14 @@ CREATE TABLE matches (
 
     -- ---- what withdraw reports
     withdrawn_reason     text,
-    successor_id         uuid         REFERENCES models (id),
+    successor_version_id uuid         REFERENCES model_versions (id),
 
     -- ---- what count reports
     rated_at             timestamptz,
     rated_seq            bigint,
 
     CONSTRAINT matches_seat_count         CHECK (seat_count >= 2),
+    CONSTRAINT matches_strike_ceiling     CHECK (strike_ceiling > 0),
     CONSTRAINT matches_fault_seat_in_range
         CHECK (fault_seat IS NULL OR fault_seat BETWEEN 0 AND seat_count - 1),
     CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
@@ -330,7 +665,7 @@ CREATE SEQUENCE rating_seq AS bigint;
 -- ---------------------------------------------------------------- match_seats
 
 -- One row per seat, not arrays and not one jsonb document: an array cannot be foreign-keyed, so a
--- seat could name a model that does not exist or one from another game. It is also what makes
+-- seat could name a version that does not exist or one from another game. It is also what makes
 -- "every match this version played" an index scan.
 --
 -- seat IS the index: seat 0 is the first player, the addressing ants/docs/protocol.md uses.
@@ -339,9 +674,9 @@ CREATE TABLE match_seats (
     seat           smallint NOT NULL,
 
     -- ---- what pair writes
-    model_id       uuid     NOT NULL REFERENCES models (id),
+    version_id     uuid     NOT NULL REFERENCES model_versions (id),
     weights_hash   text     NOT NULL,   -- copied at insert: the row records what was paired,
-    adapter_hash   text     NOT NULL,   -- not what the model row says today
+    adapter_hash   text     NOT NULL,   -- not what the version row says today
     paired_ratings jsonb,               -- the rating snapshot the pairing was made on
 
     -- ---- what Kalam writes
@@ -390,12 +725,12 @@ CREATE TABLE match_seats (
 
 -- One row per seat per ladder per counted match, plus a seed row at promotion (seq = 0).
 --
--- The primary key IS the correctness argument: (model_id, ladder, seq) with seq taken from
+-- The primary key IS the correctness argument: (version_id, ladder, seq) with seq taken from
 -- ratings.matches_played means a second fold of the same match collides rather than
 -- double-counting, and the chain -- every event starting where the previous one ended -- is then
 -- checkable by a join.
 CREATE TABLE rating_events (
-    model_id     uuid        NOT NULL REFERENCES models (id) ON DELETE CASCADE,
+    version_id   uuid        NOT NULL REFERENCES model_versions (id) ON DELETE CASCADE,
     ladder       ladder      NOT NULL,
     seq          int         NOT NULL,
     match_id     uuid        REFERENCES matches (id),
@@ -406,7 +741,7 @@ CREATE TABLE rating_events (
     sigma_after  float8      NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (model_id, ladder, seq),
+    PRIMARY KEY (version_id, ladder, seq),
     FOREIGN KEY (match_id, seat) REFERENCES match_seats (match_id, seat),
     CONSTRAINT rating_events_seq_nonneg CHECK (seq >= 0),
 
@@ -443,39 +778,51 @@ INSERT INTO clocks (key) VALUES ('count'), ('pair'), ('withdraw'), ('roster');
 
 -- -------------------------------------------------------------------- indexes
 
--- models --------------------------------------------------------------------
+-- model_versions ------------------------------------------------------------
 
--- versions are unambiguous per entry
-CREATE UNIQUE INDEX models_owner_game_version_uniq
-    ON models (owner_id, game_id, version);
+-- Version numbers restart per entry. v1 of one entry and v1 of another are versions of different
+-- things, and an entry whose history began at 7 because its owner had an earlier entry would be a
+-- lie the Version screen prints. This index is also the model_id lookup every other statement uses.
+CREATE UNIQUE INDEX model_versions_model_version_uniq
+    ON model_versions (model_id, version);
 
--- At most one submission in flight, spanning both pre-active states: a competitor with a verified
--- version waiting for its trial may not submit another.
-CREATE UNIQUE INDEX models_one_in_flight_uniq
-    ON models (owner_id, game_id) WHERE status IN ('testing', 'verified');
+-- At most one submission in flight PER ENTRY, spanning both pre-active states: an entry with a
+-- verified version waiting for its trial may not take another release. The per-USER ceiling ACROSS
+-- entries is entries.in_flight_max and is deliberately not here -- an index that says "one" and a
+-- count that says "one" are two rules that will one day say different numbers.
+CREATE UNIQUE INDEX model_versions_one_in_flight_uniq
+    ON model_versions (model_id) WHERE status IN ('testing', 'verified');
 
--- the same release cannot be entered twice IN ONE SEASON; it may be entered again in the next
-CREATE UNIQUE INDEX models_owner_game_release_uniq
-    ON models (owner_id, game_id, season_id, repo, release_tag);
+-- the same release cannot be entered twice IN ONE SEASON; it may be entered again in the next. The
+-- entry decides the repository, so the `repo` term the old index carried is implied by model_id.
+CREATE UNIQUE INDEX model_versions_release_uniq
+    ON model_versions (model_id, season_id, release_tag);
 
 -- The admission claim: testing rows, oldest first. Deliberately WITHOUT admit_started_at -- a
 -- claim rewrites that column on every row it takes, and keeping it out leaves those updates
 -- heap-only.
-CREATE INDEX models_admit_claim_idx
-    ON models (created_at) WHERE status = 'testing';
+CREATE INDEX model_versions_admit_claim_idx
+    ON model_versions (created_at) WHERE status = 'testing';
 
 -- class ladders, by season; the season_id prefix also serves the open ladder
-CREATE INDEX models_season_class_active_idx
-    ON models (season_id, weight_class)
+CREATE INDEX model_versions_season_class_active_idx
+    ON model_versions (season_id, weight_class)
     WHERE status = 'active';
 
--- At most one contesting version per season -- as a DEFERRABLE exclusion constraint rather than a
--- partial unique index, so promotion's single statement does not depend on CTE order: Postgres
--- does not order the updates of sibling CTEs, and checked at commit both orders succeed. A closed
--- season's final version stays `active` (it is the standing) while the same owner contests the next.
-ALTER TABLE models
-    ADD CONSTRAINT models_one_active_excl
-        EXCLUDE USING btree (owner_id WITH =, game_id WITH =, season_id WITH =)
+-- At most one contesting version PER ENTRY per season -- as a DEFERRABLE exclusion constraint
+-- rather than a partial unique index, so promotion's single statement does not depend on CTE order:
+-- Postgres does not order the updates of sibling CTEs, and checked at commit both orders succeed.
+-- A closed season's final version stays `active` (it is the standing) while the same entry contests
+-- the next.
+--
+-- It is also what makes count's predecessor read PROVABLY single-row. The (owner_id, game_id,
+-- season_id) form it replaces did not: a competitor holds an `active` row in every season they ever
+-- finished, so count's owner-scoped scalar subquery -- which carries no season term -- would have
+-- raised "more than one row returned by a subquery used as an expression" the first time a second
+-- season opened, and taken the whole ladder down with it.
+ALTER TABLE model_versions
+    ADD CONSTRAINT model_versions_one_active_excl
+        EXCLUDE USING btree (model_id WITH =, season_id WITH =)
         WHERE (status = 'active')
         DEFERRABLE INITIALLY DEFERRED;
 
@@ -506,18 +853,18 @@ CREATE INDEX matches_season_played_idx
 -- not yet decided still counts as live, so pair cannot insert a second one in the window between
 -- Kalam finishing it and count deciding it.
 CREATE UNIQUE INDEX matches_one_live_trial_uniq
-    ON matches (trial_model_id)
-    WHERE trial_model_id IS NOT NULL AND status IN ('pending', 'claimed', 'running', 'finished');
+    ON matches (trial_version_id)
+    WHERE trial_version_id IS NOT NULL AND status IN ('pending', 'claimed', 'running', 'finished');
 
 -- how many trials a candidate has had, for the re-pair cap
 CREATE INDEX matches_trial_history_idx
-    ON matches (trial_model_id) WHERE trial_model_id IS NOT NULL;
+    ON matches (trial_version_id) WHERE trial_version_id IS NOT NULL;
 
 -- match_seats ---------------------------------------------------------------
 
--- a version's matches: GET /matches?model={id}, and the demand view's in-flight count
-CREATE INDEX match_seats_model_idx
-    ON match_seats (model_id, match_id);
+-- a version's matches: GET /matches?version={id}, and the demand view's in-flight count
+CREATE INDEX match_seats_version_idx
+    ON match_seats (version_id, match_id);
 
 -- the claim's affinity fill: rows whose models a replica already holds
 CREATE INDEX match_seats_weights_idx
@@ -529,10 +876,10 @@ CREATE INDEX match_seats_weights_idx
 CREATE INDEX rating_events_match_idx
     ON rating_events (match_id, seat);
 
--- There is deliberately no index on ratings.conservative. Only active models are ranked, status
--- lives on models, and Postgres cannot build a partial index across a join -- so it would be
--- walked past every superseded and rejected version. The leaderboard is a join filtered by
--- models_season_class_active_idx, sorted afterward.
+-- There is deliberately no index on ratings.conservative. Only active versions are ranked, status
+-- lives on model_versions, and Postgres cannot build a partial index across a join -- so it would
+-- be walked past every superseded and rejected version. The leaderboard is a join filtered by
+-- model_versions_season_class_active_idx, sorted afterward.
 
 -- ------------------------------------------------------ one definition of each shape
 
@@ -559,10 +906,24 @@ RETURNS SETOF seasons LANGUAGE sql STABLE AS $$
      LIMIT 1;
 $$;
 
+-- WHAT OF THE RULES A SEASON MAY SHOW THE WORLD. season_json() is returned by six public routes,
+-- and it used to return `rules` verbatim -- which published `participants.user_ids`, the roster of
+-- a private cohort, to anyone who asked for the game. Everything else in the document is the
+-- contest a competitor is entering and belongs on the page; the participant list is the one part
+-- that names people, so it is reduced to whether it is on.
+CREATE FUNCTION season_rules_public(r jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN r ? 'participants'
+                THEN jsonb_set(r, '{participants}',
+                               jsonb_build_object('enabled',
+                                   coalesce(r -> 'participants' -> 'enabled', 'false'::jsonb)))
+                ELSE r END;
+$$;
+
 -- The season object every route returns. The counts are the ones the site prints, and they are
--- different questions: `active_versions` is the ladder's size, `entered_versions` everything ever
--- submitted, `in_flight_versions` what "18 versions are mid-trial" means. `matches_played`
--- EXCLUDES TRIALS so it agrees with what GET /v1/matches can reach.
+-- different questions: `entries` is how many models are in the field, `active_versions` the
+-- ladder's size, `entered_versions` everything ever submitted, `in_flight_versions` what "18
+-- versions are mid-trial" means. `matches_played` EXCLUDES TRIALS so it agrees with what
+-- GET /v1/matches can reach.
 CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT json_build_object(
         'number', s.number,
@@ -572,61 +933,218 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
         'closed_at',            s.closed_at,
         'close_requested_at',   s.close_requested_at,
         'engine_digest',        s.engine_digest,
-        'rules',                s.rules,
+        'rules',                season_rules_public(s.rules),
         -- The caps this season is played under: they are per season, and a standing cannot be read
         -- without them.
         'weight_classes',       s.weight_classes,
-        'active_versions',    (SELECT count(*) FROM models m
-                               WHERE m.season_id = s.id AND m.status = 'active'),
-        'entered_versions',   (SELECT count(*) FROM models m
-                               WHERE m.season_id = s.id),
+        'entries',            (SELECT count(DISTINCT v.model_id) FROM model_versions v
+                               WHERE v.season_id = s.id),
+        'active_versions',    (SELECT count(*) FROM model_versions v
+                               WHERE v.season_id = s.id AND v.status = 'active'),
+        'entered_versions',   (SELECT count(*) FROM model_versions v
+                               WHERE v.season_id = s.id),
         'matches_played',     (SELECT count(*) FROM matches mt
                                WHERE mt.season_id = s.id AND mt.status IN ('finished', 'rated')
-                                 AND mt.trial_model_id IS NULL),
-        'in_flight_versions', (SELECT count(*) FROM models m
-                               WHERE m.season_id = s.id AND m.status IN ('testing', 'verified')));
+                                 AND mt.trial_version_id IS NULL),
+        'in_flight_versions', (SELECT count(*) FROM model_versions v
+                               WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')));
 $$;
 
--- The two season rules, as predicates. Each is asked TWICE per submission -- once by the insert
--- that must not happen and once by the read that says why it did not -- and the two answers have
--- to be the same answer, or a competitor is refused for a reason the response denies.
+-- ------------------------------------------------ the season's rules, as predicates
+--
+-- Each rule below is asked TWICE per attempt -- once by the write that must not happen and once by
+-- the read that says why it did not -- and the two answers have to be the same answer, or a
+-- competitor is refused for a reason the response denies. That is why each is one function and
+-- never two expressions.
+--
+-- Each counts WITHIN THE SEASON WHOSE RULE IT IS. A document reaching back into a previous season's
+-- rows would make a competitor's allowance depend on a competition that is over.
+
+-- The participants rule. EITHER list admits, and `handles` is resolved at the time of asking rather
+-- than at the season create: a cohort is a list of GitHub logins written before the term starts, and
+-- resolving it once would silently refuse every member who signed in for the first time afterwards
+-- -- which is most of them. users.handle IS the GitHub login, rewritten on every sign-in, so the
+-- match is on lower(handle) and needs no second table.
 CREATE FUNCTION season_admits(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false)
-        OR (p_user)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'participants' -> 'user_ids'));
+        OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(
+                            coalesce(s.rules -> 'participants' -> 'user_ids', '[]'::jsonb)) AS uid
+                    WHERE uid = (p_user)::text)
+        OR EXISTS (SELECT 1 FROM users u
+                    WHERE u.id = p_user
+                      AND lower(u.handle) IN (
+                          SELECT lower(h) FROM jsonb_array_elements_text(
+                              coalesce(s.rules -> 'participants' -> 'handles', '[]'::jsonb)) AS h));
 $$;
 
--- No OTHER competitor already holds these weights, within the rule's scope. A competitor may
--- always resubmit their own, and a rejected row does not hold a hash.
-CREATE FUNCTION season_admits_weights(s seasons, p_user uuid, p_hash text)
+-- No one else already holds these weights, within the rule's scope.
+--
+-- The three scopes are not a widening. `game` and `season` ask "does another COMPETITOR hold these
+-- weights" and always let a competitor resubmit their own. `user` is the one that can refuse the
+-- caller, and it exists because the entry split made the old behaviour wrong: with many entries per
+-- user, "always exempt your own rows" is exactly the licence to stand one set of weights on five
+-- entries and take five ladder slots. Under `user` the only exempt rows are THIS ENTRY'S, which is
+-- what keeps re-submitting a fixed release working.
+--
+-- A rejected row holds no hash worth counting: the commonest rejection is HASH_MISMATCH, which
+-- means those bytes were never there.
+CREATE FUNCTION season_admits_weights(s seasons, p_user uuid, p_hash text,
+                                      p_model uuid DEFAULT NULL)
 RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT NOT coalesce((s.rules -> 'unique_weights' ->> 'enabled')::bool, false)
-        OR NOT EXISTS (SELECT 1 FROM models o
-                        WHERE o.game_id = s.game_id AND o.weights_hash = p_hash
-                          AND o.owner_id <> p_user AND o.status <> 'rejected'
-                          AND (coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game') = 'game'
-                            OR o.season_id = s.id));
+        OR NOT EXISTS (
+               SELECT 1
+                 FROM model_versions v
+                 JOIN models e ON e.id = v.model_id
+                WHERE e.game_id = s.game_id
+                  AND v.weights_hash = p_hash
+                  AND v.status <> 'rejected'
+                  AND CASE coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game')
+                        WHEN 'game'   THEN e.owner_id <> p_user
+                        WHEN 'season' THEN e.owner_id <> p_user AND v.season_id = s.id
+                        WHEN 'user'   THEN e.id IS DISTINCT FROM p_model
+                      END);
+$$;
+
+-- repo.must_be_owned and .allow_orgs, with the caller's handle looked up. Asked by the ENTRY
+-- create: the repository is the entry's, so this is never a submission-time question.
+CREATE FUNCTION season_admits_repo(s seasons, p_user uuid, p_repo text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT repo_owned(p_repo, (SELECT u.handle FROM users u WHERE u.id = p_user), s.rules);
+$$;
+
+-- entries.max_per_user -- asked by the ENTRY create. A retired entry frees its slot.
+CREATE FUNCTION season_admits_entry(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT NOT coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false)
+        OR (s.rules -> 'entries' -> 'max_per_user') IS NULL
+        OR (SELECT count(*) FROM models e
+             WHERE e.owner_id = p_user AND e.game_id = s.game_id AND e.retired_at IS NULL)
+           < (s.rules -> 'entries' ->> 'max_per_user')::int;
+$$;
+
+-- entries.in_flight_max -- the per-USER ceiling across entries. The per-ENTRY rule is
+-- model_versions_one_in_flight_uniq and is deliberately not restated here.
+CREATE FUNCTION season_admits_in_flight(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT NOT coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false)
+        OR (s.rules -> 'entries' -> 'in_flight_max') IS NULL
+        OR (SELECT count(*) FROM model_versions v JOIN models e ON e.id = v.model_id
+             WHERE e.owner_id = p_user AND v.season_id = s.id
+               AND v.status IN ('testing', 'verified'))
+           < (s.rules -> 'entries' ->> 'in_flight_max')::int;
+$$;
+
+-- entries.versions_max_per_model and .versions_max_per_user, in one predicate because the
+-- submission is refused by whichever bites first and the `why` read says which.
+CREATE FUNCTION season_admits_version(s seasons, p_user uuid, p_model uuid)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT NOT coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false)
+        OR ((  (s.rules -> 'entries' -> 'versions_max_per_model') IS NULL
+            OR (SELECT count(*) FROM model_versions v
+                 WHERE v.model_id = p_model AND v.season_id = s.id)
+               < (s.rules -> 'entries' ->> 'versions_max_per_model')::int)
+       AND (   (s.rules -> 'entries' -> 'versions_max_per_user') IS NULL
+            OR (SELECT count(*) FROM model_versions v JOIN models e ON e.id = v.model_id
+                 WHERE e.owner_id = p_user AND v.season_id = s.id)
+               < (s.rules -> 'entries' ->> 'versions_max_per_user')::int));
+$$;
+
+-- The instant an entry may submit again, or NULL when it may now.
+--
+-- THE COOLDOWN IS THE ONE RULE THAT CANNOT ANSWER THE SAME TWICE: it is a function of now(), so the
+-- insert and the `why` read a fraction of a second later can genuinely disagree, and will, exactly
+-- at the boundary. The read therefore reports this INSTANT and never the boolean below, so the page
+-- says "try again at 14:02" instead of refusing for a reason it then denies.
+--
+-- Per entry and not per user, which is not the obvious choice: a per-user cooldown would contradict
+-- in_flight_max, because a competitor allowed three submissions at once could not make the second
+-- and third. Per entry the two rules compose.
+CREATE FUNCTION season_cooldown_until(s seasons, p_model uuid)
+RETURNS timestamptz LANGUAGE sql STABLE AS $$
+    SELECT max(v.created_at) + make_interval(secs => (s.rules -> 'entries' ->> 'cooldown_s')::float8)
+      FROM model_versions v
+     WHERE v.model_id = p_model AND v.season_id = s.id
+       AND (s.rules -> 'entries' -> 'cooldown_s') IS NOT NULL
+       AND coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false);
+$$;
+
+CREATE FUNCTION season_admits_cooldown(s seasons, p_model uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT coalesce(season_cooldown_until(s, p_model), '-infinity'::timestamptz) <= now();
+$$;
+
+-- classes.allow -- asked by ADMISSION and by nothing else, because a submission cannot state its
+-- class: admission measures it. It NARROWS weight_classes and never adds to it, so the class table
+-- stays the one definition and its ascending order stays the reason the class pick is correct.
+CREATE FUNCTION season_admits_class(s seasons, p_class ladder) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT NOT coalesce((s.rules -> 'classes' ->> 'enabled')::bool, false)
+        OR (s.rules -> 'classes' -> 'allow') IS NULL
+        OR (p_class)::text IN (SELECT jsonb_array_elements_text(s.rules -> 'classes' -> 'allow'));
+$$;
+
+-- entries.max_per_class -- asked by ADMISSION's verdict and never by the submission insert, for the
+-- same reason: a submission has no class until admission measures it. Left in the insert it would
+-- be a rule that answers differently when asked the second time, which is the exact failure the
+-- ask-twice discipline exists to prevent.
+CREATE FUNCTION season_admits_class_slot(s seasons, p_user uuid, p_class ladder, p_model uuid)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT NOT coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false)
+        OR (s.rules -> 'entries' -> 'max_per_class') IS NULL
+        OR (SELECT count(DISTINCT v.model_id) FROM model_versions v JOIN models e ON e.id = v.model_id
+             WHERE e.owner_id = p_user AND v.season_id = s.id AND v.weight_class = p_class
+               AND v.status IN ('verified', 'active') AND v.model_id <> p_model)
+           < (s.rules -> 'entries' ->> 'max_per_class')::int;
+$$;
+
+-- ------------------------------------------------------------ reading a ladder
+
+-- THE FIELD ON ONE LADDER, and the one definition of who is on it. Two readers rank against this --
+-- the leaderboard, and a version's own "rank 6 of 47" -- and a ladder whose two readers disagreed
+-- about its membership would print a rank a page cannot justify.
+--
+-- standings.ranked_per_user_max is applied HERE and nowhere else. It is work the entry split makes
+-- necessary: one active version per entry per season means a competitor with five entries holds
+-- five rows, and without a cap the top ten is one name.
+CREATE FUNCTION ladder_field(p_season uuid, p_ladder ladder)
+RETURNS TABLE (version_id uuid, owner_id uuid, conservative float8)
+LANGUAGE sql STABLE AS $$
+    WITH cap AS (
+        SELECT CASE WHEN coalesce((s.rules -> 'standings' ->> 'enabled')::bool, false)
+                    THEN (s.rules -> 'standings' ->> 'ranked_per_user_max')::int END AS n
+          FROM seasons s WHERE s.id = p_season),
+    eligible AS (
+        SELECT v.id, e.owner_id, r.conservative,
+               row_number() OVER (PARTITION BY e.owner_id
+                                  ORDER BY r.conservative DESC, v.id) AS per_owner
+          FROM model_versions v
+          JOIN models e   ON e.id = v.model_id
+          JOIN ratings r  ON r.version_id = v.id AND r.ladder = p_ladder
+         WHERE v.season_id = p_season AND v.status = 'active'
+           AND (p_ladder = 'open' OR v.weight_class = p_ladder))
+    SELECT eligible.id, eligible.owner_id, eligible.conservative
+      FROM eligible, cap
+     WHERE eligible.per_owner <= coalesce(cap.n, 2147483647);
 $$;
 
 -- Which of the two clocks a version is waiting on, in the words the pages print. Four routes say
 -- this; a version whose row is 'testing' or 'verified' yields the first three states only.
-CREATE FUNCTION model_phase(m models) RETURNS text LANGUAGE sql STABLE AS $$
-    SELECT CASE WHEN m.status = 'testing' AND m.admit_started_at IS NULL THEN 'queued'
-                WHEN m.status = 'testing'   THEN 'verifying'
-                WHEN m.status = 'verified'  THEN 'awaiting_trial'
-                WHEN m.status = 'active'    THEN 'on_the_ladder'
-                WHEN m.status = 'rejected'  THEN 'rejected'
+CREATE FUNCTION model_phase(v model_versions) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN v.status = 'testing' AND v.admit_started_at IS NULL THEN 'queued'
+                WHEN v.status = 'testing'   THEN 'verifying'
+                WHEN v.status = 'verified'  THEN 'awaiting_trial'
+                WHEN v.status = 'active'    THEN 'on_the_ladder'
+                WHEN v.status = 'rejected'  THEN 'rejected'
                 ELSE                             'superseded' END;
 $$;
 
 -- A rating is half a sentence; the Version screen, the profile and the caller's own list all print
 -- "rank 6 of 47" beside it. THE ORDER IS THE LEADERBOARD'S -- conservative DESC, id -- and the id
 -- tiebreak is not decoration: two ratings can be equal to the last bit, and without it a version's
--- own page and the ladder it appears on would disagree about which of the pair is fifth.
+-- own page and the ladder it appears on would disagree about which of the pair is fifth. Both read
+-- ladder_field(), so they also cannot disagree about who is on the ladder at all.
 --
 -- The field is the season's CURRENT field, since only `active` versions are on a ladder. A
 -- superseded version keeps its ratings rows and gets a rank too: where it would place among the
 -- versions playing now.
-CREATE FUNCTION model_ratings(p_model uuid, p_settled_sigma float8)
+CREATE FUNCTION model_ratings(p_version uuid, p_settled_sigma float8)
 RETURNS json LANGUAGE sql STABLE AS $$
     SELECT coalesce(json_object_agg(r.ladder, json_build_object(
         'rating',      r.conservative,
@@ -634,44 +1152,49 @@ RETURNS json LANGUAGE sql STABLE AS $$
         'sigma',       r.sigma,
         'provisional', r.sigma > p_settled_sigma,
         'matches',     r.matches_played,
-        'rank',  (SELECT count(*) + 1
-                  FROM models om JOIN ratings orr ON orr.model_id = om.id AND orr.ladder = r.ladder
-                  WHERE om.season_id = m.season_id AND om.status = 'active'
-                    AND (r.ladder = 'open' OR om.weight_class = r.ladder)
-                    AND (orr.conservative > r.conservative
-                     OR (orr.conservative = r.conservative AND om.id < m.id))),
-        -- The model itself counts, whether or not it is still active. Without the second term a
+        'rank',  (SELECT count(*) + 1 FROM ladder_field(v.season_id, r.ladder) f
+                  WHERE f.conservative > r.conservative
+                     OR (f.conservative = r.conservative AND f.version_id < v.id)),
+        -- The version itself counts, whether or not it is ON the ladder. Without the second term a
         -- superseded version reads "rank 6 of 5": it is ranked against the live field but was not
-        -- one of it. Dropped into the five playing now, it would be sixth of six.
-        'field', (SELECT count(*) + (CASE WHEN m.status = 'active' THEN 0 ELSE 1 END)
-                  FROM models om JOIN ratings orr ON orr.model_id = om.id AND orr.ladder = r.ladder
-                  WHERE om.season_id = m.season_id AND om.status = 'active'
-                    AND (r.ladder = 'open' OR om.weight_class = r.ladder))
+        -- one of it. Dropped into the five playing now, it would be sixth of six. The test is
+        -- membership and not `status = 'active'`, because standings.ranked_per_user_max can leave
+        -- an active version off the ladder its own page still ranks it against.
+        'field', (SELECT count(*) FROM ladder_field(v.season_id, r.ladder) f)
+                 + (CASE WHEN EXISTS (SELECT 1 FROM ladder_field(v.season_id, r.ladder) f2
+                                       WHERE f2.version_id = v.id) THEN 0 ELSE 1 END)
     )), '{}'::json)
-    FROM ratings r JOIN models m ON m.id = r.model_id
-    WHERE r.model_id = p_model;
+    FROM ratings r JOIN model_versions v ON v.id = r.version_id
+    WHERE r.version_id = p_version;
 $$;
 
 -- A match's seats, resolved: who sat there, in which class, and how it went for them. The three
 -- match routes each return their own SHAPE -- the public listing, the caller's own and the match
 -- page name different keys -- but the seat itself is one thing, and `outcome` is why this is a
--- function: a forfeited seat is `dq` and a beaten one is `loss`, and telling them apart needs the
--- strike limit, which is Jodi's forfeit_strikes and reaches SQL as a parameter.
-CREATE FUNCTION match_seat_rows(p_match uuid, p_strike_limit int)
-RETURNS TABLE (seat smallint, model_id uuid, owner text, owner_id uuid, baseline boolean,
+-- function: a forfeited seat is `dq` and a beaten one is `loss`.
+--
+-- The strike limit is READ OFF THE MATCH ROW rather than passed in. It used to be a parameter every
+-- caller had to plumb from Jodi's config into a Soma route, which meant Soma's rendering of a
+-- forfeit depended on a number in another package's [vars]. matches.strike_ceiling is the rule the
+-- wave actually played by, so the seat is judged by it and by nothing else.
+CREATE FUNCTION match_seat_rows(p_match uuid)
+RETURNS TABLE (seat smallint, version_id uuid, model_id uuid, model_name text,
+               owner text, owner_id uuid, baseline boolean,
                class ladder, version int, rank smallint, score int, strikes smallint, outcome text)
 LANGUAGE sql STABLE AS $$
-    SELECT s.seat, s.model_id, u.handle, md.owner_id, u.role = 'baseline',
-           md.weight_class, md.version, s.rank, s.score, s.strikes,
+    SELECT s.seat, s.version_id, e.id, e.name, u.handle, e.owner_id, u.role = 'baseline',
+           v.weight_class, v.version, s.rank, s.score, s.strikes,
            CASE WHEN s.rank IS NULL                    THEN NULL
-                WHEN s.strikes >= p_strike_limit       THEN 'dq'
+                WHEN s.strikes >= m.strike_ceiling     THEN 'dq'
                 WHEN s.rank > 1                        THEN 'loss'
                 WHEN (SELECT count(*) FROM match_seats w
                        WHERE w.match_id = s.match_id AND w.rank = 1) > 1 THEN 'draw'
                 ELSE                                        'win' END
       FROM match_seats s
-      LEFT JOIN models md ON md.id = s.model_id
-      LEFT JOIN users u   ON u.id = md.owner_id
+      JOIN matches m           ON m.id = s.match_id
+      LEFT JOIN model_versions v ON v.id = s.version_id
+      LEFT JOIN models e       ON e.id = v.model_id
+      LEFT JOIN users u        ON u.id = e.owner_id
      WHERE s.match_id = p_match
      ORDER BY s.seat;
 $$;
@@ -692,7 +1215,8 @@ ALTER TABLE matches SET (fillfactor = 70);
 
 -- Kalam plays matches. It can read the two tables it plays from and write only the columns it
 -- reports, so "Kalam writes no rating" is a fact of the grant: it cannot rate a match, cancel one,
--- pair one, or touch models, ratings, users or clocks at all.
+-- pair one, or touch models, model_versions, ratings, users or clocks at all. It reads
+-- matches.strike_ceiling off the row it claimed and keeps no copy of that number in its own config.
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kalam') THEN
         CREATE ROLE kalam LOGIN;
@@ -708,11 +1232,16 @@ GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO kalam;
 
--- Jodi runs the version life cycle. The verbs are DERIVED from jodi/workflows/*.json, and
--- jodi/scripts/check-sql.sh re-derives them on every run, so a new statement needing a grant it
--- does not have fails there rather than at 3am. Two absences are the point of the exercise: no
--- DELETE anywhere, and nothing on `sessions` -- that is Soma's auth surface. rating_events is
--- INSERT-only because Jodi appends the audit trail and never reads it back.
+-- Jodi runs the VERSION life cycle -- a smaller claim than it was, now that the entry is a row of
+-- its own. The verbs are DERIVED from jodi/workflows/*.json, and jodi/scripts/check-sql.sh
+-- re-derives them on every run, so a new statement needing a grant it does not have fails there
+-- rather than at 3am.
+--
+-- Three absences are the point of the exercise: no DELETE anywhere, nothing on `sessions` -- that
+-- is Soma's auth surface -- and NO UPDATE ON `models`. An entry's name, its repository and its
+-- retirement are the competitor's and Soma's; Jodi has no business rewriting any of them. Before
+-- the split that boundary could not be drawn, because the entry and the version were one row.
+-- rating_events is INSERT-only because Jodi appends the audit trail and never reads it back.
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'jodi') THEN
         CREATE ROLE jodi LOGIN;
@@ -720,9 +1249,10 @@ DO $$ BEGIN
 END $$;
 
 GRANT USAGE ON SCHEMA public TO jodi;
-GRANT SELECT ON clocks, games, matches, match_seats, models, ratings, seasons, users TO jodi;
+GRANT SELECT ON clocks, games, matches, match_seats, models, model_versions, ratings, seasons, users
+    TO jodi;
 GRANT INSERT ON matches, match_seats, rating_events, ratings TO jodi;
-GRANT UPDATE ON clocks, matches, models, ratings, seasons TO jodi;
+GRANT UPDATE ON clocks, matches, model_versions, ratings, seasons TO jodi;
 -- `nextval` needs the sequence as well as the table: count stamps every match it folds with
 -- rated_seq, so without this the fold fails on the FIRST finished match -- and because `finished`
 -- counts as in-flight when pair measures demand, the whole ladder then stops behind it.

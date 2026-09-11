@@ -2,7 +2,9 @@
   "workflow_id": "soma-matches-get",
   "name": "One match with its replay",
   "description": "Two columns out of Postgres: replay_key for the presign task, and the whole response. `rating_change` is null until count has folded the match, which is why status is shown beside it -- a competitor sees the result before they see what it did to their rating. A cancelled match carries withdrawn_reason and, where a promotion caused it, the successor that replaced the seat; a failed one carries the fault and which seat it was attributed to. replay_url is null for any row that never produced a replay.",
-  "tags": ["pkg:soma"],
+  "tags": [
+    "pkg:soma"
+  ],
   "tasks": [
     {
       "id": "query",
@@ -11,8 +13,12 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT mt.replay_key, json_build_object( 'id', mt.id, 'game', g.slug, 'season', (SELECT se.number FROM seasons se WHERE se.id = mt.season_id), 'status', mt.status, 'seed', mt.seed, 'preset', mt.preset, 'reason', mt.reason, 'turns', mt.turns, 'played_ms', mt.played_ms, 'played_at', mt.played_at, 'created_at', mt.created_at, 'withdrawn_reason', mt.withdrawn_reason, 'successor_id', mt.successor_id, 'fault_reason', mt.fault_reason, 'fault_seat', mt.fault_seat, 'engine_digest', mt.engine_digest_played, 'evaluator_digest', mt.evaluator_digest, 'is_trial', mt.trial_model_id IS NOT NULL, 'ladders', array_to_json(mt.ladders), 'strike_limit', ($2)::int, 'successor', (SELECT json_build_object('model_id', sm.id, 'owner', su.handle, 'version', sm.version) FROM models sm JOIN users su ON su.id = sm.owner_id WHERE sm.id = mt.successor_id), 'players', (SELECT coalesce(json_agg(json_build_object( 'seat', s.seat, 'model_id', s.model_id, 'owner', s.owner, 'baseline', s.baseline, 'class', s.class, 'model_version', s.version, 'outcome', s.outcome, 'rank', s.rank, 'score', s.score, 'strikes', s.strikes, 'rating_change', (SELECT json_object_agg(e.ladder, json_build_object( 'mu_before', e.mu_before, 'sigma_before', e.sigma_before, 'mu_after', e.mu_after, 'sigma_after', e.sigma_after)) FROM rating_events e WHERE e.match_id = mt.id AND e.seat = s.seat)) ORDER BY s.seat), '[]'::json) FROM match_seat_rows(mt.id, ($2)::int) s)) AS body FROM matches mt JOIN games g ON g.id = mt.game_id WHERE mt.id = ($1)::uuid",
-          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.forfeit_strikes" }],
+          "query": "SELECT mt.replay_key, json_build_object( 'id', mt.id, 'game', g.slug, 'season', (SELECT se.number FROM seasons se WHERE se.id = mt.season_id), 'status', mt.status, 'seed', mt.seed, 'preset', mt.preset, 'reason', mt.reason, 'turns', mt.turns, 'played_ms', mt.played_ms, 'played_at', mt.played_at, 'created_at', mt.created_at, 'withdrawn_reason', mt.withdrawn_reason, 'successor_id', mt.successor_version_id, 'fault_reason', mt.fault_reason, 'fault_seat', mt.fault_seat, 'engine_digest', mt.engine_digest_played, 'evaluator_digest', mt.evaluator_digest, 'is_trial', mt.trial_version_id IS NOT NULL, 'ladders', array_to_json(mt.ladders), 'strike_limit', mt.strike_ceiling, 'successor', (SELECT json_build_object('version_id', sv.id, 'model_id', se2.id, 'model', se2.name, 'owner', su.handle, 'version', sv.version) FROM model_versions sv JOIN models se2 ON se2.id = sv.model_id JOIN users su ON su.id = se2.owner_id WHERE sv.id = mt.successor_version_id), 'players', (SELECT coalesce(json_agg(json_build_object( 'seat', s.seat, 'version_id', s.version_id, 'model_id', s.model_id, 'model', s.model_name, 'owner', s.owner, 'baseline', s.baseline, 'class', s.class, 'model_version', s.version, 'outcome', s.outcome, 'rank', s.rank, 'score', s.score, 'strikes', s.strikes, 'rating_change', (SELECT json_object_agg(e.ladder, json_build_object( 'mu_before', e.mu_before, 'sigma_before', e.sigma_before, 'mu_after', e.mu_after, 'sigma_after', e.sigma_after)) FROM rating_events e WHERE e.match_id = mt.id AND e.seat = s.seat)) ORDER BY s.seat), '[]'::json) FROM match_seat_rows(mt.id) s)) AS body FROM matches mt JOIN games g ON g.id = mt.game_id WHERE mt.id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.params.id"
+            }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -20,13 +26,19 @@
     {
       "id": "presign",
       "name": "Sign the replay URL",
-      "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
+      "condition": {
+        "!!": {
+          "var": "temp_data.rows.0.replay_key"
+        }
+      },
       "function": {
         "name": "storage_presign",
         "input": {
           "connector": "soma-blobs",
           "method": "GET",
-          "key": { "var": "temp_data.rows.0.replay_key" },
+          "key": {
+            "var": "temp_data.rows.0.replay_key"
+          },
           "expires_in": "1h",
           "output": "temp_data.replay_url"
         }
@@ -39,9 +51,25 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data.body.replay_url",
+              "logic": {
+                "var": "temp_data.replay_url"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

@@ -1,8 +1,10 @@
 {
   "workflow_id": "soma-models-get",
-  "name": "One model version",
-  "description": "A version, its ladders and what it is waiting on. `trial` carries the trial match's own status and how long it has been queued, because a version sits in `verified` while that match is played and would otherwise look stopped -- nothing sweeps a `verified` version, so the wait is made visible rather than cancelled. `class_max_bytes` is read from the version's OWN season, since the caps are per season and a headroom bar must be drawn against the season the version was entered in.",
-  "tags": ["pkg:soma"],
+  "name": "One model",
+  "description": "One MODEL -- an entry -- and every version of it, addressed by the repository it is published from rather than by a uuid. The repository IS the key: `{owner}/{repo}` is exactly what the competitor pasted at creation, normalised by repo_path(), so the permalink is readable and a person can construct it from a GitHub URL without looking anything up. Public, like the version permalink under it, because a ladder nobody can audit is not a ladder. Every version is returned, newest first, with its own ratings: the entry is the lineage and the versions are its history, which is the shape the Model screen prints and the reason this route exists at all -- before the split there was no row to hang it on.",
+  "tags": [
+    "pkg:soma"
+  ],
   "tasks": [
     {
       "id": "query",
@@ -11,8 +13,21 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'id', m.id, 'owner', u.handle, 'game', g.slug, 'version', m.version, 'repo', m.repo, 'release_tag', m.release_tag, 'commit_sha', m.commit_sha, 'class', m.weight_class, 'class_max_bytes', (SELECT (e ->> 'max_bytes')::bigint FROM seasons cse, jsonb_array_elements(cse.weight_classes) AS e WHERE cse.id = m.season_id AND e ->> 'class' = m.weight_class::text), 'size_bytes', m.size_bytes, 'param_count', m.param_count, 'infer_us', m.infer_us, 'weights_hash', m.weights_hash, 'adapter_hash', m.adapter_hash, 'evaluator_digest', m.evaluator_digest, 'status', m.status, 'phase', model_phase(m), 'admit_attempt', CASE WHEN m.status = 'testing' THEN m.admit_attempts END, 'successor', (SELECT s.version FROM models s WHERE s.owner_id = m.owner_id AND s.game_id = m.game_id AND s.status = 'active' AND s.season_id = m.season_id AND m.status = 'superseded'), 'reject_reason', m.reject_reason, 'created_at', m.created_at, 'season', (SELECT se.number FROM seasons se WHERE se.id = m.season_id), 'trial', (SELECT json_build_object('match_id', t.id, 'status', t.status, 'preset', t.preset, 'queued_at', t.created_at, 'waiting_s', CASE WHEN t.status = 'pending' THEN round(extract(epoch FROM now() - t.created_at))::bigint END) FROM matches t WHERE t.trial_model_id = m.id ORDER BY t.created_at DESC LIMIT 1), 'ratings', model_ratings(m.id, ($2)::float8), 'baseline', u.role = 'baseline', 'last_played_at', (SELECT max(mt.played_at) FROM match_seats ms JOIN matches mt ON mt.id = ms.match_id WHERE ms.model_id = m.id)) AS body FROM models m JOIN users u ON u.id = m.owner_id JOIN games g ON g.id = m.game_id WHERE m.id = ($1)::uuid",
-          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.settled_sigma" }],
+          "query": "SELECT json_build_object( 'model_id', e.id, 'model', e.name, 'repo', e.repo, 'owner', e.owner_id, 'owner_handle', u.handle, 'baseline', u.role = 'baseline', 'game', g.slug, 'created_at', e.created_at, 'retired', e.retired_at IS NOT NULL, 'retired_at', e.retired_at, 'versions', coalesce((SELECT json_agg(json_build_object( 'version_id', v.id, 'version', v.version, 'release_tag', v.release_tag, 'commit_sha', v.commit_sha, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'param_count', v.param_count, 'infer_us', v.infer_us, 'status', v.status, 'phase', model_phase(v), 'reject_reason', v.reject_reason, 'created_at', v.created_at, 'weights_hash', v.weights_hash, 'adapter_hash', v.adapter_hash, 'season', (SELECT se.number FROM seasons se WHERE se.id = v.season_id), 'ratings', model_ratings(v.id, ($4)::float8), 'last_played_at', (SELECT max(mt.played_at) FROM match_seats ms JOIN matches mt ON mt.id = ms.match_id WHERE ms.version_id = v.id)) ORDER BY v.version DESC) FROM model_versions v WHERE v.model_id = e.id), '[]'::json)) AS body FROM models e JOIN users u ON u.id = e.owner_id JOIN games g ON g.id = e.game_id WHERE g.slug = ($1)::text AND lower(e.repo) = lower(($2)::text || '/' || ($3)::text)",
+          "params": [
+            {
+              "var": "metadata.params.game"
+            },
+            {
+              "var": "metadata.params.owner"
+            },
+            {
+              "var": "metadata.params.repo"
+            },
+            {
+              "var": "metadata.vars.settled_sigma"
+            }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -24,8 +39,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

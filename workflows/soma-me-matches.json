@@ -2,7 +2,9 @@
   "workflow_id": "soma-me-matches",
   "name": "The caller's own matches, in every state",
   "description": "The half GET /v1/matches cannot do. The public listing is finished and rated with no trials, and that is right; on your own page a queued pairing, a cancellation naming the version that replaced you and a trial are exactly what you came to see. ORDERED BY coalesce(played_at, created_at), because a queued match has never been played and would otherwise sort last under a NULL when it is the newest thing on the page; the cursor keys on the same expression so it stays total. `seats.mine` marks which seat is the caller's.",
-  "tags": ["pkg:soma"],
+  "tags": [
+    "pkg:soma"
+  ],
   "tasks": [
     {
       "id": "defaults",
@@ -13,7 +15,14 @@
           "mappings": [
             {
               "path": "temp_data.q.limit",
-              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+              "logic": {
+                "or": [
+                  {
+                    "var": "metadata.query.limit"
+                  },
+                  "25"
+                ]
+              }
             }
           ]
         }
@@ -26,14 +35,23 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "WITH mine AS NOT MATERIALIZED ( SELECT mt.id, mt.game_id, mt.season_id, mt.status, mt.preset, mt.seed, mt.reason, mt.turns, mt.played_at, mt.created_at, mt.ladders, mt.trial_model_id, mt.withdrawn_reason, mt.successor_id, mt.fault_reason, mt.fault_seat, coalesce(mt.played_at, mt.created_at) AS at FROM matches mt WHERE EXISTS (SELECT 1 FROM match_seats ms JOIN models md ON md.id = ms.model_id WHERE ms.match_id = mt.id AND md.owner_id = ($1)::uuid) AND (($4)::text IS NULL OR mt.game_id = (SELECT g.id FROM games g WHERE g.slug = ($4)::text)) ), page AS ( SELECT * FROM mine WHERE ($5)::text IS NULL OR (at, id) < (split_part(($5)::text, '|', 1)::timestamptz, split_part(($5)::text, '|', 2)::uuid) ORDER BY at DESC, id DESC LIMIT ($6)::int ) SELECT ls.sid AS session_ok, json_build_object( 'total', CASE WHEN ($5)::text IS NULL THEN (SELECT count(*) FROM mine) END, 'matches', coalesce((SELECT json_agg(json_build_object( 'id', p.id, 'game', (SELECT g.slug FROM games g WHERE g.id = p.game_id), 'season', (SELECT se.number FROM seasons se WHERE se.id = p.season_id), 'status', p.status, 'preset', p.preset, 'seed', p.seed, 'reason', p.reason, 'turns', p.turns, 'played_at', p.played_at, 'created_at', p.created_at, 'ladders', array_to_json(p.ladders), 'is_trial', p.trial_model_id IS NOT NULL, 'withdrawn_reason', p.withdrawn_reason, 'fault_reason', p.fault_reason, 'fault_seat', p.fault_seat, 'successor', (SELECT json_build_object('model_id', sm.id, 'version', sm.version) FROM models sm WHERE sm.id = p.successor_id), 'seats', (SELECT coalesce(json_agg(json_build_object( 'seat', s.seat, 'model_id', s.model_id, 'owner', s.owner, 'baseline', s.baseline, 'class', s.class, 'version', s.version, 'rank', s.rank, 'score', s.score, 'strikes', s.strikes, 'mine', s.owner_id = ($1)::uuid, 'outcome', s.outcome) ORDER BY s.seat), '[]'::json) FROM match_seat_rows(p.id, ($3)::int) s) ) ORDER BY p.at DESC, p.id DESC) FROM page p), '[]'::json), 'next_cursor', CASE WHEN (SELECT count(*) FROM page) = ($6)::int THEN (SELECT (to_json(x.at) #>> '{}') || '|' || x.id::text FROM page x ORDER BY x.at ASC, x.id ASC LIMIT 1) END) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "query": "WITH mine AS NOT MATERIALIZED ( SELECT mt.id, mt.game_id, mt.season_id, mt.status, mt.preset, mt.seed, mt.reason, mt.turns, mt.played_at, mt.created_at, mt.ladders, mt.trial_version_id, mt.withdrawn_reason, mt.successor_version_id, mt.fault_reason, mt.fault_seat, coalesce(mt.played_at, mt.created_at) AS at FROM matches mt WHERE EXISTS (SELECT 1 FROM match_seats ms JOIN model_versions mv ON mv.id = ms.version_id JOIN models me ON me.id = mv.model_id WHERE ms.match_id = mt.id AND me.owner_id = ($1)::uuid) AND (($3)::text IS NULL OR mt.game_id = (SELECT g.id FROM games g WHERE g.slug = ($3)::text)) ), page AS ( SELECT * FROM mine WHERE ($4)::text IS NULL OR (at, id) < (split_part(($4)::text, '|', 1)::timestamptz, split_part(($4)::text, '|', 2)::uuid) ORDER BY at DESC, id DESC LIMIT ($5)::int ) SELECT ls.sid AS session_ok, json_build_object( 'total', CASE WHEN ($4)::text IS NULL THEN (SELECT count(*) FROM mine) END, 'matches', coalesce((SELECT json_agg(json_build_object( 'id', p.id, 'game', (SELECT g.slug FROM games g WHERE g.id = p.game_id), 'season', (SELECT se.number FROM seasons se WHERE se.id = p.season_id), 'status', p.status, 'preset', p.preset, 'seed', p.seed, 'reason', p.reason, 'turns', p.turns, 'played_at', p.played_at, 'created_at', p.created_at, 'ladders', array_to_json(p.ladders), 'is_trial', p.trial_version_id IS NOT NULL, 'withdrawn_reason', p.withdrawn_reason, 'fault_reason', p.fault_reason, 'fault_seat', p.fault_seat, 'successor', (SELECT json_build_object('version_id', sv.id, 'model_id', sv.model_id, 'version', sv.version) FROM model_versions sv WHERE sv.id = p.successor_version_id), 'seats', (SELECT coalesce(json_agg(json_build_object( 'seat', s.seat, 'version_id', s.version_id, 'model_id', s.model_id, 'model', s.model_name, 'owner', s.owner, 'baseline', s.baseline, 'class', s.class, 'version', s.version, 'rank', s.rank, 'score', s.score, 'strikes', s.strikes, 'mine', s.owner_id = ($1)::uuid, 'outcome', s.outcome) ORDER BY s.seat), '[]'::json) FROM match_seat_rows(p.id) s) ) ORDER BY p.at DESC, p.id DESC) FROM page p), '[]'::json), 'next_cursor', CASE WHEN (SELECT count(*) FROM page) = ($5)::int THEN (SELECT (to_json(x.at) #>> '{}') || '|' || x.id::text FROM page x ORDER BY x.at ASC, x.id ASC LIMIT 1) END) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
           "params": [
-            { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.auth.claims.sid" },
-            { "var": "metadata.vars.forfeit_strikes" },
-            { "var": "metadata.query.game" },
-            { "var": "metadata.query.cursor" },
-            { "var": "temp_data.q.limit" }
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            },
+            {
+              "var": "metadata.query.game"
+            },
+            {
+              "var": "metadata.query.cursor"
+            },
+            {
+              "var": "temp_data.q.limit"
+            }
           ],
           "output": "temp_data.rows"
         }
@@ -42,14 +60,29 @@
     {
       "id": "deny",
       "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
+      "condition": {
+        "!": {
+          "var": "temp_data.rows.0.session_ok"
+        }
+      },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }
@@ -61,8 +94,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

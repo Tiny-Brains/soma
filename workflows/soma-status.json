@@ -2,7 +2,9 @@
   "workflow_id": "soma-status",
   "name": "Is the arena running?",
   "description": "The arena half of /status, and only that half. A route cannot honestly measure its own API -- when it is down, the numbers saying so are the ones that do not arrive -- so the page times its own calls and this reports facts about the database. It NAMES NO STATE: running, behind and down are a reading of these numbers, and a threshold in SQL could not be changed without a package reload.",
-  "tags": ["pkg:soma"],
+  "tags": [
+    "pkg:soma"
+  ],
   "tasks": [
     {
       "id": "query",
@@ -11,7 +13,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'checked_at', now(), 'arena', json_build_object( 'matches_last_hour', (SELECT count(*) FROM matches WHERE played_at > now() - interval '1 hour'), 'queue', (SELECT count(*) FROM matches WHERE status = 'pending'), 'in_flight', (SELECT count(*) FROM matches WHERE status IN ('claimed', 'running')), 'awaiting_rating', (SELECT count(*) FROM matches WHERE status = 'finished'), 'median_played_ms', (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY played_ms) FROM matches WHERE played_at > now() - interval '1 hour' AND played_ms IS NOT NULL), 'last_played_at', (SELECT max(played_at) FROM matches), 'last_rated_at', (SELECT max(rated_at) FROM matches), 'admission_queue', (SELECT count(*) FROM models WHERE status = 'testing'), 'awaiting_trial', (SELECT count(*) FROM models WHERE status = 'verified'))) AS body",
+          "query": "SELECT json_build_object( 'checked_at', now(), 'arena', json_build_object( 'matches_last_hour', (SELECT count(*) FROM matches WHERE played_at > now() - interval '1 hour'), 'queue', (SELECT count(*) FROM matches WHERE status = 'pending'), 'in_flight', (SELECT count(*) FROM matches WHERE status IN ('claimed', 'running')), 'awaiting_rating', (SELECT count(*) FROM matches WHERE status = 'finished'), 'median_played_ms', (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY played_ms) FROM matches WHERE played_at > now() - interval '1 hour' AND played_ms IS NOT NULL), 'last_played_at', (SELECT max(played_at) FROM matches), 'last_rated_at', (SELECT max(rated_at) FROM matches), 'admission_queue', (SELECT count(*) FROM model_versions WHERE status = 'testing'), 'awaiting_trial', (SELECT count(*) FROM model_versions WHERE status = 'verified'))) AS body",
           "params": [],
           "output": "temp_data.rows"
         }
@@ -24,8 +26,19 @@
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            {
+              "path": "data.body",
+              "logic": {
+                "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body"
+              }
+            }
           ]
         }
       }

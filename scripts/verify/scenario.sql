@@ -5,7 +5,7 @@
 \set ON_ERROR_STOP off
 \pset footer off
 
-\echo '--- seed: game, users, models, ratings'
+\echo '--- seed: game, users, models, versions, ratings'
 INSERT INTO games (id, slug, name, active_engine_digest)
 VALUES ('00000000-0000-0000-0000-00000000000a', 'ants', 'Ants', 'sha256:e1');
 INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, submissions_close_at)
@@ -14,18 +14,26 @@ VALUES ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000
 INSERT INTO users (id, github_id, handle, role) VALUES
   ('00000000-0000-0000-0000-0000000000b1', NULL, 'baseline-random', 'baseline'),
   ('00000000-0000-0000-0000-0000000000a1', 1,    'alice',           'competitor');
-INSERT INTO models (id, owner_id, game_id, season_id, version, repo, release_tag, status, weight_class,
-                    weights_hash, adapter_hash, evaluator_digest) VALUES
-  ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000b1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'tb/baselines', 'random-v1', 'active', 'nano',
+-- Two ENTRIES -- one baseline's, one alice's -- and three versions between them. Alice's two
+-- versions are the same entry, which is what makes the promotion below a supersede rather than two
+-- unrelated models both standing active.
+INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
+  ('e0000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000b1',
+   '00000000-0000-0000-0000-00000000000a', 'random', 'tb/baselines'),
+  ('e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', 'ants brain', 'alice/ants');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+  ('10000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000b1',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'random-v1', 'active', 'nano',
    'sha256:wb1', 'sha256:ab1', 'sha256:ev1'),
-  ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'alice/ants', 'v1', 'active', 'nano',
+  ('20000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
    'sha256:wa1', 'sha256:aa1', 'sha256:ev1'),
-  ('20000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'alice/ants', 'v2', 'verified', 'nano',
+  ('20000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'v2', 'verified', 'nano',
    'sha256:wa2', 'sha256:aa2', 'sha256:ev1');
-INSERT INTO ratings (model_id, ladder, mu, sigma) VALUES
+INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
   ('10000000-0000-0000-0000-000000000001', 'nano', 25, 8.333),
   ('10000000-0000-0000-0000-000000000001', 'open', 25, 8.333),
   ('20000000-0000-0000-0000-000000000001', 'nano', 30, 4),
@@ -35,22 +43,22 @@ INSERT INTO ratings (model_id, ladder, mu, sigma) VALUES
 EXECUTE p_epoch;
 EXECUTE p_insert (0, 'ants', 42, 'default',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
-  '20000000-0000-0000-0000-000000000002', gen_random_uuid());
+  '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
 EXECUTE p_insert (0, 'ants', 43, 'default',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
-  NULL, gen_random_uuid());
+  NULL, gen_random_uuid(), 5);
 EXECUTE p_insert (0, 'ants', 44, 'default',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
-  '20000000-0000-0000-0000-000000000002', gen_random_uuid());
+  '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
 \echo '--- pair: stale epoch (expect 0); a row on another preset (expect 2)'
 EXECUTE p_insert (99, 'ants', 45, 'default',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
-  NULL, gen_random_uuid());
+  NULL, gen_random_uuid(), 5);
 EXECUTE p_insert (0, 'ants', 46, 'other-map',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
-  NULL, gen_random_uuid());
-SELECT seed, preset, status, seat_count, ladders, trial_model_id IS NOT NULL AS trial FROM matches ORDER BY seed;
-SELECT m.seed, s.seat, s.model_id, s.weights_hash, s.paired_ratings FROM match_seats s JOIN matches m ON m.id = s.match_id ORDER BY m.seed, s.seat;
+  NULL, gen_random_uuid(), 5);
+SELECT seed, preset, status, seat_count, ladders, trial_version_id IS NOT NULL AS trial FROM matches ORDER BY seed;
+SELECT m.seed, s.seat, s.version_id, s.weights_hash, s.paired_ratings FROM match_seats s JOIN matches m ON m.id = s.match_id ORDER BY m.seed, s.seat;
 SELECT id AS m42 FROM matches WHERE seed = 42 \gset
 SELECT id AS m43 FROM matches WHERE seed = 43 \gset
 SELECT id AS m46 FROM matches WHERE seed = 46 \gset
@@ -62,23 +70,23 @@ EXECUTE k_read ('30000000-0000-0000-0000-000000000001');
 \echo '--- kalam: a second replica claims what is left (expect 1: the other-preset row)'
 EXECUTE k_claim ('sha256:e1', '{}', 8, '30000000-0000-0000-0000-000000000002', 60);
 \echo '--- kalam: start (expect 2); renew (expect 2); renew with a foreign token (expect 0)'
-EXECUTE k_start ('30000000-0000-0000-0000-000000000001', ARRAY[:'m42'::uuid, :'m43'::uuid]);
+EXECUTE k_start ('30000000-0000-0000-0000-000000000001');
 EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60);
 EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60);
 \echo '--- kalam: a malformed result naming one seat twice (expect 0, row still running); finish both rows (expect UPDATE 2 seats each); finish again (expect 0)'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":0,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, 4000, 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
 SELECT seed, status FROM matches WHERE seed = 42;
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, 4000, 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, 6000, 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, 6000, 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
 SELECT m.seed, s.seat, s.rank, s.score, s.strikes FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.seed IN (42, 43) ORDER BY m.seed, s.seat;
 \echo '--- kalam: the other replica lapses; reap after expiry (expect 1: back to pending, lapses 1, token cleared)'
 UPDATE matches SET lease_expires_at = now() - interval '1 second' WHERE claim_token = '30000000-0000-0000-0000-000000000002';
@@ -91,7 +99,7 @@ EXECUTE c_fence ('2026-09-07 09:59:00+00', 1);
 EXECUTE c_fence ('2026-09-07 10:00:00+00', 2);
 \echo '--- count: batch (expect 2 ids); priors for the ranked row'
 EXECUTE c_batch (10);
-EXECUTE c_priors (:'m43');
+EXECUTE c_priors (:'m43', 4.1667, 0.0833, 0.10);
 \echo '--- count: fold under the stale fence (expect 0, row still finished); under the live fence (expect 4); again (expect 0); on the trial row (expect 0, row untouched)'
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 1, :'m43',
   '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"nano","mu":29.2,"sigma":3.8},{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"nano","mu":27.9,"sigma":6.1},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
@@ -103,31 +111,32 @@ EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m42', '[]');
 SELECT seed, status, rated_seq FROM matches WHERE seed IN (42, 43) ORDER BY seed;
 EXECUTE s_match_change (:'m43');
 \echo '--- rating events: a duplicate seq is refused by the chain key (expect unique violation); the chain audit finds no break (expect 0 rows)'
-INSERT INTO rating_events (model_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after)
+INSERT INTO rating_events (version_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after)
 VALUES ('20000000-0000-0000-0000-000000000001', 'nano', 1, :'m43', 0, 30, 4, 29.2, 3.8);
 EXECUTE a_chain;
-SELECT model_id, ladder, mu, sigma, matches_played FROM ratings ORDER BY model_id, ladder;
+SELECT version_id, ladder, mu, sigma, matches_played FROM ratings ORDER BY version_id, ladder;
 
 \echo '--- count: verdict read (expect alice v2: trials 1, last finished, candidate_seat 0, candidate_rank 1)'
 EXECUTE c_verdicts;
 EXECUTE c_decide (5, 3);
-\echo '--- count: pass under the live fence (expect INSERT 0 2); models_one_active_uniq must not fire'
+\echo '--- count: pass under the live fence (expect INSERT 0 2); model_versions_one_active_excl must not fire'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
-SELECT version, status FROM models WHERE owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY version;
-SELECT model_id, ladder, mu, sigma, seed_mu, seed_sigma FROM ratings WHERE model_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder;
-SELECT ladder, seq, match_id, mu_before, mu_after, sigma_after FROM rating_events WHERE model_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder, seq;
+SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
+ WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
+SELECT version_id, ladder, mu, sigma, seed_mu, seed_sigma FROM ratings WHERE version_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder;
+SELECT ladder, seq, match_id, mu_before, mu_after, sigma_after FROM rating_events WHERE version_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder, seq;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 SELECT seed, status, rated_seq FROM matches WHERE seed = 42;
 \echo '--- count: pass again (expect INSERT 0 0)'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
 \echo '--- promotion statement 2: withdraw the pending rows naming v1 (expect 1: the other-preset row, successor v2)'
 EXECUTE c_withdraw_pred ('20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
-SELECT seed, status, withdrawn_reason, successor_id FROM matches WHERE seed = 46;
+SELECT seed, status, withdrawn_reason, successor_version_id FROM matches WHERE seed = 46;
 \echo '--- pair with the epoch read before promotion (expect 0: fenced out); with the new epoch (expect 2)'
 EXECUTE p_insert (0, 'ants', 47, 'default',
-  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid());
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 EXECUTE p_insert (1, 'ants', 47, 'default',
-  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid());
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 \echo '--- withdraw sweep: retire the engine on the live season (expect 1: seed 47 ENGINE_RETIRED); a closed season refuses inserts (expect 0) and the sweep finds nothing queued (expect 0)'
 UPDATE games SET active_engine_digest = 'sha256:e2';
 UPDATE seasons SET engine_digest = 'sha256:e2';
@@ -135,31 +144,32 @@ EXECUTE w_sweep;
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 47;
 UPDATE seasons SET closed_at = now();
 EXECUTE p_insert (1, 'ants', 48, 'default',
-  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid());
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 EXECUTE w_sweep;
 UPDATE seasons SET closed_at = NULL;
 
 \echo '--- reject path: v3 verified; its trial fails with a fault on seat 0; verdict read; reject (expect UPDATE 1, epoch 2)'
-INSERT INTO models (id, owner_id, game_id, season_id, version, repo, release_tag, status, weight_class,
-                    weights_hash, adapter_hash, evaluator_digest) VALUES
-  ('20000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'alice/ants', 'v3', 'verified', 'nano',
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+  ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'v3', 'verified', 'nano',
    'sha256:wa3', 'sha256:aa3', 'sha256:ev1');
 EXECUTE p_insert (1, 'ants', 50, 'default',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
-  '20000000-0000-0000-0000-000000000003', gen_random_uuid());
+  '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
 EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000003', 60);
-EXECUTE k_fail ('30000000-0000-0000-0000-000000000003', :'m50', 'HASH_MISMATCH', 0, 'sha256:e2', 'sha256:ev1');
+EXECUTE k_fail ('30000000-0000-0000-0000-000000000003',
+  '[{"weights_hash":"sha256:wa3","reason":"HASH_MISMATCH"}]');
 EXECUTE c_verdicts;
 EXECUTE c_decide (5, 3);
 EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'HASH_MISMATCH');
-SELECT version, status, reject_reason FROM models WHERE version = 3;
+SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- memory refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed UNLOADABLE)'
 EXECUTE p_insert (2, 'ants', 51, 'default',
-  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid());
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
 EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000004', 60);
 EXECUTE k_release ('30000000-0000-0000-0000-000000000004', ARRAY[:'m51'::uuid], 5);
@@ -171,34 +181,76 @@ SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 \echo '--- soma: a version''s history is one join (expect the rated row 43 for alice v1; the cancelled row 46 is not listed)'
 EXECUTE s_history ('20000000-0000-0000-0000-000000000001', 10);
 
-\echo '--- the kalam role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); read models, read or write events (expect denied)'
+\echo '--- the kalam role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); read model_versions, read or write events (expect denied)'
 EXECUTE p_insert (2, 'ants', 52, 'default',
-  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid());
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m52 FROM matches WHERE seed = 52 \gset
 SET ROLE kalam;
 UPDATE matches SET withdrawn_reason = 'x' WHERE seed = 52;
 UPDATE matches SET status = 'cancelled', closed_at = now() WHERE seed = 52;
 UPDATE matches SET status = 'rated', rated_at = now() WHERE seed = 52;
-UPDATE match_seats SET model_id = '20000000-0000-0000-0000-000000000001' WHERE match_id = :'m52' AND seat = 0;
+UPDATE match_seats SET version_id = '20000000-0000-0000-0000-000000000001' WHERE match_id = :'m52' AND seat = 0;
 UPDATE match_seats SET rank = 1 WHERE match_id = :'m52' AND seat = 0;
 SELECT count(*) AS kalam_reads_matches FROM matches;
 SELECT count(*) AS kalam_reads_seats FROM match_seats;
-SELECT count(*) FROM models;
+SELECT count(*) FROM model_versions;
 SELECT count(*) FROM rating_events;
 UPDATE rating_events SET mu_after = 0;
 RESET ROLE;
+
+\echo '--- the entry split: two models of one competitor stand together; two versions of ONE model do not'
+-- What the change is FOR. Alice takes a second entry and both are active in the same season, which
+-- the (owner, game, season) exclusion constraint this replaced would have refused outright.
+INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
+  ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', 'second try', 'alice/ants-two');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+  ('20000000-0000-0000-0000-000000000009', 'e0000000-0000-0000-0000-0000000000a2',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
+   'sha256:wa9', 'sha256:aa9', 'sha256:ev1');
+SELECT e.name, v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
+ WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' AND v.status = 'active' ORDER BY e.name;
+\echo '    ... and a second active version of one entry in one season is still refused (expect exclusion violation)'
+INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest)
+VALUES ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000000a',
+        '50000000-0000-0000-0000-000000000001', 2, 'v2', 'active', 'nano',
+        'sha256:wax', 'sha256:aax', 'sha256:ev1');
+
+\echo '--- the predecessor read is single-row across seasons: the bug the entry scope fixes'
+-- A competitor holds an `active` version in EVERY season they ever finished -- a closed season's
+-- active version IS its standing. Count's predecessor lookup is a scalar subquery, so scoped by
+-- owner alone (as it was before this change) it raises "more than one row" the first time a second
+-- season opens, and the count clock dies with the whole ladder behind it.
+INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, submissions_close_at, closed_at)
+VALUES ('50000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-00000000000a', 2, 'sha256:e0',
+        now() - interval '2 days', now() - interval '1 day', now() - interval '1 day');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+  ('20000000-0000-0000-0000-00000000000f', 'e0000000-0000-0000-0000-0000000000a2',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000000', 9, 'v0', 'active', 'nano',
+   'sha256:waf', 'sha256:aaf', 'sha256:ev1');
+\echo '    owner-scoped (what count used to do) vs entry-and-season-scoped (what it does now):'
+SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_id
+         WHERE pe.owner_id = '00000000-0000-0000-0000-0000000000a1' AND p.status = 'active')
+         AS owner_scoped_rows,
+       (SELECT count(*) FROM model_versions p
+         WHERE p.model_id = 'e0000000-0000-0000-0000-0000000000a2'
+           AND p.season_id = '50000000-0000-0000-0000-000000000001' AND p.status = 'active')
+         AS entry_and_season_scoped_rows;
 
 \echo '--- final state'
 SELECT seed, preset, status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
 
 \echo '--- the adapter copy: stored as the exact text, accepted when it hashes to adapter_hash (expect INSERT 0 1); one byte changed (expect check violation)'
-INSERT INTO models (id, owner_id, game_id, season_id, version, repo, release_tag, status, weight_class,
-                    weights_hash, adapter_hash, evaluator_digest, adapter) VALUES
-  ('20000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 4, 'alice/ants', 'v4', 'verified', 'nano',
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+                            weight_class, weights_hash, adapter_hash, evaluator_digest, adapter) VALUES
+  ('20000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 4, 'v4', 'verified', 'nano',
    'sha256:wa4', 'sha256:' || encode(sha256(convert_to('{"in": ["scatter"]}', 'UTF8')), 'hex'),
    'sha256:ev1', '{"in": ["scatter"]}');
-UPDATE models SET adapter = '{"in": ["scatter"] }' WHERE version = 4;
+UPDATE model_versions SET adapter = '{"in": ["scatter"] }' WHERE version = 4;
 
 \echo '--- jodi/docs/design.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on preset 1 (expect n 1, 2 seats)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
@@ -210,15 +262,16 @@ EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3, '["legacy"]');
 \echo '--- promotion in the reverse order: v4 activated before v2 is demoted, under the deferred one-active constraint (expect INSERT 0 2; v2 superseded, v4 active; epoch 3)'
 EXECUTE p_insert (2, 'ants', 60, 'default',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
-  '20000000-0000-0000-0000-000000000004', gen_random_uuid());
+  '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
 EXECUTE k_claim ('sha256:e2', '{}', 1, '30000000-0000-0000-0000-000000000007', 60);
-EXECUTE k_start ('30000000-0000-0000-0000-000000000007', ARRAY[:'m60'::uuid]);
+EXECUTE k_start ('30000000-0000-0000-0000-000000000007');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000007', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
   'all_food', 90, 2500, 'sha256:e2', 'sha256:ev1', 'replays/ants/w/t7.json');
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
-SELECT version, status FROM models WHERE owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY version;
+SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
+ WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- jodi/docs/design.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'

@@ -10,5 +10,5 @@ EXECUTE c_fold ('2026-09-07 10:01:00+00', 1, :'m52',
 SELECT pg_sleep(4);
 COMMIT;
 \echo 'holder: committed; v2 now has seq 0 (seed) and seq 1 on both ladders; chain audit (expect 0 rows)'
-SELECT ladder, seq, mu_before, mu_after FROM rating_events WHERE model_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder, seq;
+SELECT ladder, seq, mu_before, mu_after FROM rating_events WHERE version_id = '20000000-0000-0000-0000-000000000002' ORDER BY ladder, seq;
 EXECUTE a_chain;
