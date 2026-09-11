@@ -215,6 +215,13 @@ LICENSE                      repository licence
 
 ## Status
 
+**11 September 2026 — a leaderboard row carries its last dozen ratings.** `soma-leaderboard` adds
+`history` beside `trend`: the last twelve conservative ratings on the ladder, oldest first, the seed
+at promotion included, rounded to two places — one correlated subquery over `rating_events` per
+row, the same shape `trend` already ran. Enough for the site's sparkline; a version's full chain
+stays off the public routes. `check-sql.sh` passes all 47 statements, and the reloaded package
+answers the field on the running stack.
+
 **11 September 2026 — `pairing.trial_opponents` is gone.** Nothing read it, and its `field` and
 `both` values promised trials against something other than a baseline, which is the one thing a
 baseline is for (decision 28). `scripts/verify` carries Jodi's demand view without its baseline
