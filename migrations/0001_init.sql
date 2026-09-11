@@ -161,7 +161,6 @@ LANGUAGE sql IMMUTABLE AS $$
       ('pairing', 'cross_class_fraction', 'num',        0,    1, NULL),
       ('pairing', 'burst',                'int',        0, 1000, NULL),
       ('pairing', 'steady_cap',           'int',        0, 1000, NULL),
-      ('pairing', 'trial_opponents',      'enum',    NULL, NULL, ARRAY['baselines','field','both']),
       -- One key where the deploy has two names for one number: `repair_cap` is both count's
       -- UNPLAYABLE ceiling and pair's re-pair cap, and they have never been allowed to differ.
       ('pairing', 'trials_max',           'int',        1,  100, NULL),

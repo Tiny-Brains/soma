@@ -275,9 +275,21 @@ SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- jodi/docs/design.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
+\echo '    decision 28: the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight -- it used to read state baseline, want 0)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
   '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
+
+\echo '--- decision 28: pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
+SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
+UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
+ WHERE id = '50000000-0000-0000-0000-000000000001';
+EXECUTE p_demand_doc ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0, 64, 0.2) \gset
+SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e::jsonb ? 'role' AS has_role
+  FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
+SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
+  FROM json_array_elements((:'body')::json -> 'owners') o ORDER BY 1;
+UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-0000-000000000001';
 
 \echo '===== identity: the handle is a label, and the index protects the namespace the readers use ====='
 

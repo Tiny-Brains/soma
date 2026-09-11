@@ -215,6 +215,12 @@ LICENSE                      repository licence
 
 ## Status
 
+**11 September 2026 — `pairing.trial_opponents` is gone.** Nothing read it, and its `field` and
+`both` values promised trials against something other than a baseline, which is the one thing a
+baseline is for (decision 28). `scripts/verify` carries Jodi's demand view without its baseline
+branch: a baseline is paced like every version, and the walk shows it wanting its own placement and
+its owner in the queue-share map.
+
 **11 September 2026 — the handle is a label, not an identity.** `users.handle` is a cache of a
 mutable remote value refreshed only at sign-in, and three sign-ins were dying on it: a new account
 taking a login freed by a rename, an existing account renaming into a login a stale row still held,
