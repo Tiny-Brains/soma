@@ -22,18 +22,21 @@ Run from the repo root. All four checks are separate and cover different halves 
 loads is not a package that works.
 
 ```sh
-./scripts/load-package.sh          # sweep pkg:soma objects, re-POST; ORION_ADMIN picks the instance
-orion-server lint . --deny-warnings   # references, schemas, every declared env var
-orion-server clippy .              # advisory; reports 14 known duplications this package cannot fix
-orion-server fmt --check .         # definition-JSON house style; drop --check to apply
+./scripts/check-defs.sh            # lint + clippy + fmt, all --deny-warnings; no stack needed
+./scripts/load-package.sh          # compile the set, apply the package; ORION_ADMIN picks the instance
 ./scripts/check-sql.sh             # PREPAREs all 38 shipped statements against a scratch schema
 ./scripts/smoke.sh                 # every route against a running stack: status codes only
 ./scripts/verify/run.sh            # what the statements MEAN: the walk, both fence races, grants
 ```
 
+`check-defs.sh` is the one to run on every change: it reads the definitions and nothing else, so it
+needs no database and no stack. It runs `lint`, `clippy` and `fmt` with `--deny-warnings`, and the
+set is clean -- the 14 duplications this file used to say the package "cannot fix" are fixed, in
+`shared/soma.json`.
+
 | Check | Proves | Needs |
 |---|---|---|
-| `lint` | definitions reference things that exist | the 1.8.1 binary |
+| `check-defs.sh` | the set resolves, says nothing twice, and is in house style | the 1.8.1 binary |
 | `check-sql.sh` | every inline query resolves against the current schema | `tinybrains-db-1` up |
 | `smoke.sh` | the workflows around those queries answer | the whole stack up, package loaded |
 | `verify/run.sh` | the schema's promises to Jodi and Kalam hold | `tinybrains-db-1` up |
@@ -45,11 +48,12 @@ against `soma_sqlcheck`. `smoke.sh` has no filter — curl the single route inst
 `SMOKE_HANDLE` (default `codetiger`), `SOMA_ENV_FILE` (default `../devops/.env`), `SEED`,
 `ORION_ADMIN`, `ORION_ADMIN_API_KEY`, `SOMA_ALLOW_PRIVATE_DB=1` for a private DB address.
 
-**The toolchain trap, and it bites.** `orion-server` on PATH here is **1.5.1**. It does not
-understand this package's auth, cron or plugin blocks and reports *misleading schema errors* on
-definitions that are correct. The pinned 1.8.1 source of truth is the separate checkout at
-`~/Development/Plasmatic/Orion-Projects/Orion`; `devops/compose/Orion/` holds the image and the
-`soma.toml.tmpl` instance template. Check `orion-server --version` before believing a lint failure.
+**The toolchain trap.** `orion-server` must be **1.8.x**; an older one does not understand this
+package's auth, cron or plugin blocks and reports *misleading schema errors* on definitions that
+are correct. `check-defs.sh` asserts the version before it runs anything, so the trap is now a
+message rather than a puzzle. The pinned source of truth is the separate checkout at
+`~/Development/Plasmatic/Orion-Projects/Orion`; `devops/compose/orion/` holds the image and the
+`soma.toml.tmpl` instance template.
 
 ## How a route is built
 
@@ -118,11 +122,13 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
 
 ## What breaks if you forget it
 
-- `load-package.sh` sweeps **by tag** (`pkg:soma`), not by the files present, so a deleted channel
-  releases its route. Never drop the `"tags": ["pkg:soma"]` from a definition — an untagged object
-  survives every reload and holds its route forever.
-- Workflows load before channels (a channel holds its workflow); an ACTIVE workflow is immutable in
-  Orion, so reload is delete-then-create, never PUT.
+- `load-package.sh` retires **by tag** (`pkg:soma`) anything the compiled artifact does not carry,
+  so a deleted channel releases its route. Never drop the `"tags": ["pkg:soma"]` from a definition —
+  an untagged object survives every reload and holds its route forever.
+- **`package apply` orders and activates; nothing here does it by hand.** It stages connectors, then
+  workflows, then channels, activates in dependency order and reloads the engine once. It is also
+  atomic on failure: a bad artifact leaves the running package untouched, which the old
+  delete-then-POST loop could not.
 - A route that can return something private gets its **own path**, never a parameter:
   `GET /v1/me/matches` exists rather than `GET /v1/matches?owner=me`, because a public route that
   quietly returns more to some callers is the shape a privacy bug arrives in.

@@ -7,45 +7,22 @@
     {
       "id": "who",
       "name": "Who is asking",
-      "function": {
-        "name": "db_read",
-        "input": {
-          "connector": "soma-db",
-          "query": "SELECT json_build_object('id', u.id, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
-          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
-          "output": "temp_data.who"
-        }
-      }
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.who.0.body" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
     },
     {
       "id": "forbid",
-      "name": "Admins only",
-      "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request.",
-      "condition": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "admin_only" } },
-            { "path": "data._orion.response", "logic": { "status": 403, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
       }
     },
     {
@@ -63,17 +40,12 @@
     },
     {
       "id": "refused",
-      "name": "Nothing to close",
-      "condition": { "!": { ">": [{ "var": "temp_data.requested.rows_affected" }, 0] } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "no_live_season" } },
-            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.requested.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "no_live_season" },
+        "name": "Nothing to close"
       }
     },
     {

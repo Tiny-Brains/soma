@@ -2,9 +2,7 @@
   "workflow_id": "soma-me",
   "name": "The signed-in competitor",
   "description": "The join on live_sessions IS the revocation check -- a join rather than a guard task, so it costs no extra round trip and cannot be omitted by mistake. It yields no row for a signed-out session or a deleted user, and `deny` answers that 401 because the shell maps 401 to anonymous and every other status to an error panel. `touch` runs after `deny`, so a revoked session cannot mark itself alive on the way out; it is bucketed to five minutes, so the ordinary request writes no row at all.",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -14,47 +12,15 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'role', u.role, 'created_at', u.created_at, 'candidates', coalesce((SELECT json_agg(json_build_object('version_id', v.id, 'model_id', e.id, 'model', e.name, 'repo', e.repo, 'game', g.slug, 'version', v.version, 'phase', model_phase(v)) ORDER BY g.slug, e.name) FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = e.game_id WHERE e.owner_id = u.id AND v.status IN ('testing', 'verified')), '[]'::json)) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
-          "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            }
-          ],
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
           "output": "temp_data.rows"
         }
       }
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.body" }
     },
     {
       "id": "touch",
@@ -64,11 +30,7 @@
         "input": {
           "connector": "soma-db",
           "query": "UPDATE sessions SET last_seen_at = now() WHERE sid = ($1)::uuid AND last_seen_at < now() - interval '5 minutes'",
-          "params": [
-            {
-              "var": "metadata.auth.claims.sid"
-            }
-          ],
+          "params": [{ "var": "metadata.auth.claims.sid" }],
           "output": "temp_data.touched"
         }
       }
@@ -80,19 +42,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

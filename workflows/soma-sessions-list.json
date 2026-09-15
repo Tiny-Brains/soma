@@ -19,18 +19,8 @@
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
     },
     {
       "id": "respond",
@@ -40,7 +30,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

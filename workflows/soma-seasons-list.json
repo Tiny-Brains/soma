@@ -25,7 +25,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

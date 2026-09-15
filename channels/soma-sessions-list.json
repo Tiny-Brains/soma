@@ -8,23 +8,10 @@
   "route_pattern": "/v1/sessions",
   "workflow_id": "soma-sessions-list",
   "config": {
-    "response": { "mode": "shaped" },
+    "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
-    "rate_limit": {
-      "requests_per_second": 20,
-      "burst": 40
-    },
-    "auth": {
-      "mode": "jwt",
-      "algorithms": ["HS256"],
-      "jwt_keys": [{ "algorithm": "HS256", "key": "env://SOMA_SESSION_SECRET" }],
-      "issuer": "soma",
-      "source": { "cookie": "soma_session" }
-    },
-    "principal_rate_limit": {
-      "requests_per_second": 10,
-      "burst": 20,
-      "key_logic": { "var": "auth.sub" }
-    }
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
   }
 }

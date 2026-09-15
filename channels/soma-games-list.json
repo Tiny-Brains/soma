@@ -8,16 +8,9 @@
   "route_pattern": "/v1/games",
   "workflow_id": "soma-games-list",
   "config": {
-    "response": { "mode": "shaped" },
+    "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
-    "rate_limit": {
-      "requests_per_second": 30,
-      "burst": 60
-    },
-    "cache": {
-      "enabled": true,
-      "ttl_secs": 300,
-      "connector": "soma-cache"
-    }
+    "rate_limit": { "$from": "constants.public_rate" },
+    "cache": { "$from": "constants.catalog_cache" }
   }
 }

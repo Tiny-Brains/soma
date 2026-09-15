@@ -237,6 +237,28 @@ LICENSE                      repository licence
 
 ## Status
 
+**15 September 2026 — the set says each thing once, and the loader compiles it.** `shared/soma.json`
+holds the constants and two fragments the 26 channels and 26 workflows now reference: the JWT-from-
+cookie `auth` block that was copied 15 times, the four rate-limit shapes, the two cache policies,
+the `{status, body_path}` response objects, and a `refuse` fragment that replaced **39 hand-written
+terminal refusal tasks** across 16 workflows plus a `deny-revoked` one that replaced the 13 copies
+of the session-revocation guard. `orion-server clippy` went from 18 findings to 0 and `fmt --check`
+from 23 failing files to none. The refactor is proved rather than asserted: compiling the new set
+and diffing every entity against the old one leaves exactly two intended differences — the
+split-body refusals folded into one object literal, and a description added to the session guard.
+
+`scripts/load-package.sh` is now `orion-server compile` + `orion-server package apply`, because a
+set carrying `$from` and `use` is refused by the admin API until it is compiled. It stages a copy
+with this deployment's connector settings written in, retires only what the artifact does not carry,
+and applies one artifact whose version names its content. Apply is idempotent, atomic on failure and
+never takes a route down between a DELETE and its POST, which the old loop could not manage. New:
+`scripts/check-defs.sh` — lint + clippy + fmt with `--deny-warnings`, no stack needed. 33/33 smoke
+against the live stack.
+
+Two pre-existing bugs in `scripts/smoke.sh` fixed on the way: it asked for `models.status`, a column
+that does not exist, so `$MODEL` was empty and two checks tested nothing; and it asserted
+`/v1/models/{id}`, a route replaced by `/v1/games/{game}/models/{owner}/{repo}`.
+
 **15 September 2026 — the anonymous reads are cached.** A `soma-cache` connector (Redis, logical
 db 1, so a cache key cannot collide with the cluster state on db 0) and `config.cache` on the nine
 caller-invariant read channels: 10 s on the leaderboard, the match lists and the by-id reads —

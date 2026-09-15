@@ -8,11 +8,8 @@
   "route_pattern": "/v1/status",
   "workflow_id": "soma-status",
   "config": {
-    "response": { "mode": "shaped" },
+    "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
-    "rate_limit": {
-      "requests_per_second": 30,
-      "burst": 60
-    }
+    "rate_limit": { "$from": "constants.public_rate" }
   }
 }

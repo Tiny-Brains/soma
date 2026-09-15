@@ -1,0 +1,90 @@
+{
+  "constants": {
+    "session_auth": {
+      "mode": "jwt",
+      "algorithms": ["HS256"],
+      "jwt_keys": [{ "algorithm": "HS256", "key": "env://SOMA_SESSION_SECRET" }],
+      "issuer": "soma",
+      "source": { "cookie": "soma_session" }
+    },
+    "shaped": { "mode": "shaped" },
+    "public_rate": { "requests_per_second": 30, "burst": 60 },
+    "session_rate": { "requests_per_second": 20, "burst": 40 },
+    "per_user_read_rate": {
+      "requests_per_second": 10,
+      "burst": 20,
+      "key_logic": { "var": "auth.sub" }
+    },
+    "per_user_write_rate": {
+      "requests_per_second": 1,
+      "burst": 5,
+      "key_logic": { "var": "auth.sub" }
+    },
+    "hot_cache": { "enabled": true, "ttl_secs": 10, "connector": "soma-cache" },
+    "catalog_cache": { "enabled": true, "ttl_secs": 300, "connector": "soma-cache" },
+    "ok": { "status": 200, "body_path": "data.body" },
+    "created": { "status": 201, "body_path": "data.body" },
+    "admin_identity": {
+      "connector": "soma-db",
+      "query": "SELECT json_build_object('id', u.id, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
+      "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+      "output": "temp_data.who"
+    }
+  },
+  "fragments": {
+    "refuse": {
+      "params": {
+        "when": {},
+        "status": {},
+        "body": {},
+        "name": { "default": "Refuse" },
+        "description": { "default": "" }
+      },
+      "tasks": [
+        {
+          "id": "answer",
+          "name": { "$param": "name" },
+          "description": { "$param": "description" },
+          "condition": { "$param": "when" },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "$param": "body" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": { "$param": "status" }, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "deny-revoked": {
+      "params": { "row": {} },
+      "tasks": [
+        {
+          "id": "revoked",
+          "name": "Reject a revoked session",
+          "description": "The session guard is a JOIN, not a task: an authed read joins live_sessions and answers nothing when the row is gone. This is the half that turns that absence into a 401 rather than an empty 200. It must stay AFTER the read that produces the row and BEFORE the respond, which is where the call site puts it.",
+          "condition": { "!": { "var": { "$param": "row" } } },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "session_revoked" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 401, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

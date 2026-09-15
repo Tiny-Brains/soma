@@ -2,112 +2,42 @@
   "workflow_id": "soma-submissions-create",
   "name": "Enter a GitHub release",
   "description": "Recording a release as a testing version. Two statements, not one: db_write returns only rows_affected, so the row is read back, and both statements join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. The insert carries the open season's rules as PREDICATES, so a refusal is a row that was never written rather than a check that could be raced; zero rows then sends `why` to read the state back and `refused` answers 409 with one word. The duplicate refusal deliberately does not name the version it collided with: unique_weights excludes the caller, so the row it matched is always another competitor's, and naming or dating it would report one competitor's submission to another.",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "parse",
       "name": "Parse payload",
-      "function": {
-        "name": "parse_json",
-        "input": {
-          "source": "payload",
-          "target": "req"
-        }
-      }
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
       "id": "declared",
-      "name": "Both hashes, declared and well formed",
-      "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator. The alphabet does not have to be checked here: the object key is a GENERATED column derived from the version id, so a hash is never a path.",
-      "condition": {
-        "or": [
-          {
-            "or": [
-              {
-                "!": {
-                  "var": "data.req.weights_hash"
-                }
-              },
-              {
-                "!": {
-                  "starts_with": [
-                    {
-                      "var": "data.req.weights_hash"
-                    },
-                    "sha256:"
-                  ]
-                }
-              },
-              {
-                "!=": [
-                  {
-                    "length": [
-                      {
-                        "var": "data.req.weights_hash"
-                      }
-                    ]
-                  },
-                  71
-                ]
-              }
-            ]
-          },
-          {
-            "or": [
-              {
-                "!": {
-                  "var": "data.req.manifest_hash"
-                }
-              },
-              {
-                "!": {
-                  "starts_with": [
-                    {
-                      "var": "data.req.manifest_hash"
-                    },
-                    "sha256:"
-                  ]
-                }
-              },
-              {
-                "!=": [
-                  {
-                    "length": [
-                      {
-                        "var": "data.req.manifest_hash"
-                      }
-                    ]
-                  },
-                  71
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [
             {
-              "path": "data.body",
-              "logic": {
-                "error": "hashes_required",
-                "detail": "weights_hash and manifest_hash are required, each as sha256:<64 hex>. Run `sha256sum model.onnx manifest.json` on the files you attached to the release."
-              }
+              "or": [
+                { "!": { "var": "data.req.weights_hash" } },
+                { "!": { "starts_with": [{ "var": "data.req.weights_hash" }, "sha256:"] } },
+                { "!=": [{ "length": [{ "var": "data.req.weights_hash" }] }, 71] }
+              ]
             },
             {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 400,
-                "body_path": "data.body"
-              }
+              "or": [
+                { "!": { "var": "data.req.manifest_hash" } },
+                { "!": { "starts_with": [{ "var": "data.req.manifest_hash" }, "sha256:"] } },
+                { "!=": [{ "length": [{ "var": "data.req.manifest_hash" }] }, 71] }
+              ]
             }
           ]
-        }
+        },
+        "status": 400,
+        "body": {
+          "error": "hashes_required",
+          "detail": "weights_hash and manifest_hash are required, each as sha256:<64 hex>. Run `sha256sum model.onnx manifest.json` on the files you attached to the release."
+        },
+        "name": "Both hashes, declared and well formed",
+        "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator. The alphabet does not have to be checked here: the object key is a GENERATED column derived from the version id, so a hash is never a path."
       }
     },
     {
@@ -119,27 +49,13 @@
           "connector": "soma-db",
           "query": "INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, weights_hash, manifest_hash) SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN models e ON e.game_id = g.id AND e.owner_id = ($1)::uuid AND e.retired_at IS NULL AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN model_versions v ON v.model_id = e.id WHERE g.slug = ($2)::text AND season_admits(s, ($1)::uuid) AND season_admits_weights(s, ($1)::uuid, ($6)::text, e.id) AND season_admits_in_flight(s, ($1)::uuid) AND season_admits_version(s, ($1)::uuid, e.id) AND season_admits_cooldown(s, e.id) AND NOT EXISTS (SELECT 1 FROM model_versions f WHERE f.model_id = e.id AND f.status IN ('testing', 'verified')) GROUP BY e.id, g.id, s.id",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.model"
-            },
-            {
-              "var": "data.req.release_tag"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            },
-            {
-              "var": "data.req.weights_hash"
-            },
-            {
-              "var": "data.req.manifest_hash"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.model" },
+            { "var": "data.req.release_tag" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.manifest_hash" }
           ],
           "output": "temp_data.insert"
         }
@@ -148,34 +64,17 @@
     {
       "id": "why",
       "name": "Why nothing was inserted",
-      "condition": {
-        "!": {
-          ">": [
-            {
-              "var": "temp_data.insert.rows_affected"
-            },
-            0
-          ]
-        }
-      },
+      "condition": { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
           "query": "SELECT json_build_object( 'season', s.number, 'state', CASE WHEN s.id IS NOT NULL THEN season_state(s) END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'model', (SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'retired', e.retired_at IS NOT NULL) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND (e.id::text = ($4)::text OR lower(e.repo) = lower(repo_path(($4)::text)))), 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'in_flight', coalesce((SELECT json_agg(json_build_object('version_id', f.id, 'model_id', f.model_id, 'model', fe.name, 'version', f.version, 'phase', model_phase(f)) ORDER BY fe.name) FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.owner_id = ($2)::uuid AND fe.game_id = g.id AND f.status IN ('testing', 'verified')), '[]'::json), 'entry_in_flight', EXISTS (SELECT 1 FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.game_id = g.id AND fe.owner_id = ($2)::uuid AND (fe.id::text = ($4)::text OR lower(fe.repo) = lower(repo_path(($4)::text))) AND f.status IN ('testing', 'verified')), 'in_flight_ok', s.id IS NULL OR season_admits_in_flight(s, ($2)::uuid), 'versions_ok', s.id IS NULL OR (SELECT season_admits_version(s, ($2)::uuid, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND (e.id::text = ($4)::text OR lower(e.repo) = lower(repo_path(($4)::text)))), 'cooldown_until', (SELECT season_cooldown_until(s, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND (e.id::text = ($4)::text OR lower(e.repo) = lower(repo_path(($4)::text)))), 'unique_weights_scope', coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game'), 'unique_weights', s.id IS NULL OR (SELECT season_admits_weights(s, ($2)::uuid, ($3)::text, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND (e.id::text = ($4)::text OR lower(e.repo) = lower(repo_path(($4)::text))))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
           "params": [
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.weights_hash"
-            },
-            {
-              "var": "data.req.model"
-            }
+            { "var": "data.req.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.model" }
           ],
           "output": "temp_data.why"
         }
@@ -183,229 +82,78 @@
     },
     {
       "id": "unknown_model",
-      "name": "No such model",
-      "description": "A submission names a model the caller does not own, or does not have: 404 and not 409, because nothing about the season refused it. Entries are created explicitly -- a repository with no entry behind it is not silently adopted, or a typo in a repo path would quietly start a second lineage with its own version numbers.",
-      "condition": {
-        "and": [
-          {
-            "!": {
-              ">": [
-                {
-                  "var": "temp_data.insert.rows_affected"
-                },
-                0
-              ]
-            }
-          },
-          {
-            "!": {
-              "var": "temp_data.why.0.body.model"
-            }
-          },
-          {
-            "!!": {
-              "var": "temp_data.why.0.body"
-            }
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body.error",
-              "logic": "unknown_model"
-            },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "data.req.model"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 404,
-                "body_path": "data.body"
-              }
-            }
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.model" } },
+            { "!!": { "var": "temp_data.why.0.body" } }
           ]
-        }
+        },
+        "status": 404,
+        "body": { "error": "unknown_model", "detail": { "var": "data.req.model" } },
+        "name": "No such model",
+        "description": "A submission names a model the caller does not own, or does not have: 404 and not 409, because nothing about the season refused it. Entries are created explicitly -- a repository with no entry behind it is not silently adopted, or a typo in a repo path would quietly start a second lineage with its own version numbers."
       }
     },
     {
       "id": "refused",
-      "name": "Refused by the season",
-      "description": "Every refusal is the negation of a predicate the INSERT carried, read back through the same season_admits_* function -- asked twice, answered the same, or a competitor is refused for a reason the response denies. `cooling_down` is the one exception and is reported as an instant rather than a boolean, because it is a function of now(): the insert and this read are a moment apart and at the boundary they genuinely differ, so the page says \"try again at 14:02\" instead of a verdict it cannot reproduce. A revoked session also inserts nothing and is not this task's: with the season open and every rule satisfied it falls through to the read-back, whose empty result `deny` answers 401.",
-      "condition": {
-        "and": [
-          {
-            "!": {
-              ">": [
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "!!": { "var": "temp_data.why.0.body.model" } },
+            {
+              "or": [
+                { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
+                { "!": { "var": "temp_data.why.0.body.participant" } },
+                { "!!": { "var": "temp_data.why.0.body.model.retired" } },
+                { "!!": { "var": "temp_data.why.0.body.entry_in_flight" } },
+                { "!": { "var": "temp_data.why.0.body.in_flight_ok" } },
+                { "!": { "var": "temp_data.why.0.body.versions_ok" } },
                 {
-                  "var": "temp_data.insert.rows_affected"
+                  "and": [
+                    { "!!": { "var": "temp_data.why.0.body.cooldown_until" } },
+                    { ">": [{ "var": "temp_data.why.0.body.cooldown_until" }, { "now": [] }] }
+                  ]
                 },
-                0
+                { "!": { "var": "temp_data.why.0.body.unique_weights" } }
               ]
             }
-          },
-          {
-            "!!": {
-              "var": "temp_data.why.0.body.model"
-            }
-          },
-          {
-            "or": [
-              {
-                "!=": [
-                  {
-                    "var": "temp_data.why.0.body.state"
-                  },
-                  "open"
-                ]
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.participant"
-                }
-              },
-              {
-                "!!": {
-                  "var": "temp_data.why.0.body.model.retired"
-                }
-              },
-              {
-                "!!": {
-                  "var": "temp_data.why.0.body.entry_in_flight"
-                }
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.in_flight_ok"
-                }
-              },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.versions_ok"
-                }
-              },
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": {
+            "if": [
+              { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
+              "season_not_open",
+              { "!": { "var": "temp_data.why.0.body.participant" } },
+              "not_a_participant",
+              { "!!": { "var": "temp_data.why.0.body.model.retired" } },
+              "model_retired",
+              { "!!": { "var": "temp_data.why.0.body.entry_in_flight" } },
+              "version_in_flight",
+              { "!": { "var": "temp_data.why.0.body.in_flight_ok" } },
+              "too_many_in_flight",
+              { "!": { "var": "temp_data.why.0.body.versions_ok" } },
+              "too_many_versions",
               {
                 "and": [
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.cooldown_until"
-                    }
-                  },
-                  {
-                    ">": [
-                      {
-                        "var": "temp_data.why.0.body.cooldown_until"
-                      },
-                      {
-                        "now": []
-                      }
-                    ]
-                  }
+                  { "!!": { "var": "temp_data.why.0.body.cooldown_until" } },
+                  { ">": [{ "var": "temp_data.why.0.body.cooldown_until" }, { "now": [] }] }
                 ]
               },
-              {
-                "!": {
-                  "var": "temp_data.why.0.body.unique_weights"
-                }
-              }
+              "cooling_down",
+              "weights_already_entered"
             ]
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body.error",
-              "logic": {
-                "if": [
-                  {
-                    "!=": [
-                      {
-                        "var": "temp_data.why.0.body.state"
-                      },
-                      "open"
-                    ]
-                  },
-                  "season_not_open",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.participant"
-                    }
-                  },
-                  "not_a_participant",
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.model.retired"
-                    }
-                  },
-                  "model_retired",
-                  {
-                    "!!": {
-                      "var": "temp_data.why.0.body.entry_in_flight"
-                    }
-                  },
-                  "version_in_flight",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.in_flight_ok"
-                    }
-                  },
-                  "too_many_in_flight",
-                  {
-                    "!": {
-                      "var": "temp_data.why.0.body.versions_ok"
-                    }
-                  },
-                  "too_many_versions",
-                  {
-                    "and": [
-                      {
-                        "!!": {
-                          "var": "temp_data.why.0.body.cooldown_until"
-                        }
-                      },
-                      {
-                        ">": [
-                          {
-                            "var": "temp_data.why.0.body.cooldown_until"
-                          },
-                          {
-                            "now": []
-                          }
-                        ]
-                      }
-                    ]
-                  },
-                  "cooling_down",
-                  "weights_already_entered"
-                ]
-              }
-            },
-            {
-              "path": "data.body.detail",
-              "logic": {
-                "var": "temp_data.why.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 409,
-                "body_path": "data.body"
-              }
-            }
-          ]
-        }
+          },
+          "detail": { "var": "temp_data.why.0.body" }
+        },
+        "name": "Refused by the season",
+        "description": "Every refusal is the negation of a predicate the INSERT carried, read back through the same season_admits_* function -- asked twice, answered the same, or a competitor is refused for a reason the response denies. `cooling_down` is the one exception and is reported as an instant rather than a boolean, because it is a function of now(): the insert and this read are a moment apart and at the boundary they genuinely differ, so the page says \"try again at 14:02\" instead of a verdict it cannot reproduce. A revoked session also inserts nothing and is not this task's: with the season open and every rule satisfied it falls through to the read-back, whose empty result `deny` answers 401."
       }
     },
     {
@@ -417,111 +165,65 @@
           "connector": "soma-db",
           "query": "SELECT json_build_object('version_id', v.id, 'model_id', e.id, 'model', e.name, 'repo', e.repo, 'version', v.version, 'status', v.status, 'season', se.number, 'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash) AS body FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = e.game_id JOIN seasons se ON se.id = v.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) AND v.release_tag = ($5)::text",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "data.req.game"
-            },
-            {
-              "var": "data.req.model"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            },
-            {
-              "var": "data.req.release_tag"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.model" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.release_tag" }
           ],
           "output": "temp_data.rows"
         }
       }
     },
     {
-      "id": "sign_weights",
-      "name": "A one-shot PUT for the ONNX graph",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body.version_id"
-        }
-      },
-      "function": {
-        "name": "storage_presign",
-        "input": {
-          "connector": "soma-models",
-          "method": "PUT",
-          "key": {
-            "cat": [
-              "models/",
-              {
-                "var": "temp_data.rows.0.body.version_id"
+      "id": "sign",
+      "name": "Sign both uploads",
+      "description": "Both presigns are asked the same question -- did the INSERT create a version -- so the group carries the condition once and the two steps inside carry none. Neither writes what it reads, so one evaluation is the whole answer.",
+      "condition": { "!!": { "var": "temp_data.rows.0.body.version_id" } },
+      "tasks": [
+        {
+          "id": "sign_weights",
+          "name": "A one-shot PUT for the ONNX graph",
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-models",
+              "method": "PUT",
+              "key": {
+                "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
               },
-              "/",
-              "model.onnx"
-            ]
-          },
-          "expires_in": "30m",
-          "output": "temp_data.put_weights"
-        }
-      }
-    },
-    {
-      "id": "sign_manifest",
-      "name": "A one-shot PUT for the manifest",
-      "condition": {
-        "!!": {
-          "var": "temp_data.rows.0.body.version_id"
-        }
-      },
-      "function": {
-        "name": "storage_presign",
-        "input": {
-          "connector": "soma-models",
-          "method": "PUT",
-          "key": {
-            "cat": [
-              "models/",
-              {
-                "var": "temp_data.rows.0.body.version_id"
+              "expires_in": "30m",
+              "output": "temp_data.put_weights"
+            }
+          }
+        },
+        {
+          "id": "sign_manifest",
+          "name": "A one-shot PUT for the manifest",
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-models",
+              "method": "PUT",
+              "key": {
+                "cat": [
+                  "models/",
+                  { "var": "temp_data.rows.0.body.version_id" },
+                  "/",
+                  "manifest.json"
+                ]
               },
-              "/",
-              "manifest.json"
-            ]
-          },
-          "expires_in": "30m",
-          "output": "temp_data.put_manifest"
+              "expires_in": "30m",
+              "output": "temp_data.put_manifest"
+            }
+          }
         }
-      }
+      ]
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.body"
-        }
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.body" }
     },
     {
       "id": "respond",
@@ -530,28 +232,15 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
             {
               "path": "data.body.upload",
               "logic": {
                 "if": [
+                  { "!!": { "var": "temp_data.rows.0.body.version_id" } },
                   {
-                    "!!": {
-                      "var": "temp_data.rows.0.body.version_id"
-                    }
-                  },
-                  {
-                    "model_onnx": {
-                      "var": "temp_data.put_weights"
-                    },
-                    "manifest_json": {
-                      "var": "temp_data.put_manifest"
-                    },
+                    "model_onnx": { "var": "temp_data.put_weights" },
+                    "manifest_json": { "var": "temp_data.put_manifest" },
                     "expires_in": "30m",
                     "note": "PUT the two files from your release to these URLs. They are one-shot and expire; ask again with the same release_tag to get fresh ones."
                   },
@@ -559,13 +248,7 @@
                 ]
               }
             },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 201,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
           ]
         }
       }

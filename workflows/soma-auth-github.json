@@ -2,27 +2,14 @@
   "workflow_id": "soma-auth-github",
   "name": "Complete GitHub sign-in",
   "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, PKCE, and the code exchange -- and hands this workflow a verified grant at metadata.oauth; Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. display_name is seeded from GitHub ON INSERT ONLY, because a competitor who renames themselves through PATCH /v1/me must not have it undone by their next sign-in. THE LOGIN IS RELEASED BEFORE IT IS CLAIMED: users.handle is unique, GitHub recycles logins, and the upsert alone cannot survive either half of a rename -- see the `release` task. WHERE IT SENDS YOU AFTERWARDS: `metadata.oauth.return_to` when the authorize leg carried a `?next=`, otherwise `app_url`. That value is NOT the caller's to choose freely -- Orion checks it against `oauth2_login.return_to.allow_list` on the authorize leg, seals it into the signed state cookie, and only hands it here once it comes back intact, so this workflow receives a vetted destination and an unlisted or tampered one simply is not there. The list is two origins (`app_return_url`, `console_return_url`) because the Orion console is a separate origin sharing this sign-in: without the return, a visitor sent from the console lands on the site and has to find their own way back.",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "sid",
       "name": "Mint a session id",
       "function": {
         "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "temp_data.sid",
-              "logic": {
-                "random": [
-                  "uuid"
-                ]
-              }
-            }
-          ]
-        }
+        "input": { "mappings": [{ "path": "temp_data.sid", "logic": { "random": ["uuid"] } }] }
       }
     },
     {
@@ -35,14 +22,7 @@
           "method": "GET",
           "path": "/user",
           "headers": {
-            "authorization": {
-              "cat": [
-                "Bearer ",
-                {
-                  "var": "metadata.oauth.access_token"
-                }
-              ]
-            }
+            "authorization": { "cat": ["Bearer ", { "var": "metadata.oauth.access_token" }] }
           },
           "output": "temp_data.gh"
         }
@@ -57,14 +37,7 @@
         "input": {
           "connector": "soma-db",
           "query": "UPDATE users SET handle = 'released.' || github_id WHERE lower(handle) = lower(($2)::text) AND github_id IS NOT NULL AND github_id <> ($1)::bigint",
-          "params": [
-            {
-              "var": "temp_data.gh.id"
-            },
-            {
-              "var": "temp_data.gh.login"
-            }
-          ],
+          "params": [{ "var": "temp_data.gh.id" }, { "var": "temp_data.gh.login" }],
           "output": "temp_data.released"
         }
       }
@@ -78,15 +51,9 @@
           "connector": "soma-db",
           "query": "INSERT INTO users (github_id, handle, display_name) VALUES (($1)::bigint, ($2)::text, ($3)::text) ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle",
           "params": [
-            {
-              "var": "temp_data.gh.id"
-            },
-            {
-              "var": "temp_data.gh.login"
-            },
-            {
-              "var": "temp_data.gh.name"
-            }
+            { "var": "temp_data.gh.id" },
+            { "var": "temp_data.gh.login" },
+            { "var": "temp_data.gh.name" }
           ],
           "output": "temp_data.upsert"
         }
@@ -100,11 +67,7 @@
         "input": {
           "connector": "soma-db",
           "query": "SELECT id FROM users WHERE github_id = ($1)::bigint",
-          "params": [
-            {
-              "var": "temp_data.gh.id"
-            }
-          ],
+          "params": [{ "var": "temp_data.gh.id" }],
           "output": "temp_data.rows"
         }
       }
@@ -118,15 +81,9 @@
           "connector": "soma-db",
           "query": "INSERT INTO sessions (sid, user_id, expires_at, user_agent) VALUES (($1)::uuid, ($2)::uuid, now() + interval '30 days', ($3)::text)",
           "params": [
-            {
-              "var": "temp_data.sid"
-            },
-            {
-              "var": "temp_data.rows.0.id"
-            },
-            {
-              "var": "metadata.headers.user-agent"
-            }
+            { "var": "temp_data.sid" },
+            { "var": "temp_data.rows.0.id" },
+            { "var": "metadata.headers.user-agent" }
           ],
           "output": "temp_data.session_row"
         }
@@ -141,15 +98,9 @@
           "algorithm": "HS256",
           "key": "env://SOMA_SESSION_SECRET",
           "claims": {
-            "sub": {
-              "var": "temp_data.rows.0.id"
-            },
-            "handle": {
-              "var": "temp_data.gh.login"
-            },
-            "sid": {
-              "var": "temp_data.sid"
-            }
+            "sub": { "var": "temp_data.rows.0.id" },
+            "handle": { "var": "temp_data.gh.login" },
+            "sid": { "var": "temp_data.sid" }
           },
           "expires_in": "30d",
           "issuer": "soma",
@@ -164,10 +115,7 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {}
-            },
+            { "path": "data.body", "logic": {} },
             {
               "path": "data._orion.response",
               "logic": {
@@ -176,29 +124,19 @@
                 "headers": {
                   "location": {
                     "if": [
-                      {
-                        "var": "metadata.oauth.return_to"
-                      },
-                      {
-                        "var": "metadata.oauth.return_to"
-                      },
-                      {
-                        "var": "metadata.vars.app_url"
-                      }
+                      { "var": "metadata.oauth.return_to" },
+                      { "var": "metadata.oauth.return_to" },
+                      { "var": "metadata.vars.app_url" }
                     ]
                   }
                 },
                 "cookies": [
                   {
                     "name": "soma_session",
-                    "value": {
-                      "var": "temp_data.session"
-                    },
+                    "value": { "var": "temp_data.session" },
                     "path": "/",
                     "http_only": true,
-                    "secure": {
-                      "var": "metadata.vars.cookie_secure"
-                    },
+                    "secure": { "var": "metadata.vars.cookie_secure" },
                     "same_site": "Lax",
                     "max_age": 2592000
                   }

@@ -11,25 +11,15 @@
     },
     {
       "id": "declared",
-      "name": "A name and a repository, declared",
-      "condition": {
-        "or": [{ "!": { "var": "data.req.name" } }, { "!": { "var": "data.req.url" } }]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "name_and_url_required",
-                "detail": "name is what you call this model; url is the GitHub repository it is published from, as a URL or as owner/name."
-              }
-            },
-            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "or": [{ "!": { "var": "data.req.name" } }, { "!": { "var": "data.req.url" } }] },
+        "status": 400,
+        "body": {
+          "error": "name_and_url_required",
+          "detail": "name is what you call this model; url is the GitHub repository it is published from, as a URL or as owner/name."
+        },
+        "name": "A name and a repository, declared"
       }
     },
     {
@@ -48,39 +38,26 @@
     },
     {
       "id": "unknown",
-      "name": "No such game",
-      "condition": { "!": { "var": "temp_data.path.0.game_id" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "unknown_game" } },
-            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.path.0.game_id" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game"
       }
     },
     {
       "id": "malformed",
-      "name": "That is not a repository",
-      "description": "repo_path() answers NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word -- so this is a 400 about what was typed and never a 409 about a rule.",
-      "condition": { "!": { "var": "temp_data.path.0.repo" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "repo_invalid",
-                "detail": "url must name one GitHub repository: https://github.com/you/your-model, or you/your-model. A releases or tree URL names a page inside one, not the repository itself."
-              }
-            },
-            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.path.0.repo" } },
+        "status": 400,
+        "body": {
+          "error": "repo_invalid",
+          "detail": "url must name one GitHub repository: https://github.com/you/your-model, or you/your-model. A releases or tree URL names a page inside one, not the repository itself."
+        },
+        "name": "That is not a repository",
+        "description": "repo_path() answers NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word -- so this is a 400 about what was typed and never a 409 about a rule."
       }
     },
     {
@@ -118,46 +95,30 @@
     },
     {
       "id": "unverified",
-      "name": "GitHub did not answer for this repository",
-      "description": "Orion's http_call continues on a 4xx and writes no output, and does not surface the status, so a repository that does not exist and a rate limit arrive identically. Both refuse, and the refusal is TEMPORARY AND FAILS CLOSED -- it must never fall back to comparing logins, because that fallback is what this route stopped doing and anyone could reach it on demand by burning 60 requests.",
-      "condition": { "!": { "var": "temp_data.gh.owner.id" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "repo_unverified",
-                "detail": "GitHub did not confirm who owns this repository. Either it does not exist under that name, or it is private, or we are briefly over our rate limit with GitHub. Check the name; if it is right, try again shortly."
-              }
-            },
-            { "path": "data._orion.response", "logic": { "status": 503, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.gh.owner.id" } },
+        "status": 503,
+        "body": {
+          "error": "repo_unverified",
+          "detail": "GitHub did not confirm who owns this repository. Either it does not exist under that name, or it is private, or we are briefly over our rate limit with GitHub. Check the name; if it is right, try again shortly."
+        },
+        "name": "GitHub did not answer for this repository",
+        "description": "Orion's http_call continues on a 4xx and writes no output, and does not surface the status, so a repository that does not exist and a rate limit arrive identically. Both refuse, and the refusal is TEMPORARY AND FAILS CLOSED -- it must never fall back to comparing logins, because that fallback is what this route stopped doing and anyone could reach it on demand by burning 60 requests."
       }
     },
     {
       "id": "private",
-      "name": "A private repository can never be admitted",
-      "description": "Refused HERE rather than discovered at the first submission, where it arrives as a loader ASSET_MISSING against a URL that looks fine.",
-      "condition": { "!!": { "var": "temp_data.gh.private" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "repo_private",
-                "detail": "Admission fetches your release assets anonymously, so the repository has to be public. Make it public, or publish the model from one that is."
-              }
-            },
-            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!!": { "var": "temp_data.gh.private" } },
+        "status": 409,
+        "body": {
+          "error": "repo_private",
+          "detail": "Admission fetches your release assets anonymously, so the repository has to be public. Make it public, or publish the model from one that is."
+        },
+        "name": "A private repository can never be admitted",
+        "description": "Refused HERE rather than discovered at the first submission, where it arrives as a loader ASSET_MISSING against a URL that looks fine."
       }
     },
     {
@@ -206,46 +167,40 @@
     },
     {
       "id": "refused",
-      "name": "Refused",
-      "condition": {
-        "and": [
-          { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
-          {
-            "or": [
-              { "!": { "var": "temp_data.why.0.body.participant" } },
-              { "!": { "var": "temp_data.why.0.body.owned" } },
-              { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
-              { "!!": { "var": "temp_data.why.0.body.name_taken" } },
-              { "!": { "var": "temp_data.why.0.body.room" } }
-            ]
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
             {
-              "path": "data.body.error",
-              "logic": {
-                "if": [
-                  { "!": { "var": "temp_data.why.0.body.participant" } },
-                  "not_a_participant",
-                  { "!": { "var": "temp_data.why.0.body.owned" } },
-                  "repo_not_owned",
-                  { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
-                  "repo_taken",
-                  { "!!": { "var": "temp_data.why.0.body.name_taken" } },
-                  "model_name_taken",
-                  "entries_max"
-                ]
-              }
-            },
-            { "path": "data.body.detail", "logic": { "var": "temp_data.why.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 409, "body_path": "data.body" } }
+              "or": [
+                { "!": { "var": "temp_data.why.0.body.participant" } },
+                { "!": { "var": "temp_data.why.0.body.owned" } },
+                { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
+                { "!!": { "var": "temp_data.why.0.body.name_taken" } },
+                { "!": { "var": "temp_data.why.0.body.room" } }
+              ]
+            }
           ]
-        }
+        },
+        "status": 409,
+        "body": {
+          "error": {
+            "if": [
+              { "!": { "var": "temp_data.why.0.body.participant" } },
+              "not_a_participant",
+              { "!": { "var": "temp_data.why.0.body.owned" } },
+              "repo_not_owned",
+              { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
+              "repo_taken",
+              { "!!": { "var": "temp_data.why.0.body.name_taken" } },
+              "model_name_taken",
+              "entries_max"
+            ]
+          },
+          "detail": { "var": "temp_data.why.0.body" }
+        },
+        "name": "Refused"
       }
     },
     {
@@ -268,18 +223,8 @@
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.body" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.body" }
     },
     {
       "id": "respond",
@@ -289,7 +234,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 201, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
           ]
         }
       }

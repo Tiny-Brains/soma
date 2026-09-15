@@ -25,7 +25,8 @@ COPY channels/             /artifacts/channels/
 COPY workflows/            /artifacts/workflows/
 COPY connectors/           /artifacts/connectors/
 COPY migrations/           /artifacts/migrations/
-COPY scripts/load-package.sh /artifacts/scripts/
+COPY shared/               /artifacts/shared/
+COPY scripts/load-package.sh scripts/stage-set.py /artifacts/scripts/
 
 # `docker run --rm -v soma-pkg:/out tinybrains/soma:dev` populates a volume with the whole package.
 CMD ["sh", "-c", "cp -a /artifacts/. /out/"]

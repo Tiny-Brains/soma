@@ -60,7 +60,15 @@ restore() {
 trap restore EXIT
 
 GAME=$(curl -sS "$BASE/v1/games" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
-MODEL=$(psql -c "SELECT id FROM models WHERE status='active' LIMIT 1;")
+# `models` HAS NO status COLUMN: a model is a row, and the life cycle belongs to its versions.
+# This asked for `models.status` and got an ERROR, so MODEL was empty and the two checks that use
+# it failed as a 400 and a 401 -- neither of which is what they were testing.
+MODEL=$(psql -c "SELECT m.id FROM models m JOIN model_versions v ON v.model_id = m.id WHERE v.status = 'active' AND m.retired_at IS NULL LIMIT 1;")
+# The model read is addressed by game + repo, not by id: `/v1/models/{id}` has not existed since
+# the route became `/v1/games/{game}/models/{owner}/{repo}`, so the check below asked for a route
+# no channel serves and reported its 404 as a failure of the model read.
+MODEL_REPO=$(psql -c "SELECT m.repo FROM models m JOIN model_versions v ON v.model_id = m.id WHERE v.status = 'active' AND m.retired_at IS NULL LIMIT 1;")
+MODEL_GAME=$(psql -c "SELECT g.slug FROM models m JOIN games g ON g.id = m.game_id JOIN model_versions v ON v.model_id = m.id WHERE v.status = 'active' AND m.retired_at IS NULL LIMIT 1;")
 MATCH=$(psql -c "SELECT id FROM matches WHERE status IN ('finished','rated') LIMIT 1;")
 
 echo "==> public reads"
@@ -76,7 +84,7 @@ check 200 "GET  /v1/matches (filtered)"          "$BASE/v1/matches?game=$GAME&pr
 check 200 "GET  /v1/matches?model="              "$BASE/v1/matches?model=$MODEL&limit=3"
 check 200 "GET  /v1/matches?owner="              "$BASE/v1/matches?owner=$HANDLE&limit=3"
 check 200 "GET  /v1/matches/{id}"                "$BASE/v1/matches/$MATCH"
-check 200 "GET  /v1/models/{id}"                 "$BASE/v1/models/$MODEL"
+check 200 "GET  /v1/games/../models/{o}/{r}"     "$BASE/v1/games/$MODEL_GAME/models/$MODEL_REPO"
 check 200 "GET  /v1/profiles/{username}"         "$BASE/v1/profiles/$HANDLE"
 check 404 "GET  /v1/profiles/{unknown}"          "$BASE/v1/profiles/no-such-competitor"
 

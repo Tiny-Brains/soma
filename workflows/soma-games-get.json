@@ -19,17 +19,12 @@
     },
     {
       "id": "unknown",
-      "name": "Reject an unknown game",
-      "condition": { "!": { "var": "temp_data.rows.0.body" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "unknown_game" } },
-            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
-          ]
-        }
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "Reject an unknown game"
       }
     },
     {
@@ -40,7 +35,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

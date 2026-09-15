@@ -2,9 +2,7 @@
   "workflow_id": "soma-models-list",
   "name": "My submission history",
   "description": "The caller's own versions, private rows included. The session check cannot be a join inside the aggregate as it is on the other authed reads: json_agg with no GROUP BY returns one row whatever it is fed, so a revoked session would have got 200 and an empty list -- a rejection indistinguishable from having submitted nothing. live_sessions is therefore the outer FROM, which yields no row at all when the session is dead, and `deny` tests the `session_ok` marker rather than `body`, because an empty list is falsy.",
-  "tags": [
-    "pkg:soma"
-  ],
+  "tags": ["pkg:soma"],
   "tasks": [
     {
       "id": "query",
@@ -15,18 +13,10 @@
           "connector": "soma-db",
           "query": "SELECT (SELECT coalesce(json_agg(x ORDER BY x.created_at DESC), '[]'::json) FROM ( SELECT e.id, e.name, e.repo, u.handle AS owner, g.slug AS game, e.created_at, e.retired_at IS NOT NULL AS retired, (SELECT coalesce(json_agg(json_build_object( 'version_id', v.id, 'version', v.version, 'release_tag', v.release_tag, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'status', v.status, 'phase', model_phase(v), 'reject_reason', v.reject_reason, 'created_at', v.created_at, 'season', (SELECT se.number FROM seasons se WHERE se.id = v.season_id), 'ratings', model_ratings(v.id, ($4)::float8), 'last_played_at', (SELECT max(mt.played_at) FROM match_seats ms JOIN matches mt ON mt.id = ms.match_id WHERE ms.version_id = v.id)) ORDER BY v.version DESC), '[]'::json) FROM model_versions v WHERE v.model_id = e.id) AS versions FROM models e JOIN users u ON u.id = e.owner_id JOIN games g ON g.id = e.game_id WHERE e.owner_id = ($1)::uuid AND (($2)::text IS NULL OR g.slug = ($2)::text)) x) AS body, ls.sid AS session_ok FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($1)::uuid",
           "params": [
-            {
-              "var": "metadata.auth.claims.sub"
-            },
-            {
-              "var": "metadata.query.game"
-            },
-            {
-              "var": "metadata.auth.claims.sid"
-            },
-            {
-              "var": "metadata.vars.settled_sigma"
-            }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.query.game" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.vars.settled_sigma" }
           ],
           "output": "temp_data.rows"
         }
@@ -34,33 +24,8 @@
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": {
-        "!": {
-          "var": "temp_data.rows.0.session_ok"
-        }
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "error": "session_revoked"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 401,
-                "body_path": "data.body"
-              }
-            }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
     },
     {
       "id": "respond",
@@ -69,19 +34,8 @@
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "data.body",
-              "logic": {
-                "var": "temp_data.rows.0.body"
-              }
-            },
-            {
-              "path": "data._orion.response",
-              "logic": {
-                "status": 200,
-                "body_path": "data.body"
-              }
-            }
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

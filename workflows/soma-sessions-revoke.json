@@ -19,18 +19,8 @@
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
     },
     {
       "id": "revoke",
@@ -51,22 +41,17 @@
     },
     {
       "id": "nothing",
-      "name": "Nothing to revoke",
-      "condition": {
-        "and": [
-          { "!=": [{ "var": "metadata.params.sid" }, "others"] },
-          { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "unknown_session" } },
-            { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.body" } }
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!=": [{ "var": "metadata.params.sid" }, "others"] },
+            { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } }
           ]
-        }
+        },
+        "status": 404,
+        "body": { "error": "unknown_session" },
+        "name": "Nothing to revoke"
       }
     },
     {
@@ -77,7 +62,7 @@
         "input": {
           "mappings": [
             { "path": "data.body.revoked", "logic": { "var": "temp_data.revoked.rows_affected" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }

@@ -11,32 +11,24 @@
     },
     {
       "id": "toolong",
-      "name": "Refuse an unusable name",
-      "condition": {
-        ">": [
-          {
-            "length": [
-              { "or": [{ "var": "data.req.display_name" }, ""] }
-            ]
-          },
-          60
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
             {
-              "path": "data.body",
-              "logic": {
-                "error": "display_name_too_long",
-                "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography."
-              }
+              "length": [
+                { "or": [{ "var": "data.req.display_name" }, ""] }
+              ]
             },
-            { "path": "data._orion.response", "logic": { "status": 400, "body_path": "data.body" } }
+            60
           ]
-        }
+        },
+        "status": 400,
+        "body": {
+          "error": "display_name_too_long",
+          "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography."
+        },
+        "name": "Refuse an unusable name"
       }
     },
     {
@@ -71,18 +63,8 @@
     },
     {
       "id": "deny",
-      "name": "Reject a revoked session",
-      "condition": { "!": { "var": "temp_data.rows.0.session_ok" } },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "error": "session_revoked" } },
-            { "path": "data._orion.response", "logic": { "status": 401, "body_path": "data.body" } }
-          ]
-        }
-      }
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
     },
     {
       "id": "respond",
@@ -92,7 +74,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 200, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }
