@@ -38,11 +38,15 @@ if command -v jq > /dev/null 2>&1; then
   ids() { jq -r ".data[].$1"; }
   with_private_urls() { jq '.config.allow_private_urls = true' "$1"; }
   with_url() { jq --arg u "$SUB_URL" '.config.url = $u' "$1"; }
+  # A cache connector needs both, and SUB_URL empty means "keep the committed one".
+  as_cache() { jq --arg u "${SUB_URL:-}" '.config.allow_private_urls = true
+                 | if $u == "" then . else .config.url = $u end' "$1"; }
 else
   field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
   ids() { python3 -c 'import json,sys; [print(o[sys.argv[1]]) for o in json.load(sys.stdin)["data"]]' "$1"; }
   with_private_urls() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["config"]["allow_private_urls"]=True; print(json.dumps(d))' "$1"; }
   with_url() { python3 -c 'import json,os,sys; d=json.load(open(sys.argv[1])); d["config"]["url"]=os.environ["SUB_URL"]; print(json.dumps(d))' "$1"; }
+  as_cache() { python3 -c 'import json,os,sys; d=json.load(open(sys.argv[1])); d["config"]["allow_private_urls"]=True; u=os.environ.get("SUB_URL",""); d["config"]["url"]=u or d["config"]["url"]; print(json.dumps(d))' "$1"; }
 fi
 
 # Plugins are swept although the package ships none: its two moved to jodi with the clocks that
@@ -76,7 +80,16 @@ for f in connectors/*.json; do
   # a laptop -- 127.0.0.1 is where the browser is. It is listed with soma-db anyway, because a
   # deployment that points MODELS_PUBLIC_ENDPOINT at an internal name would otherwise fail at
   # signing with an SSRF message that names neither.
-  if { [ "$id" = "soma-db" ] || [ "$id" = "soma-models" ]; } && [ "$ALLOW_PRIVATE" = "1" ]; then
+  #
+  # soma-cache always needs both. Its Redis is private wherever it runs, and its `url` may not be an
+  # `env://` reference -- a cache connector's URL is scheme-checked against redis/rediss, the same
+  # trap an http connector's base has -- so the address is written in here rather than resolved by
+  # the server. The committed literal is the compose service; SOMA_CACHE_REDIS_URL replaces it.
+  # Unconditional, unlike soma-db's opt-in: there is no deployment where this one is public.
+  if [ "$id" = "soma-cache" ]; then
+    SUB_URL="${SOMA_CACHE_REDIS_URL:-}" as_cache "$f" \
+      | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null
+  elif { [ "$id" = "soma-db" ] || [ "$id" = "soma-models" ]; } && [ "$ALLOW_PRIVATE" = "1" ]; then
     with_private_urls "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null
   elif [ "$id" = "github-api" ] && [ -n "${GITHUB_API_BASE:-}" ]; then
     SUB_URL="$GITHUB_API_BASE" with_url "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null

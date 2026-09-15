@@ -13,6 +13,11 @@
     "rate_limit": {
       "requests_per_second": 30,
       "burst": 60
+    },
+    "cache": {
+      "enabled": true,
+      "ttl_secs": 60,
+      "connector": "soma-cache"
     }
   }
 }

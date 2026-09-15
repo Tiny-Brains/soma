@@ -7,7 +7,7 @@ between packages, and the constants that must stay equal across them. This file 
 
 ## What this repo ships
 
-No server code. Soma is an Orion **1.8.1** package — 22 channel definitions, 22 workflows, 3
+No server code. Soma is an Orion **1.8.1** package — 26 channel definitions, 26 workflows, 5
 connectors — plus `migrations/`, the Postgres schema **every** TinyBrains package shares. DevOps
 owns the orion-server that hosts it. Behaviour lives in declarative JSON and inline SQL, so lint
 plus the SQL checks are this repo's compiler; there is no test framework and nothing to build.

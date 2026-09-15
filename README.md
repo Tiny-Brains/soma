@@ -232,9 +232,22 @@ LICENSE                      repository licence
 - **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password.
 - **Package reloads respect ownership tags.** load-package.sh replaces pkg:soma objects without sweeping Jodi's definitions.
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
+- **Only a caller-invariant route may declare `cache`.** The response-cache key covers the method, the path params and the query — so two ids cannot collide — and covers *nothing about the caller*: no cookie, no claim. Caching an authenticated channel would serve one session's body to the next. The nine that cache are the nine anonymous reads; `soma-status` is anonymous too and stays uncached, because freshness is the whole answer it gives.
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**15 September 2026 — the anonymous reads are cached.** A `soma-cache` connector (Redis, logical
+db 1, so a cache key cannot collide with the cluster state on db 0) and `config.cache` on the nine
+caller-invariant read channels: 10 s on the leaderboard, the match lists and the by-id reads —
+count folds every 10 s, so that is at most one fold of staleness — 60 s on the season list, 300 s on
+the two game routes, which change only on a deploy. Measured on the running stack: the leaderboard
+goes 24.9 ms cold to 1.5 ms warm. No `cache_key_fields` and no `key_logic`, because the default key
+already feeds the method, the path params and the query before the payload; what it does not feed is
+the caller, which is exactly why no authenticated channel may have one. Two things worth knowing
+before adding a tenth: the connector's `operations` gates reach the response cache even though no
+workflow calls it — `write: false` quarantines every channel that names it — and its `url` may not
+be an `env://` reference, so `load-package.sh` substitutes `SOMA_CACHE_REDIS_URL` at load.
 
 **15 September 2026 — the public routes are metered.** Twenty-five of twenty-six channels declare
 `rate_limit`, the address-keyed guard Orion applies before `check_auth`: 30/60 on the ten anonymous
