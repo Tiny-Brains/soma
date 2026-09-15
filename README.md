@@ -80,6 +80,7 @@ request handling and response construction, with matching soma-prefixed filename
 | GET | /v1/sessions | Session | The caller's live sessions |
 | DELETE | /v1/sessions/{sid} | Session | Revoke one session; `others` revokes all but the current |
 | DELETE | /v1/session | Session | Revoke the current session and clear the cookie |
+| GET | /v1/admin-check | Session | **204 / 401 / 403 and no body.** An authorization probe for a reverse proxy, not a page |
 | POST | /v1/submissions | Session | Record a release and declared asset hashes as a testing version |
 
 Read routes are public unless they can return something private. The split is a property of the
@@ -89,7 +90,26 @@ route that quietly returns more to some callers is the shape a privacy bug arriv
 
 A submission must satisfy the open season's rules. Recording it does not imply acceptance:
 Jodi performs admission and the trial before promotion. The callback is served by the sign-in
-channel, so twenty-three routes are implemented by twenty-two channels.
+channel, so twenty-seven routes are implemented by twenty-six channels.
+
+> **This table is four rows short, and they are not new.** `channels/` carries
+> `/v1/games/{game}/models` (POST), `/v1/games/{game}/models/{owner}/{repo}` (GET and PATCH) and
+> `/v1/versions/{id}`, none of which appear above — and the row reading `/v1/models/{id}` is the
+> old spelling of that last one, from before the rebuild separated a model from its versions. Fix
+> them against the channels rather than against this note; `ls channels/` is the inventory.
+
+`/v1/admin-check` is the odd one and worth saying why it exists. It answers **204** for a signed-in
+admin, **401** for no or a revoked session, **403** for a signed-in non-admin, and never a body —
+which is exactly the vocabulary nginx's `auth_request` speaks, allowing on 2xx and denying on
+401/403. It lets this platform put its own sign-in in front of something that is not Soma: today
+the Orion console, which is a static SPA with nowhere to hold a credential
+(`devops/compose/orion-ui/`). The 401/403 split is load-bearing there — 401 sends the caller to
+GitHub, and answering it to a competitor who signed in correctly would loop them for ever.
+
+Its workflow is a near-copy of `soma-seasons-create`'s first three tasks **on purpose**: the same
+`JOIN live_sessions` is the same revocation check, and a second way of asking *is this an admin* is
+a second thing to keep right. The role is read off the live session rather than off a claim in the
+cookie, so demoting a user or revoking a session takes effect on the next request.
 
 The migrations are also an interface. Apply both [0001_init.sql](migrations/0001_init.sql) and
 [0002_sessions.sql](migrations/0002_sessions.sql); the table below describes writer ownership.

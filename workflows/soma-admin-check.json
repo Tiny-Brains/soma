@@ -1,0 +1,112 @@
+{
+  "workflow_id": "soma-admin-check",
+  "name": "Is the caller a signed-in admin",
+  "description": "An AUTHORIZATION PROBE, and the only route here whose body nobody reads: it answers 204, 401 or 403 and nothing else. It exists so a reverse proxy can put a gate in front of something that is not Soma -- today the Orion console, which is a static SPA with nowhere to hold a credential -- using nginx's `auth_request`, which allows on 2xx and denies on 401/403 and treats every other status as a server error. That is why `deny` and `forbid` keep the statuses the rest of the package uses rather than collapsing both to one. It is a near-copy of soma-seasons-create's first three tasks ON PURPOSE: the same join is the same revocation check, and a second way of asking `is this an admin` is a second thing to keep right. The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the NEXT request -- which for a proxy gate means the next page load, not the next sign-in.",
+  "tags": [
+    "pkg:soma"
+  ],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('id', u.id, 'handle', u.handle, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
+          "params": [
+            {
+              "var": "metadata.auth.claims.sub"
+            },
+            {
+              "var": "metadata.auth.claims.sid"
+            }
+          ],
+          "output": "temp_data.who"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "name": "Reject a revoked session",
+      "condition": {
+        "!": {
+          "var": "temp_data.who.0.body"
+        }
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "session_revoked"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 401,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "forbid",
+      "name": "Admins only",
+      "description": "403 rather than 401 is load-bearing at the proxy: 401 means `you are not signed in`, so the gate sends you to GitHub, and a competitor who signed in correctly would be sent round that loop for ever. 403 means `you are signed in and this is not yours`, which is a page rather than a redirect.",
+      "condition": {
+        "!=": [
+          {
+            "var": "temp_data.who.0.body.role"
+          },
+          "admin"
+        ]
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "error": "admin_only"
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 403,
+                "body_path": "data.body"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "allow",
+      "name": "Allow",
+      "description": "204, and deliberately no body. `auth_request` discards a subrequest body anyway, and a probe that answered with the user's identity would be an unauthenticated way to read it back from anywhere the cookie reaches.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 204
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

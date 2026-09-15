@@ -63,7 +63,13 @@ Sign-in and sign-out additionally declare `cookies` on the response; sign-in als
 Every workflow's `description` field carries the design argument for that route. Read it before
 changing the route — it is where the reasoning lives, not in a comment.
 
-Three shapes recur across the 22 workflows:
+One route breaks the second half of that shape and is meant to: `soma-admin-check` writes a status
+and **no body at all**. It is an authorization probe for a reverse proxy — nginx's `auth_request`
+allows on 2xx and denies on 401/403 — which is how the Orion console at `devops/compose/orion-ui/`
+is put behind this platform's own GitHub sign-in. Change its statuses and you change who can open
+that console, so the split is documented in its `description` rather than inferred.
+
+Three shapes recur across the 23 workflows:
 
 - **SQL builds the response, the workflow moves it.** Queries end `SELECT json_build_object(...)
   AS body`, and the respond task maps `temp_data.rows.0.body` straight out. Response shaping in
