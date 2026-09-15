@@ -453,7 +453,7 @@ needs `rated_at`, and Kalam can write neither.
 
 `games.active_engine_digest = 'sha256:placeholder'` for `ants`, overwritten by the deploy step;
 the four `clocks` rows above; the three baseline users and a `models` row each. The seed is
-`devops/compose/db-init/30-seed.sql`'s and is listed here only so the first pair run has a digest to
+`devops/compose/bootstrap/seed.sql`'s and is listed here only so the first pair run has a digest to
 stamp and a baseline to seat.
 
 ### 3.10 The shared functions

@@ -23,10 +23,12 @@ MIGRATIONS=../../migrations
 # soma, or the seed half of this script is skipped with a notice.
 SEED="${SEED:-}"
 if [ -z "$SEED" ]; then
-  for candidate in ../../../devops/compose/db-init/30-seed.sql ../../../devops/db-init/30-seed.sql; do
+  for candidate in ../../../devops/compose/bootstrap/seed.sql \
+                   ../../../devops/compose/db-init/30-seed.sql \
+                   ../../../devops/db-init/30-seed.sql; do
     [ -f "$candidate" ] && SEED="$candidate" && break
   done
-  SEED="${SEED:-../../../devops/compose/db-init/30-seed.sql}"
+  SEED="${SEED:-../../../devops/compose/bootstrap/seed.sql}"
 fi
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
