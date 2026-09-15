@@ -132,6 +132,6 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   equal Jodi's and Kalam's; `devops/scripts/check/configs.sh` checks several of them.
 - Cookie transport (`cookie_secure`), `app_url` and `oauth_redirect_uri` are deployment vars. No
   route may hard-code a callback host or replace the declared Secure policy.
-- Update `README.md`'s **Status** section and `design/tracker.md` when work lands. Commits go
+- Update `README.md`'s **Status** section when work lands. Commits go
   straight to `main`; subjects are imperative and describe the behaviour change
   ("Give Jodi its own database role"), not the files touched.

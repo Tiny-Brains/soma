@@ -1168,11 +1168,11 @@ statement in §4–§7 `PREPARE`d with the parameter types written here, then th
    `map`-built array; a `jsonb` parameter from the plugin's output;
    `metadata.trigger.scheduled_for` cast to `timestamptz`. Each is read from the source in §2 and
    none has been run through a task.
-2. **The fence on a cron channel** (tracker §4): §5.1 from `metadata.trigger`, and a manual trigger
+2. **The fence on a cron channel**: §5.1 from `metadata.trigger`, and a manual trigger
    forced to overlap a running occurrence with `forbid` off, halting on zero rows. The Postgres
    half is 9.1; the Orion half — the metadata, the halt, what a dead node costs under the channel
    timeout — is the spike's.
-3. **The claim under load** (tracker §4). Several pollers on §4.2 against a queue of thousands:
+3. **The claim under load.** Several pollers on §4.2 against a queue of thousands:
    whether the two `EXISTS` on `match_seats` in the ordering and the fill cost more than the
    partial index saves, whether the `ORDER BY` needs splitting into a trials query and a
    fallback, and whether the reap should fold into the claim.
