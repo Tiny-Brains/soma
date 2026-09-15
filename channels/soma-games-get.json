@@ -7,5 +7,12 @@
   "methods": ["GET"],
   "route_pattern": "/v1/games/{game}",
   "workflow_id": "soma-games-get",
-  "config": { "response": { "mode": "shaped" }, "timeout_ms": 10000 }
+  "config": {
+    "response": { "mode": "shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": {
+      "requests_per_second": 30,
+      "burst": 60
+    }
+  }
 }

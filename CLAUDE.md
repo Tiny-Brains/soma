@@ -55,8 +55,9 @@ definitions that are correct. The pinned 1.8.1 source of truth is the separate c
 
 Each route is a `channels/soma-*.json` + `workflows/soma-*.json` pair with matching filenames.
 **Channels declare transport**: method, `route_pattern`, `auth` (HS256 JWT read from the
-`soma_session` cookie, issuer `soma`), `principal_rate_limit` keyed on `auth.sub`, and
-`response.mode: "shaped"`. **Workflows are a flat task list** that ends by writing
+`soma_session` cookie, issuer `soma`), the two rate limits — `rate_limit` keyed on the caller's
+address and applied *before* auth, `principal_rate_limit` keyed on `auth.sub` and applied after —
+and `response.mode: "shaped"`. **Workflows are a flat task list** that ends by writing
 `data.body` and `data._orion.response` (`{status, body_path}`) — that map task *is* the response.
 Sign-in and sign-out additionally declare `cookies` on the response; sign-in also `allowed_headers`.
 

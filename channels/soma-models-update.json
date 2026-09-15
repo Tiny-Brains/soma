@@ -16,6 +16,10 @@
       "mode": "shaped"
     },
     "timeout_ms": 10000,
+    "rate_limit": {
+      "requests_per_second": 20,
+      "burst": 40
+    },
     "auth": {
       "mode": "jwt",
       "algorithms": [

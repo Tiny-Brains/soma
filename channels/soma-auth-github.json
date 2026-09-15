@@ -20,6 +20,10 @@
       "cookies": true
     },
     "timeout_ms": 10000,
+    "rate_limit": {
+      "requests_per_second": 5,
+      "burst": 10
+    },
     "oauth2_login": {
       "authorize_url": "https://github.com/login/oauth/authorize",
       "token_url": "https://github.com/login/oauth/access_token",

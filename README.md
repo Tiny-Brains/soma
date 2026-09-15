@@ -232,8 +232,21 @@ LICENSE                      repository licence
 - **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password.
 - **Package reloads respect ownership tags.** load-package.sh replaces pkg:soma objects without sweeping Jodi's definitions.
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
+- **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**15 September 2026 — the public routes are metered.** Twenty-five of twenty-six channels declare
+`rate_limit`, the address-keyed guard Orion applies before `check_auth`: 30/60 on the ten anonymous
+reads, 5/10 on the sign-in leg, 20/40 on everything authenticated — strictly looser than every
+`principal_rate_limit` on the same channel, so a single competitor still meets their own quota first
+and the address limit only catches many callers behind one address. Before this the eleven
+unauthenticated routes had no limit of any kind, on either side of nginx, because
+`principal_rate_limit` cannot see a caller who has not signed in. `soma-admin-check` keeps none, and
+its workflow description says why. **It depends on a DevOps half**: Orion believes a forwarded
+address only behind a peer in `[rate_limit] trusted_proxies`, and the peer here is nginx. Driven
+against the running stack — 150 requests from one address answered 90/60 split 200/429, while a
+second address was untouched.
 
 **14 September 2026 — a submission carries a manifest, and Soma hands back where to put it.**
 `model_versions` stores `manifest` / `manifest_hash` / `orion_version` / `probe_dims` where it
