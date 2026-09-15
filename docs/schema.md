@@ -25,7 +25,7 @@ Who writes what, and why the row is both queue and history, is
 |---|---|
 | `match_status` and the walk between its values | — |
 | every column of `matches`, `match_seats` and `rating_events`, typed, with its one writer | — |
-| `models.adapter`, `models.evaluator_digest`, the `verified` status | 04 the dialect; 08 what fills them |
+| `models.manifest`, `models.orion_version`, the `verified` status | 04 what a manifest is; 08 what fills them |
 | `games.active_engine_digest` | 07 the deploy step that writes it |
 | `clocks` — the run fence and the roster counter | 02 which keys each clock claims |
 | the constraints that make the status walk a fact | — |
@@ -172,11 +172,14 @@ used as an expression` the first time a second season opened, and taken the coun
 whole ladder behind it — down with it. Entry-and-season scoping makes it provably single-row.
 `scripts/verify/scenario.sql` asserts it.
 
-`adapter` is the document as the competitor shipped it — the exact bytes of the release asset, as
-`text` rather than `jsonb`, because jsonb normalises key order and whitespace and the stored form
-would no longer hash to `adapter_hash`. Stored as text, the constraint makes the row's copy
-self-verifying. The play path never reads it — the loader fetches by hash from the object store —
-so it serves the Version screen, an operator with `psql`, and the re-validation sweep.
+`manifest` is the Orion model manifest exactly as it was registered — `orion:model@1.0.0`, the
+inputs with their adapter expressions, the outputs, `probe_dims` — as `text` rather than `jsonb`,
+because jsonb normalises key order and whitespace and the stored form would no longer hash to
+`manifest_hash`. Stored as text, the constraint makes the row's copy self-verifying, and its
+length is the second term of the weight class (decision R4). It IS read on the play path, by every
+replica's roster clock, which registers the version on its own node from this column and fetches
+the artifact by digest from `artifact_key` — so the sweep, the Version screen and the node all read
+one copy.
 
 ### 3.3 `matches` — one row per match, the facts that are about the match
 
@@ -207,7 +210,7 @@ CREATE TABLE matches (
     turns                int,
     played_ms            int,
     engine_digest_played text,
-    evaluator_digest     text,
+    orion_version        text,
     replay_key           text,                       -- names the attempt: …/{id}/{claim_token}.json
     played_at            timestamptz,                -- when the match ended
     fault_reason         text,                       -- on failed
@@ -236,7 +239,7 @@ CREATE TABLE matches (
                               AND played_at IS NULL
             WHEN 'finished'  THEN claim_token IS NOT NULL AND replay_key IS NOT NULL
                               AND played_at IS NOT NULL AND engine_digest_played IS NOT NULL
-                              AND evaluator_digest IS NOT NULL AND rated_at IS NULL
+                              AND orion_version IS NOT NULL AND rated_at IS NULL
             WHEN 'rated'     THEN played_at IS NOT NULL AND rated_at IS NOT NULL
                               AND rated_seq IS NOT NULL
             WHEN 'cancelled' THEN withdrawn_reason IS NOT NULL AND closed_at IS NOT NULL
@@ -263,7 +266,7 @@ CREATE TABLE match_seats (
     -- who sits here — pair, at insert
     model_id       uuid     NOT NULL REFERENCES models (id),
     weights_hash   text     NOT NULL,                 -- the loader's identity for the seat
-    adapter_hash   text     NOT NULL,
+    manifest_hash   text     NOT NULL,
     paired_ratings jsonb,                             -- [{ladder, mu, sigma}] as of the insert
 
     -- what happened — Kalam, at finish
@@ -305,7 +308,7 @@ CREATE TABLE match_seats (
 
 | Column group | Why it is where it is |
 |---|---|
-| `weights_hash`, `adapter_hash` on the seat | Kalam is roster-blind and its role cannot read `models`; the hashes are the loader's identity for a seat, so they travel with the seat |
+| `weights_hash`, `manifest_hash` on the seat | Kalam's role cannot read `models`; the hashes are what the seat was paired as, recorded so a replay names the bytes that played it rather than what the version row says today. What the node is *asked* for is the Orion model id, derived from the version id (decision R9) |
 | `paired_ratings` as jsonb | keyed by ladder, of which a match has one or two; written once by pair and read by nobody but an auditor. Columns per ladder would be half null |
 | what the match did to a seat's ratings | not on the seat: a row per ladder in `rating_events` (§3.5), joined on `(match_id, seat)`, because it is a step in a chain rather than a fact about the seat |
 | `ladders` on the match | derived once at insert from the seats' classes (schema §3), so count never re-derives it and a class change on promotion cannot re-label history |
@@ -432,7 +435,7 @@ CREATE ROLE kalam LOGIN;                                    -- password: deploym
 GRANT USAGE ON SCHEMA public TO kalam;
 GRANT SELECT ON matches, match_seats TO kalam;
 GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
-              reason, turns, played_ms, engine_digest_played, evaluator_digest,
+              reason, turns, played_ms, engine_digest_played, orion_version,
               replay_key, played_at, fault_reason, fault_seat, closed_at)
     ON matches TO kalam;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
@@ -578,10 +581,10 @@ zero ends the run.
 >   no numbering at all:
 >
 >   ```sql
->   SELECT DISTINCT s.weights_hash, s.adapter_hash
+>   SELECT DISTINCT s.weights_hash, s.manifest_hash
 >     FROM matches m JOIN match_seats s ON s.match_id = m.id
 >    WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'
->    ORDER BY s.weights_hash, s.adapter_hash
+>    ORDER BY s.weights_hash, s.manifest_hash
 >   ```
 >
 > * **after `start`**, the numbered read, filtered on `'running'` so `m` numbers exactly the rows
@@ -599,7 +602,7 @@ zero ends the run.
 >            'seat_count', w.seat_count, 'trial_version_id', w.trial_version_id,
 >            'seats', (SELECT json_agg(json_build_object('m', w.m, 'seat', s.seat,
 >                         'model_id', s.version_id, 'weights_hash', s.weights_hash,
->                         'adapter_hash', s.adapter_hash) ORDER BY s.seat)
+>                         'manifest_hash', s.manifest_hash) ORDER BY s.seat)
 >                        FROM match_seats s WHERE s.match_id = w.id)) AS row
 >     FROM w ORDER BY w.m
 >   ```
@@ -612,7 +615,7 @@ SELECT json_build_object(
          'id', m.id, 'seed', m.seed, 'preset', m.preset, 'trial_version_id', m.trial_version_id,
          'seats', (SELECT json_agg(json_build_object(
                       'seat', s.seat, 'model_id', s.version_id,
-                      'weights_hash', s.weights_hash, 'adapter_hash', s.adapter_hash)
+                      'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash)
                     ORDER BY s.seat)
                      FROM match_seats s WHERE s.match_id = m.id)
        ) AS row
@@ -628,7 +631,7 @@ Postgres builds the shape, as every Soma read does; the workflow decodes no arra
 > **REVISED BY THE BUILD, 8 September 2026: the barrier's unit is a MODEL, not a row.** All three
 > statements below take `id = ANY(($2)::uuid[])`, which assumes the workflow can turn "the loader
 > refused this model" into "these rows seat it". It cannot: the loader answers about
-> `(weights_hash, adapter_hash)` pairs, and joining a refused pair back to the rows that name it is
+> `(weights_hash, manifest_hash)` pairs, and joining a refused pair back to the rows that name it is
 > a join from element scope into root scope — the one thing this JSONLogic dialect has no way to
 > express (`03-spike/FINDINGS.md` §2.6). Postgres does the join instead, which also makes `start`
 > need no list at all:
@@ -655,7 +658,7 @@ Postgres builds the shape, as every Soma read does; the workflow decodes no arra
 >
 > This is also Kalam §4.2's ask for a set-valued named-fault statement, answered in a better
 > shape than the one it asked for. The single-row form stays correct for a fault attributed
-> mid-play — though see Axon §3.2: the built `/play` reply has no `fault` field, so there is at
+> mid-play — though a `model_infer` failure is classified by Orion's own fault categories, so there is at
 > present no signal to attribute one on.
 
 ```sql
@@ -684,7 +687,7 @@ UPDATE matches
        fault_seat           = ($4)::smallint,
        closed_at            = now(),
        engine_digest_played = ($5)::text,
-       evaluator_digest     = ($6)::text,
+       orion_version = ($6)::text,
        lease_expires_at     = NULL
  WHERE claim_token = ($1)::uuid AND id = ($2)::uuid AND status IN ('claimed', 'running')
 ```
@@ -711,7 +714,7 @@ WITH m AS (
            turns                = ($5)::int,
            played_ms            = ($6)::int,
            engine_digest_played = ($7)::text,
-           evaluator_digest     = ($8)::text,
+           orion_version = ($8)::text,
            replay_key           = ($9)::text,
            played_at            = now(),
            lease_expires_at     = NULL
@@ -993,7 +996,7 @@ Held in `data` for the run. The demand view and the depth read are Jodi's.
 
 ```sql
 WITH seated AS MATERIALIZED (
-    SELECT seat.ord - 1 AS seat, md.id AS model_id, md.weights_hash, md.adapter_hash, md.weight_class
+    SELECT seat.ord - 1 AS seat, md.id AS model_id, md.weights_hash, md.manifest_hash, md.weight_class
       FROM unnest(($5)::uuid[]) WITH ORDINALITY AS seat (model_id, ord)
       JOIN model_versions md ON md.id = seat.model_id
       JOIN games g ON g.id = md.game_id AND g.slug = ($2)::text
@@ -1017,8 +1020,8 @@ WITH seated AS MATERIALIZED (
        AND (SELECT count(*) FROM seated) = cardinality(($5)::uuid[])    -- every seat found, contesting, verified
  RETURNING id
 )
-INSERT INTO match_seats (match_id, seat, version_id, weights_hash, adapter_hash, paired_ratings)
-SELECT m.id, s.seat, s.version_id, s.weights_hash, s.adapter_hash,
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, paired_ratings)
+SELECT m.id, s.seat, s.version_id, s.weights_hash, s.manifest_hash,
        (SELECT jsonb_agg(jsonb_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma)
                          ORDER BY r.ladder)
           FROM ratings r WHERE r.version_id = s.version_id)
@@ -1101,7 +1104,7 @@ match_seats s JOIN matches m ON m.id = s.match_id WHERE s.version_id = $1 AND m.
 Decisions **2** (seat shape), **3** (seed columns), **7** (the lapse ceiling), **18** (one preset
 per wave), **21** (the `verified` status) and **22** (the `rating_events` table) were taken here,
 along with the unnumbered calls the statements forced — promotion as one statement, the rating
-mark, the reap as its own statement, `models.adapter` as exact text, and the schema being initial
+mark, the reap as its own statement, `models.manifest` as exact text, and the schema being initial
 rather than a migration chain.
 
 Each is recorded with its reasoning and the cost of flipping it in
@@ -1140,8 +1143,8 @@ statement in §4–§7 `PREPARE`d with the parameter types written here, then th
   the digest is null. A trial failed with `fault_seat = 0` is read and rejected, bumping the
   roster to 2. A memory refusal returns a row to `pending` with `refusals = 1` and no lapse, and
   the ceiling fails it `UNLOADABLE`. A version's history is one join on `match_seats_version_idx`.
-- **The adapter copy** is accepted when its text hashes to `adapter_hash` and refused by
-  `model_versions_adapter_matches_hash` when one byte differs.
+- **The adapter copy** is accepted when its text hashes to `manifest_hash` and refused by
+  `model_versions_manifest_matches_hash` when one byte differs.
 - **Promotion in the reverse order** — a variant of §5.3's statement that activates the candidate
   before demoting the predecessor — commits under the deferred exclusion constraint, which it could
   not under a partial unique index.

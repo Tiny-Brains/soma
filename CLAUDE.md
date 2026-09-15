@@ -7,7 +7,7 @@ between packages, and the constants that must stay equal across them. This file 
 
 ## What this repo ships
 
-No server code. Soma is an Orion **1.7.0** package — 22 channel definitions, 22 workflows, 3
+No server code. Soma is an Orion **1.8.1** package — 22 channel definitions, 22 workflows, 3
 connectors — plus `migrations/`, the Postgres schema **every** TinyBrains package shares. DevOps
 owns the orion-server that hosts it. Behaviour lives in declarative JSON and inline SQL, so lint
 plus the SQL checks are this repo's compiler; there is no test framework and nothing to build.
@@ -33,7 +33,7 @@ orion-server fmt --check .         # definition-JSON house style; drop --check t
 
 | Check | Proves | Needs |
 |---|---|---|
-| `lint` | definitions reference things that exist | the 1.7.0 binary |
+| `lint` | definitions reference things that exist | the 1.8.1 binary |
 | `check-sql.sh` | every inline query resolves against the current schema | `tinybrains-db-1` up |
 | `smoke.sh` | the workflows around those queries answer | the whole stack up, package loaded |
 | `verify/run.sh` | the schema's promises to Jodi and Kalam hold | `tinybrains-db-1` up |
@@ -47,7 +47,7 @@ against `soma_sqlcheck`. `smoke.sh` has no filter — curl the single route inst
 
 **The toolchain trap, and it bites.** `orion-server` on PATH here is **1.5.1**. It does not
 understand this package's auth, cron or plugin blocks and reports *misleading schema errors* on
-definitions that are correct. The pinned 1.7.0 source of truth is the separate checkout at
+definitions that are correct. The pinned 1.8.1 source of truth is the separate checkout at
 `~/Development/Plasmatic/Orion-Projects/Orion`; `devops/compose/Orion/` holds the image and the
 `soma.toml.tmpl` instance template. Check `orion-server --version` before believing a lint failure.
 
@@ -78,9 +78,10 @@ Three shapes recur across the 22 workflows:
   that does the work; a conditional `db_read` that asks *why* nothing happened; a terminal map that
   turns that into an error code. See `soma-seasons-create` (`create` → `why` → `refused`).
 
-## Orion 1.7.0 constraints that shape every statement
+## Orion constraints that shape every statement
 
-`docs/schema.md` §2 is normative and verified against the 1.7.0 source. The load-bearing ones:
+`docs/schema.md` §2 is normative, verified against the 1.7.0 source and re-checked at 1.8.1 (the
+only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper, same semantics). The load-bearing ones:
 
 1. `db_write` returns `rows_affected` and nothing else — no `RETURNING` reaches the workflow, so a
    created row is read back in a second task.

@@ -23,16 +23,16 @@ INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
   ('e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', 'ants brain', 'alice/ants');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+                            weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('10000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000b1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'random-v1', 'active', 'nano',
-   'sha256:wb1', 'sha256:ab1', 'sha256:ev1'),
+   'sha256:wb1', 'sha256:mb1', '1.8.1'),
   ('20000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
-   'sha256:wa1', 'sha256:aa1', 'sha256:ev1'),
+   'sha256:wa1', 'sha256:ma1', '1.8.1'),
   ('20000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'v2', 'verified', 'nano',
-   'sha256:wa2', 'sha256:aa2', 'sha256:ev1');
+   'sha256:wa2', 'sha256:ma2', '1.8.1');
 INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
   ('10000000-0000-0000-0000-000000000001', 'nano', 25, 8.333),
   ('10000000-0000-0000-0000-000000000001', 'open', 25, 8.333),
@@ -76,17 +76,17 @@ EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60);
 \echo '--- kalam: a malformed result naming one seat twice (expect 0, row still running); finish both rows (expect UPDATE 2 seats each); finish again (expect 0)'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":0,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json');
 SELECT seed, status FROM matches WHERE seed = 42;
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/x/t1.json');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', 'sha256:ev1', 'replays/ants/y/t1.json');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json');
 SELECT m.seed, s.seat, s.rank, s.score, s.strikes FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.seed IN (42, 43) ORDER BY m.seed, s.seat;
 \echo '--- kalam: the other replica lapses; reap after expiry (expect 1: back to pending, lapses 1, token cleared)'
 UPDATE matches SET lease_expires_at = now() - interval '1 second' WHERE claim_token = '30000000-0000-0000-0000-000000000002';
@@ -150,10 +150,10 @@ UPDATE seasons SET closed_at = NULL;
 
 \echo '--- reject path: v3 verified; its trial fails with a fault on seat 0; verdict read; reject (expect UPDATE 1, epoch 2)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+                            weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'v3', 'verified', 'nano',
-   'sha256:wa3', 'sha256:aa3', 'sha256:ev1');
+   'sha256:wa3', 'sha256:ma3', '1.8.1');
 EXECUTE p_insert (1, 'ants', 50, 'default',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
@@ -205,18 +205,18 @@ INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
   ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', 'second try', 'alice/ants-two');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+                            weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-000000000009', 'e0000000-0000-0000-0000-0000000000a2',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
-   'sha256:wa9', 'sha256:aa9', 'sha256:ev1');
+   'sha256:wa9', 'sha256:ma9', '1.8.1');
 SELECT e.name, v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' AND v.status = 'active' ORDER BY e.name;
 \echo '    ... and a second active version of one entry in one season is still refused (expect exclusion violation)'
 INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest)
+                            weight_class, weights_hash, manifest_hash, orion_version)
 VALUES ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000000a',
         '50000000-0000-0000-0000-000000000001', 2, 'v2', 'active', 'nano',
-        'sha256:wax', 'sha256:aax', 'sha256:ev1');
+        'sha256:wax', 'sha256:aax', '1.8.1');
 
 \echo '--- the predecessor read is single-row across seasons: the bug the entry scope fixes'
 -- A competitor holds an `active` version in EVERY season they ever finished -- a closed season's
@@ -227,10 +227,10 @@ INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, su
 VALUES ('50000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-00000000000a', 2, 'sha256:e0',
         now() - interval '2 days', now() - interval '1 day', now() - interval '1 day');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest) VALUES
+                            weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-00000000000f', 'e0000000-0000-0000-0000-0000000000a2',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000000', 9, 'v0', 'active', 'nano',
-   'sha256:waf', 'sha256:aaf', 'sha256:ev1');
+   'sha256:waf', 'sha256:aaf', '1.8.1');
 \echo '    owner-scoped (what count used to do) vs entry-and-season-scoped (what it does now):'
 SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_id
          WHERE pe.owner_id = '00000000-0000-0000-0000-0000000000a1' AND p.status = 'active')
@@ -243,14 +243,14 @@ SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_
 \echo '--- final state'
 SELECT seed, preset, status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
 
-\echo '--- the adapter copy: stored as the exact text, accepted when it hashes to adapter_hash (expect INSERT 0 1); one byte changed (expect check violation)'
+\echo '--- the manifest copy: stored as the exact text, accepted when it hashes to manifest_hash (expect INSERT 0 1); one byte changed (expect check violation)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
-                            weight_class, weights_hash, adapter_hash, evaluator_digest, adapter) VALUES
+                            weight_class, weights_hash, manifest_hash, orion_version, manifest) VALUES
   ('20000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 4, 'v4', 'verified', 'nano',
    'sha256:wa4', 'sha256:' || encode(sha256(convert_to('{"in": ["scatter"]}', 'UTF8')), 'hex'),
-   'sha256:ev1', '{"in": ["scatter"]}');
-UPDATE model_versions SET adapter = '{"in": ["scatter"] }' WHERE version = 4;
+   '1.8.1', '{"in": ["scatter"]}');
+UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
 \echo '--- jodi/docs/design.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on preset 1 (expect n 1, 2 seats)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
@@ -268,7 +268,7 @@ EXECUTE k_claim ('sha256:e2', '{}', 1, '30000000-0000-0000-0000-000000000007', 6
 EXECUTE k_start ('30000000-0000-0000-0000-000000000007');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000007', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
-  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', 'sha256:ev1', 'replays/ants/w/t7.json');
+  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json');
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;

@@ -1,6 +1,6 @@
 # soma
 
-Soma is the public API and schema owner for TinyBrains. It ships an Orion 1.7.0 package of REST
+Soma is the public API and schema owner for TinyBrains. It ships an Orion 1.8.1 package of REST
 channels, workflows, and connectors, plus the Postgres migrations shared by the platform.
 It ships definitions and no server; [DevOps](https://github.com/Tiny-Brains/devops) chooses the
 orion-server instances that host them.
@@ -24,7 +24,7 @@ and the public access to it; the running API process itself is replaceable.
 
 - Admit, pair, count, promote, or withdraw versions; [Jodi](https://github.com/Tiny-Brains/jodi) runs those clocks.
 - Play matches or upload replays; [Kalam](https://github.com/Tiny-Brains/kalam) executes matches.
-- Run models; [Axon](https://github.com/Tiny-Brains/axon) evaluates adapters and ONNX graphs.
+- Run models; Orion's own `models` entity evaluates a manifest's adapters and its ONNX graph on whichever node needs it.
 - Implement game rules; [Ants](https://github.com/Tiny-Brains/ants) is the reference cartridge.
 - Define deployment addresses, credentials, or replica counts.
 
@@ -119,7 +119,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/v1/games
 Soma needs Orion and a migrated database. The [DevOps setup](https://github.com/Tiny-Brains/devops#run-it-test-it)
 provides both, plus replay storage and the browser proxy. Run package commands from this repo root.
 
-- Orion server 1.7.0 and Postgres 16 for the supported local stack.
+- Orion server 1.8.1 and Postgres 16 for the supported local stack.
 - curl plus jq or Python 3 for loading; Python 3 and Docker for the SQL check.
 - An OAuth App for sign-in; its callback must point at the browser-facing origin.
 
@@ -155,7 +155,7 @@ Package lint checks definition references. Orion clippy with the rendered instan
 also checks `[vars]`; validate-config checks the instance itself. The deployment must run all
 applicable checks, because a successful package load alone does not prove a working session flow.
 
-Use the pinned Orion 1.7.0 toolchain for these checks. Older binaries do not understand this
+Use the pinned Orion 1.8.1 toolchain for these checks. Older binaries do not understand this
 package's cron, plugin, or authentication definitions and can report misleading schema errors.
 
 ## What a deployment owes it
@@ -214,6 +214,16 @@ LICENSE                      repository licence
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
 
 ## Status
+
+**14 September 2026 — a submission carries a manifest, and Soma hands back where to put it.**
+`model_versions` stores `manifest` / `manifest_hash` / `orion_version` / `probe_dims` where it
+stored `adapter` / `adapter_hash` / `evaluator_digest`, and `artifact_key` is a GENERATED column —
+`models/<version_id>/model.onnx` — so the three readers of a version's bytes cannot disagree about
+where they are. `POST /v1/submissions` answers 201 with two **presigned PUT URLs**: nothing on the
+platform fetches a competitor's bytes over the internet any more, which is what let the admission
+service and its allowlist be deleted. The weight class is `artifact_bytes + len(manifest)` and the
+class table doubled to match a raw metric where the old one was compressed.
+devops/docs/decisions.md, the R-series.
 
 **11 September 2026 — a leaderboard row carries its last dozen ratings.** `soma-leaderboard` adds
 `history` beside `trend`: the last twelve conservative ratings on the ladder, oldest first, the seed
@@ -277,7 +287,7 @@ publishes from — and `model_versions` is one submission of it. A competitor ma
 as the season allows; version numbers restart per model; one version of a model is in admission at
 a time. Everything a rating, a seat or a match points at is a version (`ratings.version_id`,
 `match_seats.version_id`, `matches.trial_version_id`), and the API keys that name them on the wire
-were deliberately left alone so the two Rust plugins, axon and the replay envelope needed no change.
+were deliberately left alone so the two Rust plugins and the replay envelope needed no change.
 
 `seasons.rules` became the whole description of a contest: ten blocks validated by
 `season_rules_ok()` against a `season_rule_spec()` VALUES table, every one optional and every one
@@ -316,7 +326,7 @@ its byte limit and nothing else; `soma-models-get` and the `soma-seasons-create`
 follow. `0001_init.sql` was rewritten in place, as a pre-release schema is. All 38 statements prepare.
 
 **10 September 2026.** The package implements twenty-three routes, OAuth sessions, season
-administration, submission recording, replay signing, and the shared schema. Orion 1.7.0 lint
+administration, submission recording, replay signing, and the shared schema. Orion 1.8.1 lint
 passes clean at 22 channels and 22 workflows; `check-sql.sh` prepares all 38 shipped statements;
 `smoke.sh` passes every check against the local stack (32 with a competitor's handle, 33 with an
 admin's, which reaches one more); `verify/run.sh` walks the schema, both fence races, the seed and
@@ -341,6 +351,6 @@ needs a configured OAuth App rather than a minted cookie.
 
 - Local references: [migrations](migrations/), [channel contracts](channels/), and [workflow response mappings](workflows/).
 - Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the three packages run against it.
-- [The competitor guide](https://github.com/Tiny-Brains/docs) — the reader-facing half: the rules, the model format, the adapter dialect, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
-- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Jodi](https://github.com/Tiny-Brains/jodi), [Kalam](https://github.com/Tiny-Brains/kalam), [Axon](https://github.com/Tiny-Brains/axon), [DevOps](https://github.com/Tiny-Brains/devops).
+- [The competitor guide](https://github.com/Tiny-Brains/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
+- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Jodi](https://github.com/Tiny-Brains/jodi), [Kalam](https://github.com/Tiny-Brains/kalam), [DevOps](https://github.com/Tiny-Brains/devops).
 - Apache-2.0: see [LICENSE](LICENSE).

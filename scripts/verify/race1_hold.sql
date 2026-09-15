@@ -7,7 +7,7 @@ EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000006', 6
 EXECUTE k_start ('30000000-0000-0000-0000-000000000006');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000006', :'m52',
   '[{"seat":0,"rank":1,"score":9,"strikes":0},{"seat":1,"rank":2,"score":4,"strikes":0}]',
-  'all_food', 100, now() - interval '4 seconds', 'sha256:e2', 'sha256:ev1', 'replays/ants/z/t6.json');
+  'all_food', 100, now() - interval '4 seconds', 'sha256:e2', '1.8.1', 'replays/ants/z/t6.json');
 \echo 'holder: row 52 finished; claiming fence 10:01/1 and holding the transaction open'
 BEGIN;
 EXECUTE c_fence ('2026-09-07 10:01:00+00', 1);

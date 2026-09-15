@@ -72,7 +72,11 @@ for f in connectors/*.json; do
   # refuses an env:// reference in an http connector's url, so a deployment that wants to point the
   # ownership check at a stand-in -- which is the only way to exercise soma-models-create end to
   # end without a live GitHub account per case -- has to have it written in here.
-  if [ "$id" = "soma-db" ] && [ "$ALLOW_PRIVATE" = "1" ]; then
+  # soma-models signs a competitor's upload against the PUBLIC endpoint, so it needs no opt-out on
+  # a laptop -- 127.0.0.1 is where the browser is. It is listed with soma-db anyway, because a
+  # deployment that points MODELS_PUBLIC_ENDPOINT at an internal name would otherwise fail at
+  # signing with an SSRF message that names neither.
+  if { [ "$id" = "soma-db" ] || [ "$id" = "soma-models" ]; } && [ "$ALLOW_PRIVATE" = "1" ]; then
     with_private_urls "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null
   elif [ "$id" = "github-api" ] && [ -n "${GITHUB_API_BASE:-}" ]; then
     SUB_URL="$GITHUB_API_BASE" with_url "$f" | req -X POST "$ADMIN/connectors" -H 'Content-Type: application/json' --data @- > /dev/null

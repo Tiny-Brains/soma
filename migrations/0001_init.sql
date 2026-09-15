@@ -142,11 +142,13 @@ LANGUAGE sql IMMUTABLE AS $$
       ('graph', 'op_allowlist',    'strs', NULL, NULL, NULL),
       ('graph', 'params_max',      'int',     1, 1e12, NULL),
       ('graph', 'adapter_ops_max', 'int',     1,  1e9, NULL),
-      -- The element types the WEIGHTS may be stored in -- a quantised-only season. Read off
-      -- axon's /inspect `weight_dtypes`, which is the initializers' declared types and NOT the
-      -- graph's port dtypes: a network with float32 inputs may hold int8 weights, which is what
-      -- quantisation is. Listing 'int8' alone is how a season says "quantised or nothing".
-      ('graph', 'dtypes',          'strs', NULL, NULL, NULL),
+      -- `graph.dtypes` -- a quantised-only season, by the element types the WEIGHTS are stored in
+      -- -- was removed on 15 September 2026 and is NOT a gap to fill back in casually. It read the
+      -- initializers' declared types off the loader's own inspection, and the loader is gone: what
+      -- a node reports at admission is `stats`, which carries parameters, nodes, operators,
+      -- ir_version and opset and says nothing about how a weight is stored. Jodi selected the rule
+      -- and no verdict ever tested it, so a season declaring 'int8' was refusing nothing. Restoring
+      -- it means a number Orion measures, not a column here.
       -- Advisory by default and null in every season the platform ships. Decision 46 removed the
       -- compute cap on measurement: wall clock belongs to the admission host, so a verdict turning
       -- on it depends on a noisy neighbour and a re-run can flip it. A season that sets this is
@@ -311,12 +313,19 @@ CREATE TABLE seasons (
     -- can be focused (nano-only, or every cap a notch down) at the price of comparability across
     -- seasons, which is why every route returning a season returns these with it. `classes.allow`
     -- narrows this table for entry; it never adds to it.
+    --
+    -- RECALIBRATED 14 SEPTEMBER 2026, when the metric changed. `S` was zstd-19 over the graph's
+    -- initializers plus the adapter; `S'` is `artifact_bytes + len(manifest)` -- raw, and measured
+    -- against a digest the node re-hashes (decision R4). Raw bytes are roughly twice compressed
+    -- ones for these artifacts, so every cap doubled: the table still means the parameter budget
+    -- it always meant. PROVISIONAL, and the open question is whether a class should cap
+    -- `stats.parameters` instead, which Orion 1.8.1 made honest enough to gate on.
     weight_classes       jsonb       NOT NULL DEFAULT
-        '[{"class": "nano",  "max_bytes": 8192},
-          {"class": "micro", "max_bytes": 65536},
-          {"class": "mini",  "max_bytes": 524288},
-          {"class": "small", "max_bytes": 4194304},
-          {"class": "large", "max_bytes": 67108864}]'::jsonb,
+        '[{"class": "nano",  "max_bytes": 16384},
+          {"class": "micro", "max_bytes": 131072},
+          {"class": "mini",  "max_bytes": 1048576},
+          {"class": "small", "max_bytes": 8388608},
+          {"class": "large", "max_bytes": 134217728}]'::jsonb,
 
     created_at           timestamptz NOT NULL DEFAULT now(),
 
@@ -537,15 +546,33 @@ CREATE TABLE model_versions (
     -- says how much of the game's turn_ms a graph leaves itself, which is the bound that decides
     -- whether a seat forfeits.
     infer_us        bigint,
+    -- sha256 of the ONNX artifact, spelled `sha256:<hex>` -- the same string Orion's model
+    -- registration carries and re-hashes the fetched object against, so the row and the node agree
+    -- by construction rather than by trust.
     weights_hash    text,
-    adapter_hash    text,
+    manifest_hash   text,
 
-    -- The adapter's exact text, stored rather than referenced: it is small, it is what the
-    -- evaluator runs, and holding the bytes means a re-validation sweep needs no network.
-    adapter          text,
+    -- The Orion model manifest, exactly as it was registered: `orion:model@1.0.0`, the inputs with
+    -- their adapters, the outputs, `probe_dims`. Stored rather than referenced -- it is small, it
+    -- is what the node runs, and holding the bytes means a re-validation sweep needs no network.
+    -- Its length is the second term of the weight class (decision R4).
+    manifest         text,
 
-    -- Which evaluator build verified this version; a change in it is what makes a sweep necessary.
-    evaluator_digest text,
+    -- Where the bytes live: the object key under the models bucket. GENERATED, never written --
+    -- Soma mints a presigned PUT for exactly this key when the submission is accepted, Jodi reads
+    -- the object from it at admission, and every replica's roster clock fetches it from there by
+    -- digest. Three readers, one spelling, and no statement that could disagree with another about
+    -- where a version's bytes are.
+    artifact_key     text GENERATED ALWAYS AS ('models/' || id::text || '/model.onnx') STORED,
+
+    -- Which Orion served the verdict; a change in it is what makes a sweep necessary (R10). It
+    -- replaces `evaluator_digest`, which named an axon build that no longer exists.
+    orion_version    text,
+
+    -- What the admission probe bound each named dimension to, as `{"H": 128, "W": 128}`. Without
+    -- it `infer_us` is not comparable between two versions, because a variable axis means the
+    -- number was measured at a size the manifest chose (R2).
+    probe_dims       jsonb,
 
     reject_reason   text,
 
@@ -573,12 +600,12 @@ CREATE TABLE model_versions (
     -- null weights_hash.
     CONSTRAINT model_versions_past_testing_has_contents
         CHECK (status IN ('testing', 'rejected')
-            OR (weights_hash IS NOT NULL AND adapter_hash IS NOT NULL
-                AND evaluator_digest IS NOT NULL AND weight_class IS NOT NULL)),
+            OR (weights_hash IS NOT NULL AND manifest_hash IS NOT NULL
+                AND orion_version IS NOT NULL AND weight_class IS NOT NULL)),
 
-    CONSTRAINT model_versions_adapter_matches_hash
-        CHECK (adapter IS NULL
-            OR adapter_hash = 'sha256:' || encode(sha256(convert_to(adapter, 'UTF8')), 'hex'))
+    CONSTRAINT model_versions_manifest_matches_hash
+        CHECK (manifest IS NULL
+            OR manifest_hash = 'sha256:' || encode(sha256(convert_to(manifest, 'UTF8')), 'hex'))
 );
 
 -- -------------------------------------------------------------------- ratings
@@ -649,7 +676,7 @@ CREATE TABLE matches (
     turns                int,
     played_ms            int,
     engine_digest_played text,        -- what actually ran; compare with engine_digest for skew
-    evaluator_digest     text,
+    orion_version        text,        -- which Orion ran the adapters; a sweep is per upgrade (R10)
     replay_key           text,        -- names the attempt, so a stale attempt's blob is an orphan
     played_at            timestamptz,
     fault_reason         text,
@@ -683,7 +710,7 @@ CREATE TABLE matches (
                               AND played_at IS NULL
             WHEN 'finished'  THEN claim_token IS NOT NULL AND replay_key IS NOT NULL
                               AND played_at IS NOT NULL AND engine_digest_played IS NOT NULL
-                              AND evaluator_digest IS NOT NULL AND rated_at IS NULL
+                              AND orion_version IS NOT NULL AND rated_at IS NULL
             WHEN 'rated'     THEN played_at IS NOT NULL AND rated_at IS NOT NULL
                               AND rated_seq IS NOT NULL
             WHEN 'cancelled' THEN withdrawn_reason IS NOT NULL AND closed_at IS NOT NULL
@@ -711,7 +738,7 @@ CREATE TABLE match_seats (
     -- ---- what pair writes
     version_id     uuid     NOT NULL REFERENCES model_versions (id),
     weights_hash   text     NOT NULL,   -- copied at insert: the row records what was paired,
-    adapter_hash   text     NOT NULL,   -- not what the version row says today
+    manifest_hash  text     NOT NULL,   -- not what the version row says today
     paired_ratings jsonb,               -- the rating snapshot the pairing was made on
 
     -- ---- what Kalam writes
@@ -1292,8 +1319,15 @@ END $$;
 
 GRANT USAGE ON SCHEMA public TO kalam;
 GRANT SELECT ON matches, match_seats TO kalam;
+-- The roster a replica registers on its own node (decision R8): the manifest, where the bytes are
+-- and the digest they must hash to. COLUMN-LEVEL on purpose -- `weight_class`, `param_count`,
+-- `infer_us`, `reject_reason` and every admission column stay out of reach, so "Kalam reads no
+-- competitive decision" survives it being able to name a model at all. It still cannot reach
+-- ratings, users, seasons or clocks.
+GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
+    ON model_versions TO kalam;
 GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
-              reason, turns, played_ms, engine_digest_played, evaluator_digest,
+              reason, turns, played_ms, engine_digest_played, orion_version,
               replay_key, played_at, fault_reason, fault_seat, closed_at)
     ON matches TO kalam;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)

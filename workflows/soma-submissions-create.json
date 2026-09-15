@@ -20,7 +20,7 @@
     {
       "id": "declared",
       "name": "Both hashes, declared and well formed",
-      "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator. The alphabet is checked where it matters: axon derives the object-store key from the hash and refuses anything that is not 64 hex digits, which is what stops a hash from being a path.",
+      "description": "`sha256:` and 71 characters, which is the shape and not the alphabet -- datalogic has no regex operator. The alphabet does not have to be checked here: the object key is a GENERATED column derived from the version id, so a hash is never a path.",
       "condition": {
         "or": [
           {
@@ -58,14 +58,14 @@
             "or": [
               {
                 "!": {
-                  "var": "data.req.adapter_hash"
+                  "var": "data.req.manifest_hash"
                 }
               },
               {
                 "!": {
                   "starts_with": [
                     {
-                      "var": "data.req.adapter_hash"
+                      "var": "data.req.manifest_hash"
                     },
                     "sha256:"
                   ]
@@ -76,7 +76,7 @@
                   {
                     "length": [
                       {
-                        "var": "data.req.adapter_hash"
+                        "var": "data.req.manifest_hash"
                       }
                     ]
                   },
@@ -96,7 +96,7 @@
               "path": "data.body",
               "logic": {
                 "error": "hashes_required",
-                "detail": "weights_hash and adapter_hash are required, each as sha256:<64 hex>. Run `sha256sum model.onnx adapter.json` on the files you attached to the release."
+                "detail": "weights_hash and manifest_hash are required, each as sha256:<64 hex>. Run `sha256sum model.onnx manifest.json` on the files you attached to the release."
               }
             },
             {
@@ -117,7 +117,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, weights_hash, adapter_hash) SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN models e ON e.game_id = g.id AND e.owner_id = ($1)::uuid AND e.retired_at IS NULL AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN model_versions v ON v.model_id = e.id WHERE g.slug = ($2)::text AND season_admits(s, ($1)::uuid) AND season_admits_weights(s, ($1)::uuid, ($6)::text, e.id) AND season_admits_in_flight(s, ($1)::uuid) AND season_admits_version(s, ($1)::uuid, e.id) AND season_admits_cooldown(s, e.id) AND NOT EXISTS (SELECT 1 FROM model_versions f WHERE f.model_id = e.id AND f.status IN ('testing', 'verified')) GROUP BY e.id, g.id, s.id",
+          "query": "INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, weights_hash, manifest_hash) SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($4)::text, ($6)::text, ($7)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN models e ON e.game_id = g.id AND e.owner_id = ($1)::uuid AND e.retired_at IS NULL AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN model_versions v ON v.model_id = e.id WHERE g.slug = ($2)::text AND season_admits(s, ($1)::uuid) AND season_admits_weights(s, ($1)::uuid, ($6)::text, e.id) AND season_admits_in_flight(s, ($1)::uuid) AND season_admits_version(s, ($1)::uuid, e.id) AND season_admits_cooldown(s, e.id) AND NOT EXISTS (SELECT 1 FROM model_versions f WHERE f.model_id = e.id AND f.status IN ('testing', 'verified')) GROUP BY e.id, g.id, s.id",
           "params": [
             {
               "var": "metadata.auth.claims.sub"
@@ -138,7 +138,7 @@
               "var": "data.req.weights_hash"
             },
             {
-              "var": "data.req.adapter_hash"
+              "var": "data.req.manifest_hash"
             }
           ],
           "output": "temp_data.insert"
@@ -415,7 +415,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('version_id', v.id, 'model_id', e.id, 'model', e.name, 'repo', e.repo, 'version', v.version, 'status', v.status, 'season', se.number, 'weights_hash', v.weights_hash, 'adapter_hash', v.adapter_hash) AS body FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = e.game_id JOIN seasons se ON se.id = v.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) AND v.release_tag = ($5)::text",
+          "query": "SELECT json_build_object('version_id', v.id, 'model_id', e.id, 'model', e.name, 'repo', e.repo, 'version', v.version, 'status', v.status, 'season', se.number, 'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash) AS body FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = e.game_id JOIN seasons se ON se.id = v.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND (e.id::text = ($3)::text OR lower(e.repo) = lower(repo_path(($3)::text))) AND v.release_tag = ($5)::text",
           "params": [
             {
               "var": "metadata.auth.claims.sub"
@@ -434,6 +434,62 @@
             }
           ],
           "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "sign_weights",
+      "name": "A one-shot PUT for the ONNX graph",
+      "condition": {
+        "!!": {
+          "var": "temp_data.rows.0.body.version_id"
+        }
+      },
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-models",
+          "method": "PUT",
+          "key": {
+            "cat": [
+              "models/",
+              {
+                "var": "temp_data.rows.0.body.version_id"
+              },
+              "/",
+              "model.onnx"
+            ]
+          },
+          "expires_in": "30m",
+          "output": "temp_data.put_weights"
+        }
+      }
+    },
+    {
+      "id": "sign_manifest",
+      "name": "A one-shot PUT for the manifest",
+      "condition": {
+        "!!": {
+          "var": "temp_data.rows.0.body.version_id"
+        }
+      },
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-models",
+          "method": "PUT",
+          "key": {
+            "cat": [
+              "models/",
+              {
+                "var": "temp_data.rows.0.body.version_id"
+              },
+              "/",
+              "manifest.json"
+            ]
+          },
+          "expires_in": "30m",
+          "output": "temp_data.put_manifest"
         }
       }
     },
@@ -478,6 +534,29 @@
               "path": "data.body",
               "logic": {
                 "var": "temp_data.rows.0.body"
+              }
+            },
+            {
+              "path": "data.body.upload",
+              "logic": {
+                "if": [
+                  {
+                    "!!": {
+                      "var": "temp_data.rows.0.body.version_id"
+                    }
+                  },
+                  {
+                    "model_onnx": {
+                      "var": "temp_data.put_weights"
+                    },
+                    "manifest_json": {
+                      "var": "temp_data.put_manifest"
+                    },
+                    "expires_in": "30m",
+                    "note": "PUT the two files from your release to these URLs. They are one-shot and expire; ask again with the same release_tag to get fresh ones."
+                  },
+                  null
+                ]
               }
             },
             {

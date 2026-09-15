@@ -117,7 +117,7 @@ BEGIN
             ('matches','status'), ('matches','claim_token'), ('matches','lease_expires_at'),
             ('matches','lapses'), ('matches','refusals'), ('matches','reason'),
             ('matches','turns'), ('matches','played_ms'), ('matches','engine_digest_played'),
-            ('matches','evaluator_digest'), ('matches','replay_key'), ('matches','played_at'),
+            ('matches','orion_version'), ('matches','replay_key'), ('matches','played_at'),
             ('matches','fault_reason'), ('matches','fault_seat'), ('matches','closed_at'),
             ('match_seats','rank'), ('match_seats','score'), ('match_seats','strikes'),
             ('match_seats','infer_us_total'), ('match_seats','infer_us_max'),
@@ -139,9 +139,9 @@ INSERT INTO matches (id, game_id, season_id, engine_digest, seed, preset, seat_c
 SELECT '11111111-1111-1111-1111-111111111111', g.id, s.id, s.engine_digest, 1, 'standard', 2,
        ARRAY['nano','open']::ladder[]
   FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = 'ants';
-INSERT INTO match_seats (match_id, seat, version_id, weights_hash, adapter_hash)
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash)
 SELECT '11111111-1111-1111-1111-111111111111', row_number() OVER (ORDER BY m.id) - 1,
-       m.id, m.weights_hash, m.adapter_hash
+       m.id, m.weights_hash, m.manifest_hash
   FROM model_versions m LIMIT 2;
 
 DO $$
