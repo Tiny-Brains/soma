@@ -139,6 +139,41 @@ if [ "$ROLE" = "admin" ]; then
   check 400 "POST /v1/runner-keys (no label)"    -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner-keys"
   check 404 "DELETE /v1/runner-keys/{unknown}"   -X DELETE "${C[@]}" "$BASE/v1/runner-keys/00000000-0000-0000-0000-000000000000"
   check 404 "DELETE /v1/runners/{unknown}"       -X DELETE "${C[@]}" "$BASE/v1/runners/00000000-0000-0000-0000-000000000000"
+
+  # THE ROUND TRIP, and it is the only check here that proves the DEPLOYMENT rather than the
+  # package: mint a key, exchange it, claim with the token. Every check above answers 401 or 404
+  # from the channel's auth or its router, which a node with no RUNNER_TOKEN_SECRET and none of the
+  # gate's [vars] passes just as happily -- the routes load, and then every real call is a 500. So
+  # this is what says the wiring is done. A 204 is the right answer on an idle queue and a 200 on a
+  # busy one, and both mean the same thing here.
+  KEY=$(curl -sS -X POST "${C[@]}" -H 'content-type: application/json' \
+             -d '{"label":"smoke"}' "$BASE/v1/runner-keys" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("key",""))' 2>/dev/null || true)
+  if [ -n "$KEY" ]; then
+    check 201 "POST /v1/runner-keys"             -X POST "${C[@]}" -H 'content-type: application/json' \
+              -d '{"label":"smoke-2"}' "$BASE/v1/runner-keys"
+    TOK=$(curl -sS -X POST -H 'content-type: application/json' \
+               -d "{\"key\":\"$KEY\",\"label\":\"smoke\",\"arch\":\"amd64\"}" \
+               "$BASE/v1/runner/token" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)
+    if [ -n "$TOK" ]; then
+      pass=$((pass+1)); printf '  ok   %-46s %s\n' "POST /v1/runner/token (real key)" "minted"
+      got=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "authorization: Bearer $TOK" \
+                 -H 'content-type: application/json' \
+                 -d "{\"engine_digest\":\"none\",\"seat_count\":2}" "$BASE/v1/runner/claim")
+      # Always 200 now: {"idle": true} when nothing is queued, the row and its contract when
+      # something is. A 500 here is the [vars] that are not set.
+      if [ "$got" = "200" ]; then
+        pass=$((pass+1)); printf '  ok   %-46s %s\n' "POST /v1/runner/claim (real token)" "$got"
+      else
+        fail=$((fail+1)); printf '  FAIL %-46s got %s, wanted 200\n' "POST /v1/runner/claim (real token)" "$got"
+      fi
+    else
+      fail=$((fail+1)); printf '  FAIL %-46s %s\n' "POST /v1/runner/token (real key)" "no token -- RUNNER_TOKEN_SECRET set?"
+    fi
+    # Tidy up: the keys this made are real, and a smoke run should not leave the fleet openable.
+    psql -c "UPDATE runner_keys SET revoked_at = now() WHERE label LIKE 'smoke%' AND revoked_at IS NULL;" > /dev/null
+  else
+    fail=$((fail+1)); printf '  FAIL %-46s %s\n' "POST /v1/runner-keys" "no key in the response"
+  fi
 else
   check 403 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
   check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"

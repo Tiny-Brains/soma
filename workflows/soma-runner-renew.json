@@ -15,7 +15,7 @@
       "function": {
         "name": "db_write",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "UPDATE matches SET lease_expires_at = now() + ($2)::int * interval '1 second' WHERE id = ($4)::uuid AND claim_token = ($1)::uuid AND status = 'running' AND played_by = ($3)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($3)::uuid)",
           "params": [
             { "var": "data.req.claim_token" },
@@ -35,7 +35,7 @@
       "function": {
         "name": "db_read",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "SELECT m.lease_expires_at AS lease_expires_at FROM matches m WHERE m.id = ($1)::uuid AND m.claim_token = ($2)::uuid",
           "params": [{ "var": "metadata.params.id" }, { "var": "data.req.claim_token" }],
           "output": "temp_data.rows"

@@ -41,4 +41,18 @@ orion-server clippy . --deny-warnings
 echo "==> fmt"
 orion-server fmt --check .
 
+# ---------------------------------------------------------------- the one-character check
+# `auth.source.scheme` IS A LITERAL PREFIX AND THE TRAILING SPACE BELONGS TO IT. Orion strips
+# exactly that string, so "Bearer" leaves a leading space on the token and refuses EVERY runner
+# with a bare 401 -- the same code as an absent, expired, revoked or wrong-audience token.
+#
+# NOTHING ABOVE CATCHES IT. "Bearer" is a valid string, so lint, clippy and fmt all pass; the
+# smoke checks that assert 401 on the runner routes stay green because they are getting the 401
+# they asked for; and a replica goes on minting tokens and claiming nothing, which on the admin
+# Runners screen reads as "calling in" with nothing played. It has been lost twice now -- once by
+# being typed without the space, once to a `git checkout` of a fix that was not committed yet --
+# and the second time it stopped a live fleet for eleven minutes. Hence a check that costs nothing.
+echo "==> the Bearer scheme keeps its trailing space"
+python3 scripts/check-auth-scheme.py
+
 echo "==> Soma's definitions are clean"

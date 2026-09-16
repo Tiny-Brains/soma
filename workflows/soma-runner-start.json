@@ -15,7 +15,7 @@
       "function": {
         "name": "db_write",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "UPDATE matches SET status = 'running' WHERE id = ($3)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND played_by = ($2)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($2)::uuid)",
           "params": [
             { "var": "data.req.claim_token" },

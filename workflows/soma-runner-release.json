@@ -15,7 +15,7 @@
       "function": {
         "name": "db_write",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "UPDATE matches SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'MODEL_UNAVAILABLE' END, closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END WHERE id = ($5)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND ($2)::boolean AND played_by = ($4)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid)",
           "params": [
             { "var": "data.req.claim_token" },
@@ -46,7 +46,7 @@
       "function": {
         "name": "db_read",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "SELECT json_build_object('released', true, 'refusals', m.refusals, 'failed', m.status = 'failed', 'fault_reason', m.fault_reason) AS body FROM matches m WHERE m.id = ($1)::uuid",
           "params": [{ "var": "metadata.params.id" }],
           "output": "temp_data.rows"

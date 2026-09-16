@@ -37,7 +37,7 @@
       "function": {
         "name": "db_write",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "WITH pick AS MATERIALIZED (SELECT m.id FROM matches m WHERE m.status = 'pending' AND m.engine_digest = ($1)::text AND m.seat_count <= ($4)::int AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($5)::uuid AND (SELECT count(*) FROM matches h WHERE h.played_by = ($5)::uuid AND h.status IN ('claimed', 'running')) < lr.max_in_flight) ORDER BY (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE matches m SET status = 'claimed', claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval '1 second', played_by = ($5)::uuid FROM pick WHERE m.id = pick.id",
           "params": [
             { "var": "data.req.engine_digest" },
@@ -53,14 +53,23 @@
     {
       "id": "row",
       "name": "Read the claimed row",
-      "description": "Conditioned on the token AND status='claimed', so a runner that lost its claim between the two statements reads nothing rather than playing anyway. `row` is byte-identical to what a replica reads over kalam-db today -- the exit criterion of the whole move -- so the lease and the digest ride beside it as their own columns rather than being folded in.",
+      "description": "Reads back only under the claim token, and builds THE EXECUTION CONTRACT in the same statement. Each value is coalesce(season rule, games.manifest limits, [vars]) taken from THE ROW'S OWN SEASON, the shape jodi already uses for adapter_ops_max -- so a season that declares nothing plays by the cartridge's published limits, and a queued match keeps the terms it was queued under because seasons.rules is immutable once submissions open. The `enabled` flag is honoured rather than ignored: a block turned off falls through to the defaults, because a rule that reads as on when its author turned it off is the failure season_rules_ok exists to prevent. renew_every_n_turns is DERIVED, not sent: it is the deployment's target clamped by floor(lease_seconds * 1000 / (3 * turn_ms)), so a season raising turn_ms cannot leave the lease expiring before the renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads as a wedged runner. A range check cannot close that: the safe ceiling depends on lease_seconds, which lives in another file.",
       "condition": { ">": [{ "var": "temp_data.claimed.rows_affected" }, 0] },
       "function": {
         "name": "db_read",
         "input": {
-          "connector": "soma-db",
-          "query": "SELECT json_build_object('id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count, 'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling, 'seats', (SELECT json_agg(json_build_object('m', 0, 'seat', s.seat, 'version_id', s.version_id, 'model', ($2)::text || s.version_id::text, 'strike_ceiling', m.strike_ceiling, 'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id)) AS row, m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at FROM matches m WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'",
-          "params": [{ "var": "temp_data.token" }, { "var": "metadata.vars.model_prefix" }],
+          "connector": "soma-runner-db",
+          "query": "SELECT json_build_object('id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count, 'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling, 'seats', (SELECT json_agg(json_build_object('m', 0, 'seat', s.seat, 'version_id', s.version_id, 'model', ($2)::text || s.version_id::text, 'strike_ceiling', m.strike_ceiling, 'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id)) AS row, m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at, json_build_object('turn_ms', e.turn_ms, 'max_turns', e.max_turns, 'model_prefix', ($2)::text, 'engine_digest', m.engine_digest, 'replay_prefix', ($3)::text, 'renew_every_n_turns', GREATEST(1, LEAST(($4)::int, (($5)::int * 1000) / (3 * e.turn_ms))), 'lease_seconds', ($5)::int, 'refusal_ceiling', e.refusal_ceiling) AS contract FROM matches m JOIN seasons se ON se.id = m.season_id JOIN games g ON g.id = m.game_id CROSS JOIN LATERAL (SELECT coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'turn_ms')::int END, (g.manifest -> 'limits' ->> 'turn_ms')::int, ($6)::int) AS turn_ms, coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'max_turns')::int END, (g.manifest -> 'limits' ->> 'max_turns')::int, ($7)::int) AS max_turns, coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'refusal_ceiling')::int END, ($8)::int) AS refusal_ceiling) e WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'",
+          "params": [
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.model_prefix" },
+            { "var": "metadata.vars.replay_prefix" },
+            { "var": "metadata.vars.renew_every_n_turns" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "metadata.vars.turn_ms" },
+            { "var": "metadata.vars.max_turns" },
+            { "var": "metadata.vars.refusal_ceiling" }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -68,14 +77,15 @@
     {
       "id": "idle",
       "name": "Nothing to play",
-      "description": "204 with no body at all, which is why this is a hand-written terminal rather than the refuse fragment: that fragment declares a body_path, and a 204 carrying a body is not a response anyone should have to reason about. An empty queue is the common case, not an error.",
+      "description": "AN EMPTY QUEUE IS 200 {\"idle\": true}, NOT 204, and the change was forced by running it. A 204 carries no body, and an HTTP client that expects JSON -- which every caller of this route is, because every other answer is JSON -- fails parsing it: `EOF while parsing a value at line 1 column 0`, once per poll per lane. The runner survived that (the call is soft and the idle branch is reached either way) but it logged an error 0.8 times a second per runner for the COMMON case, which is the shape of failure this platform is most careful about elsewhere: a healthy fleet that reads as a broken one. The saving 204 bought over this body is fourteen bytes. The cost of the status code being the whole answer is that the answer needs a client that treats it specially, and nothing else here does.",
       "condition": { "!": { "var": "temp_data.rows.0.row" } },
       "terminal": true,
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+            { "path": "data.body", "logic": { "idle": true } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }
       }
@@ -92,16 +102,7 @@
               "path": "data.body",
               "logic": {
                 "match": { "var": "temp_data.rows.0.row" },
-                "contract": {
-                  "turn_ms": { "var": "metadata.vars.turn_ms" },
-                  "max_turns": { "var": "metadata.vars.max_turns" },
-                  "model_prefix": { "var": "metadata.vars.model_prefix" },
-                  "engine_digest": { "var": "temp_data.rows.0.engine_digest" },
-                  "replay_prefix": { "var": "metadata.vars.replay_prefix" },
-                  "renew_every_n_turns": { "var": "metadata.vars.renew_every_n_turns" },
-                  "lease_seconds": { "var": "metadata.vars.lease_seconds" },
-                  "refusal_ceiling": { "var": "metadata.vars.refusal_ceiling" }
-                },
+                "contract": { "var": "temp_data.rows.0.contract" },
                 "claim": {
                   "token": { "var": "temp_data.token" },
                   "lease_expires_at": { "var": "temp_data.rows.0.lease_expires_at" }

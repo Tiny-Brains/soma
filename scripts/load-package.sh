@@ -60,6 +60,8 @@ VERSION=$(python3 scripts/stage-set.py . "$STAGE" \
   "soma-cache=allow_private_urls=true" \
   "soma-cache=url=${SOMA_CACHE_REDIS_URL:-}" \
   "soma-db=allow_private_urls=$PRIVATE" \
+  "soma-runner-db=allow_private_urls=$PRIVATE" \
+  "soma-runner-blobs=allow_private_urls=$PRIVATE" \
   "soma-models=allow_private_urls=$PRIVATE" \
   "github-api=url=${GITHUB_API_BASE:-}")
 

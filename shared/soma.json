@@ -13,7 +13,7 @@
       "jwt_keys": [{ "algorithm": "HS256", "key": "env://RUNNER_TOKEN_SECRET" }],
       "issuer": "soma",
       "audience": "runner",
-      "source": { "header": "Authorization", "scheme": "Bearer" }
+      "source": { "header": "Authorization", "scheme": "Bearer " }
     },
     "shaped": { "mode": "shaped" },
     "public_rate": { "requests_per_second": 30, "burst": 60 },
@@ -29,6 +29,7 @@
       "key_logic": { "var": "auth.sub" }
     },
     "runner_rate": { "requests_per_second": 30, "burst": 60 },
+    "runner_token_rate": { "requests_per_second": 30, "burst": 60 },
     "per_runner_rate": {
       "requests_per_second": 10,
       "burst": 20,

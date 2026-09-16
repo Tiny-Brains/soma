@@ -6,7 +6,7 @@
   "config": {
     "type": "storage",
     "provider": "s3",
-    "endpoint": "env://R2_ENDPOINT",
+    "endpoint": "env://RUNNER_BLOB_ENDPOINT",
     "region": "auto",
     "bucket": "env://R2_BUCKET",
     "access_key": "env://R2_ACCESS_KEY",

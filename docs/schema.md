@@ -785,7 +785,7 @@ a flat task list ending in `data.body` + `data._orion.response`.
 | Route | Statements | Answers |
 |---|---|---|
 | `POST /v1/runner/token` | key lookup, `runners` upsert, `jwt_sign` | `{token, expires_in, runner_id}` |
-| `POST /v1/runner/claim` | 4.2, 4.3 | `200` the row + the execution contract, or **`204`** |
+| `POST /v1/runner/claim` | 4.2, 4.3 | `200` the row + the execution contract, or `200 {"idle": true}` |
 | `POST /v1/runner/matches/{id}/start` | 4.4 | `{started}` |
 | `POST /v1/runner/matches/{id}/release` | 4.4 | `{released, refusals, failed}` |
 | `POST /v1/runner/matches/{id}/renew` | 4.5 | `{applied, lease_expires_at}` |
@@ -798,12 +798,20 @@ Five more are admin-facing and session-authed, over `runner_keys` and `runners`:
 `POST`/`GET /v1/runner-keys`, `DELETE /v1/runner-keys/{id}`, `GET /v1/runners`,
 `DELETE /v1/runners/{id}`.
 
-### 4a.1 The claim answers 204, and carries the execution contract
+### 4a.1 The claim's idle answer, and the execution contract
 
 An idle runner polling four lanes every five seconds is 0.8 requests a second **independent of how
-busy the ladder is**, so the idle answer is the one that has to be cheap: one indexed probe and no
-body. It is also the first thing that will strain, and it strains on a number that has nothing to do
-with queue depth.
+busy the ladder is**, so the idle answer is the one that has to be cheap: one indexed probe and a
+body of `{"idle": true}`. It is also the first thing that will strain, and it strains on a number
+that has nothing to do with queue depth.
+
+> **It was a `204`, and running it changed that.** A 204 carries no body, and every caller of this
+> route parses JSON because every other answer is JSON — so the idle case failed the parse, `EOF
+> while parsing a value at line 1 column 0`, once per poll per lane. The runner survived it and idled
+> correctly, and logged an error 0.8 times a second for **the common case**: a healthy fleet that
+> reads as a broken one, which is the failure shape this platform is most careful about everywhere
+> else. Fourteen bytes was the whole saving. `constants.no_content` stays for `soma-admin-check`,
+> where a 204 *is* the answer and nginx is the only client.
 
 The 200 carries three objects — `match` (§4.3's `row`), `claim`, and **`contract`**:
 
@@ -819,6 +827,43 @@ These were `[vars]` on each replica, asserted equal across repositories by
 `devops/scripts/check/configs.sh`, **which cannot read a machine on somebody's desk**: a value that
 must be equal in two places is instead sent from the one place that owns it. `engine_digest` comes
 off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.
+
+**Three of the eight now come from the season (N18), and the read is in §4.3's statement.** A season
+owns the terms a model competes under, so `turn_ms`, `max_turns` and `refusal_ceiling` are read
+
+```sql
+coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
+              THEN (se.rules -> 'execution' ->> 'turn_ms')::int END,
+         (g.manifest -> 'limits' ->> 'turn_ms')::int,
+         ($6)::int)
+```
+
+from **the row's own season**, the shape Jodi already uses for `adapter_ops_max`. A season that
+declares nothing plays by the cartridge's published limits — which is where `turn_ms` and
+`max_turns` have always really lived, `games.manifest` being written from `cartridge.json` by the
+loader. `refusal_ceiling` has no manifest key, because the cartridge has no opinion about how often
+a *node* may refuse a row, so it falls straight through to the var.
+
+**Nothing is pinned onto the match row for this**, and it does not need to be: `seasons.rules` is
+immutable once `submissions_open_at` passes, the same property that lets count read a season's
+rating constants at fold time. A queued match cannot have its terms changed under it.
+
+**`enabled` is honoured rather than ignored.** Value-supplying blocks elsewhere (`pairing`,
+`closure`) coalesce their keys without checking it, and that is a footgun this block does not copy:
+a rule that applies when its author turned it off is the failure `season_rules_ok()` was written to
+prevent — its own comment is about a season storing `enabld` cleanly and then admitting the world.
+
+**`renew_every_n_turns` is DERIVED, not sent.** It is the deployment's target clamped by the season:
+
+```sql
+GREATEST(1, LEAST(($4)::int, (($5)::int * 1000) / (3 * e.turn_ms)))
+```
+
+Without that, a season raising `turn_ms` leaves the lease expiring before the renew fires — 30 turns
+at 5000 ms is 450 s against a 300 s lease, **on every match**, and it reads as a wedged runner. A
+range check on `turn_ms` cannot close it, because the safe ceiling depends on `lease_seconds`, which
+lives in a different file. Clamping makes `renew_every_n_turns × turn_ms × 3 < lease_seconds` true
+by arithmetic. At the defaults it is `min(30, 100) = 30`, unchanged; at `turn_ms = 5000` it is 20.
 
 Three values cannot ride the row because they are Orion *instance* config rather than workflow data:
 `engine.ops_budget`, `orion_version` and `max_timeout_ms`. A node cannot be told its own ops budget.

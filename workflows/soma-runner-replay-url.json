@@ -16,7 +16,7 @@
       "function": {
         "name": "db_read",
         "input": {
-          "connector": "soma-db",
+          "connector": "soma-runner-db",
           "query": "SELECT m.id AS match_id FROM matches m WHERE m.id = ($1)::uuid AND m.claim_token = ($2)::uuid AND m.status = 'running' AND m.played_by = ($3)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($3)::uuid)",
           "params": [
             { "var": "metadata.params.id" },

@@ -259,6 +259,94 @@ LICENSE                      repository licence
 
 ## Status
 
+**16 September 2026 (later) — the `Bearer ` space is a check now, and the token route's limit is a
+fleet ceiling.** `scripts/check-auth-scheme.py` runs in `check-defs.sh` and refuses an
+`auth.source.scheme` that does not end in a space. It is there because the fix was lost a **second**
+time — the first to being typed without it, the second to a `git checkout` of a working-tree change
+that was not committed — and a live fleet spent eleven minutes minting tokens and claiming nothing.
+Every offline gate passes either way, and so do the four smoke checks that assert `401`; the only
+thing that caught it is `smoke.sh`'s single **round trip**, which exists because of the first time.
+
+**`POST /v1/runner/token` is rate limited on the caller's address and cannot be limited on anything
+else** — it is the route that establishes the principal — so its limit is a ceiling on machines per
+**source address**, and several machines in one office are one address. A replica mints a token per
+call, not per ten minutes: every cron run is a fresh execution carrying no state. Measured, 214
+exchanges against 214 authenticated calls in 120 seconds, 0.89/s per idle runner. At the 5 rps it
+shipped with, the sixth machine behind a NAT was refused — **silently**, because the caller's call is
+soft and the run ends at `noauth` with outcome `no_token`. It now carries `runner_token_rate`, equal
+to `runner_rate`. The real repair is not minting a ten-minute credential for one call.
+
+**16 September 2026 — the runner routes stop running as the database owner.** N17, and it is the
+repair for the one boundary the gate weakened by shipping inside this package. The eight
+machine-facing routes now run as **`runner_gate`**, a third role that is `kalam`'s grant plus exactly
+what the routes added — `played_by`, `live_runners`, the `runners` upsert and the season columns the
+execution contract reads. Not a widened `kalam`: that role is still held by an in-cluster replica,
+and widening it is what the migration forbids. **The five admin routes stay on `soma-db`**, because
+`runner_keys` is Soma's auth surface, the same as sessions.
+
+Measured, not asserted: the role can claim, finish and read a season's rules, and **cannot** write a
+rating, read `users`, enumerate runner keys, promote a version, change a season or touch `clocks`.
+
+**It needed a second view.** The token exchange joins `runner_keys` to `users` to check a key belongs
+to a live admin, and the role must read neither — so `live_runner_keys` does the join the way
+`live_runners` already does, owned by the schema owner and running with its privileges. Three
+statements moved onto it.
+
+**The finish gained the three misconfiguration gates** (§7), and one of them is not what the design
+said. "Ranks a permutation of `0..seat_count-1`" is wrong about this engine: Ants ranks **from 1**
+and **allows ties**, so a draw is `{1,1}` and is the commonest two-seat result. The bound that is
+actually true is `1 <= rank <= 2*seat_count`. Checked against `match_seats` before shipping, and the
+harness now carries a draw among its fixtures so it cannot regress.
+
+**16 September 2026 — the gate is what a replica actually plays through.** A Kalam replica in
+`api` mode claimed, started, renewed, presigned, uploaded and finished two matches entirely over
+`/v1/runner/*`, and both re-played **IDENTICAL** locally. Two changes here made that work:
+
+- **The claim's idle answer is `200 {"idle": true}`, not `204`.** `http_call` parses every response
+  as JSON, because every other answer from this route is JSON — so the *common* case failed the
+  parse, once per poll per lane, and a healthy fleet read as a broken one. Fourteen bytes was the
+  whole saving. `constants.no_content` stays for `soma-admin-check`, where nginx is the only client
+  and a 204 really is the answer.
+- **`soma-runner-blobs` signs for `RUNNER_BLOB_ENDPOINT`**, the address a *runner* reaches the
+  object store on, which is not `R2_ENDPOINT` — that one is what a browser fetches a replay from.
+  SigV4 signs the host.
+
+**16 September 2026 (latest) — a season owns the terms a model competes under.** `turn_ms`,
+`max_turns` and `refusal_ceiling` become `season_rules.execution`, read
+`coalesce(season rule, games.manifest -> 'limits', [vars])` from **the row's own season** inside the
+claim's read-back — the shape Jodi already uses for `adapter_ops_max`. A speed season is
+`{"execution": {"enabled": true, "turn_ms": 250}}` and nothing else.
+
+**Why these were the last `[vars]` left is a grant.** The `kalam` role has no privilege on
+`seasons`, so the process that needed them could not read the table they belong in — which is also
+why `matches.strike_ceiling` is pinned per row. The gate assembles the claim at the centre, where
+`matches → seasons` is one join it already has, so a value no longer has to be copied onto a match
+row to reach the process that plays it. Nothing is pinned for this: `rules` is immutable once
+submissions open, so a queued match keeps the terms it was queued under.
+
+**`renew_every_n_turns` is now derived, not sent** — the deployment's target clamped by
+`floor(lease_seconds × 1000 / (3 × turn_ms))`. Without it a season setting `turn_ms = 5000` leaves
+the lease expiring before the renew fires on *every* match, reading as a wedged runner; a range
+check cannot close that, because the safe ceiling depends on a number in another file. And
+`GET /v1/games/{slug}` serves the **effective** limits, or the site states a turn budget the ladder
+does not play by.
+
+`enabled` is honoured rather than ignored, unlike the other value-supplying blocks: a rule that
+applies when its author turned it off is what `season_rules_ok()` was written to prevent.
+
+**16 September 2026 (later) — the gate answers.** The runner routes needed `RUNNER_TOKEN_SECRET` and
+seven `[vars]` that only `devops` could supply; those landed, and exercising the path end to end found
+**a one-character bug that made every runner call impossible**. `runner_auth` declared
+`"scheme": "Bearer"`, and Orion strips the configured scheme as a *literal prefix*, so the token
+arrived with a leading space and failed to parse. Orion's own default is `"Bearer "` **with the
+trailing space**; a hand-written config is how it is lost.
+
+What makes it worth writing down is that **nothing could see it**. Every offline gate passed —
+`"Bearer"` is a valid string. And the four smoke checks beside it asserted `401`, which is exactly
+what the bug produces, so they stayed green while no token could ever be accepted. `smoke.sh` now
+mints a key, exchanges it and claims with the token: **an auth route needs one round trip that gets a
+2xx**, because a refusal only proves the channel loaded. 48/48, and the claim returns its contract.
+
 **16 September 2026 — Soma serves the runner gate; a replica gives up its database credential.**
 Thirteen routes and one cron channel: `/v1/runner/*` for machines and `/v1/runner-keys` +
 `/v1/runners` for the admins who start them. The eight match statements move here from

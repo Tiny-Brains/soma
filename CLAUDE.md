@@ -150,6 +150,15 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   months after a one-row claim shipped, so every fence race the harness "proved" was proving a
   statement that did not exist. `run.sh` now compares `statements.sql` against the shipped workflows
   and refuses to run on a difference. Regenerate rather than retype.
+- **`auth.source.scheme` is a literal prefix and the trailing space belongs to it.**
+  `runner_auth` declares `"scheme": "Bearer "`. Orion strips exactly that string, so `"Bearer"`
+  leaves a leading space on the token and refuses **every** caller with a bare `401` — the same code
+  as an absent, expired, revoked or wrong-audience token, and the same code four smoke checks were
+  already asserting. Every offline gate passes, because the value is a valid string. Orion's own
+  default carries the space; a hand-written config is how it is lost.
+- **An auth route's smoke coverage needs one round trip that gets a 2xx.** A refusal proves the
+  channel loaded and nothing more: `smoke.sh` mints a key, exchanges it and claims with the token
+  precisely because the 401 checks beside it stayed green while no token could be accepted at all.
 - `load-package.sh` retires **by tag** (`pkg:soma`) anything the compiled artifact does not carry,
   so a deleted channel releases its route. Never drop the `"tags": ["pkg:soma"]` from a definition —
   an untagged object survives every reload and holds its route forever.

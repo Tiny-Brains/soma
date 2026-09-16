@@ -150,6 +150,33 @@ LANGUAGE sql IMMUTABLE AS $$
       -- choosing load-dependent admission, deliberately.
       ('graph', 'infer_us_max',    'int',     1,  1e9, NULL),
       ('graph', 'size_metric',     'enum', NULL, NULL, ARRAY['zstd19', 'raw']),
+    -- ---- execution: THE TERMS A MODEL COMPETES UNDER, sent to a runner on the claim.
+    --      A speed season is `{"execution": {"enabled": true, "turn_ms": 250}}` and nothing else.
+    --
+    --      These were [vars] on every Kalam replica until the runner gate, and the reason is a
+    --      GRANT: the `kalam` role has no privilege on `seasons`, so the process that needed them
+    --      could not read the table they belong in. That is also why matches.strike_ceiling is
+    --      pinned per row (decision 54) rather than read here. The gate assembles the claim at the
+    --      centre, where `matches -> seasons` is one join it already has, so a value no longer has
+    --      to be copied onto a match row to reach the process that plays it.
+    --
+    --      READ `coalesce(rule, games.manifest -> 'limits', [vars])`: a season that declares
+    --      nothing plays by the cartridge's own published limits, which is where turn_ms and
+    --      max_turns have always really lived. refusal_ceiling has no manifest key -- the cartridge
+    --      has no opinion about how often a NODE may refuse a row -- so it falls straight to the var.
+    --
+    --      NOT PINNED ONTO THE MATCH ROW, and it does not need to be: `rules` is immutable once
+    --      submissions open, which is the same property that lets count read a season's rating
+    --      constants at fold time. A queued match therefore cannot have its terms changed under it.
+      ('execution', 'enabled',         'bool', NULL,  NULL, NULL),
+      -- How long a model has to answer one turn. THE constraint that decides how large a model can
+      -- be and still play, so it is the one number a season changes to change the contest.
+      ('execution', 'turn_ms',         'int',     1, 60000, NULL),
+      -- Match length: the strategy horizon, and the compute a match costs.
+      ('execution', 'max_turns',       'int',     1, 100000, NULL),
+      -- How often a row may be refused for want of a model before it fails MODEL_UNAVAILABLE.
+      -- The operational sibling of pairing.forfeit_strikes.
+      ('execution', 'refusal_ceiling', 'int',     1,   100, NULL),
     -- ---- pairing: what the ladder asks for. Read by pair, and by count's verdict.
       ('pairing', 'enabled',              'bool',    NULL, NULL, NULL),
       ('pairing', 'self_pairing',         'bool',    NULL, NULL, NULL),
@@ -465,6 +492,20 @@ CREATE VIEW live_runners AS
       JOIN runner_keys k ON k.id = r.key_id AND k.revoked_at IS NULL
       JOIN users u       ON u.id = k.user_id AND u.role = 'admin'
      WHERE r.revoked_at IS NULL;
+
+-- The key half of the same predicate, and it exists for the same reason `live_runners` does: the
+-- token exchange has to know that a key belongs to a LIVE ADMIN, and the role that runs the
+-- exchange must not be able to read `users` to find out. A view is owned by the schema owner and
+-- runs with its privileges, so the join happens without the caller ever holding SELECT on `users`.
+--
+-- Demotion takes effect at the next token exchange, and revocation at the next CALL -- `live_runners`
+-- is what carries the second, and it is stricter on purpose: a token already minted is bounded by
+-- its ten minutes, but a statement is fenced now.
+CREATE VIEW live_runner_keys AS
+    SELECT k.id, k.user_id, k.key_hash, k.key_prefix
+      FROM runner_keys k
+      JOIN users u ON u.id = k.user_id AND u.role = 'admin'
+     WHERE k.revoked_at IS NULL;
 
 -- --------------------------------------------------------------------- models
 
@@ -1304,9 +1345,14 @@ ALTER TABLE matches SET (fillfactor = 70);
 -- fenced on its claim token. The exposure is a bad statement in this repository, not a bad actor on
 -- a desk -- which is the same class of risk every other Soma route already carries.
 --
--- Narrowing it later is small and should stay small: a `soma-runner-db` connector on
--- env://KALAM_DB_URL and a one-word swap in eight workflows. Do not add a grant to the `kalam` role
--- to make the runner routes work -- if they need one, they are on the wrong connector.
+-- NARROWED, and the role that does it is `runner_gate` below. The paragraph that used to stand here
+-- proposed a `soma-runner-db` connector on env://KALAM_DB_URL -- that is, on the `kalam` role --
+-- and then forbade adding a grant to `kalam` in its own next sentence. Both halves were right and
+-- together they were impossible: the routes need `played_by`, `live_runners` and the `runners`
+-- upsert, none of which `kalam` may have. A third role is what satisfies both.
+--
+-- Do not add a grant to the `kalam` role to make a runner route work -- if it needs one, it is on
+-- the wrong connector.
 
 -- Kalam plays matches. It can read the two tables it plays from and write only the columns it
 -- reports, so "Kalam writes no rating" is a fact of the grant: it cannot rate a match, cancel one,
@@ -1335,6 +1381,63 @@ GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO kalam;
 -- NOT `played_by`: an in-cluster replica writing over kalam-db is not a runner and has no runner id
 -- to name. The column stays null for it, which is exactly the right answer to "which machine".
+
+-- ------------------------------------------------------------ the runner gate
+
+-- THE ROLE THE EIGHT MACHINE-FACING ROUTES RUN AS, and the repair of the one boundary the gate
+-- weakened when it shipped inside this package instead of a second one (N7 -> N17).
+--
+-- It is a THIRD ROLE and not the `kalam` one, and that distinction is the whole point. The routes
+-- need three things `kalam` deliberately does not have -- `played_by`, `live_runners`, and the
+-- `runners` upsert the token exchange performs -- and widening `kalam` to supply them would widen
+-- the role an IN-CLUSTER REPLICA still holds, which is what the paragraph above forbids. So the
+-- grant that was going to be bent is copied instead, and the copy gets exactly the three additions.
+--
+-- WHAT IT CANNOT DO, and this is the list that matters: rate a match, cancel one, pair one, or
+-- touch `ratings`, `rating_events`, `users`, `seasons`, `clocks`, `models` or `model_versions`
+-- beyond the six roster columns. "A runner statement cannot write a rating" is a fact of this grant
+-- again, rather than a fact of review.
+--
+-- THE FIVE ADMIN ROUTES STAY ON `soma-db`. `runner_keys` creation and revocation are Soma's auth
+-- surface, the same as sessions, and they are session-authed rather than runner-authed -- so the
+-- swap is eight workflows, not thirteen.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'runner_gate') THEN
+        CREATE ROLE runner_gate LOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public TO runner_gate;
+GRANT SELECT ON matches, match_seats TO runner_gate;
+GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
+    ON model_versions TO runner_gate;
+-- The claim reads the row's own season and game to build the execution contract (N18). SELECT
+-- only, and on the two columns that carry it: a runner's terms are read here, never decided here.
+GRANT SELECT (id, game_id, rules, engine_digest, closed_at) ON seasons TO runner_gate;
+GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
+-- `kalam`'s match columns, plus `played_by`, which the claim writes and which `kalam` must not have.
+GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
+              reason, turns, played_ms, engine_digest_played, orion_version,
+              replay_key, played_at, fault_reason, fault_seat, closed_at, played_by)
+    ON matches TO runner_gate;
+GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
+    ON match_seats TO runner_gate;
+-- Runner identity, which the gate needs and a replica must not have: the key lookup the token
+-- exchange probes by, the self-registration it performs, and the liveness JOIN every statement
+-- carries. INSERT on `runners` because a runner self-registers; there is no enrolment flow.
+GRANT SELECT ON live_runners, live_runner_keys TO runner_gate;
+-- NOT `runner_keys` ITSELF, and not `users`: `live_runner_keys` is the join, so this role can match
+-- a key to its runner without being able to read who holds it or what else they may do.
+
+-- `id` ALONE, and it is the UPDATE's own WHERE that needs it: a WHERE on the target table is a
+-- read, so stamping last_used_at by id requires SELECT on that column. It exposes row ids and
+-- nothing else -- not the hash, not the prefix, not the owner. The match itself happens in
+-- `live_runner_keys`, which is the whole reason that view exists.
+GRANT SELECT (id) ON runner_keys TO runner_gate;
+GRANT UPDATE (last_used_at) ON runner_keys TO runner_gate;
+GRANT SELECT, INSERT ON runners TO runner_gate;
+GRANT UPDATE (label, engine_digest, node_version, orion_version, ops_budget, arch, last_seen_at)
+    ON runners TO runner_gate;
 
 -- NEITHER ROLE IS GRANTED ANYTHING ON runner_keys, runners OR live_runners, and the absence is
 -- deliberate in the way `sessions` is below: runner identity is Soma's auth surface, the same as

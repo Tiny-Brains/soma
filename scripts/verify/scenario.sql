@@ -82,7 +82,10 @@ SELECT id AS m46 FROM matches WHERE seed = 46 \gset
 \echo '--- kalam: reap (expect 0); claim ONE row, trials first (expect 1)'
 EXECUTE k_reap;
 EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001');
-EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v');
+-- Eight parameters since N18: the read-back also builds the execution contract, so it carries
+-- the deploy fallbacks the coalesce lands on when a season declares nothing and the game's
+-- manifest has no limits -- which is this fixture, so `turn_ms` here is the 1000 below.
+EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v', 'replays', 30, 300, 1000, 1000, 5);
 \echo '--- a second runner takes the NEXT row rather than queueing behind the first: SKIP LOCKED is the only coordinator there is (expect 1)'
 EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 4, 'c1000000-0000-0000-0000-000000000002');
 \echo '--- the in-flight ceiling: mini-2 is allowed one row, so its next claim takes nothing (expect 0)'
@@ -112,6 +115,42 @@ EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
   'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002');
+-- m46 has to BE running and BE this runner's before any of the four below tests what it means to
+-- test. Without this they all answer 0 on `status = 'running'` and the gates look like they work
+-- while doing nothing -- which is how a negative test passes for the wrong reason.
+UPDATE matches SET status = 'claimed', claim_token = '30000000-0000-0000-0000-000000000003',
+       lease_expires_at = now() + interval '60 seconds',
+       played_by = 'c1000000-0000-0000-0000-000000000002'
+ WHERE id = :'m46';
+EXECUTE k_start ('30000000-0000-0000-0000-000000000003', 'c1000000-0000-0000-0000-000000000002', :'m46');
+
+\echo '--- the misconfiguration gates: a result that cannot have come from this match (expect 0 each,'
+\echo '    and the row stays running for the reap rather than taking a result no fold can trust)'
+-- A DIFFERENT ENGINE than the row required. engine_digest_played was recorded and never compared
+-- until now, so a replica pinned to the wrong digest wrote results nobody could use, silently.
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
+  '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
+  'all_food', 120, now() - interval '4 seconds', 'sha256:SOMETHING-ELSE', '1.8.1', 'replays/x.json',
+  'c1000000-0000-0000-0000-000000000002');
+-- STRIKES ABOVE THE CEILING THE ROW WAS QUEUED UNDER. Decision 54 pinned strike_ceiling on the row
+-- so a trial is judged by the rule it was played under; this is that rule read back.
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
+  '[{"seat":0,"rank":1,"score":10,"strikes":99},{"seat":1,"rank":2,"score":3,"strikes":0}]',
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
+  'c1000000-0000-0000-0000-000000000002');
+-- A RANK OUTSIDE THE BOUND. Not a permutation check: Ants ranks from 1 and allows ties, so {1,1}
+-- is a draw and the commonest two-seat result. What is bounded is 1 <= rank <= 2*seat_count, the
+-- ceiling being the forfeit rule (engine_rank + seat_count).
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
+  '[{"seat":0,"rank":0,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
+  'c1000000-0000-0000-0000-000000000002');
+\echo '--- and a DRAW, which is a real result and must pass (expect UPDATE 2)'
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
+  '[{"seat":0,"rank":1,"score":7,"strikes":0},{"seat":1,"rank":1,"score":7,"strikes":0}]',
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
+  'c1000000-0000-0000-0000-000000000002');
+
 \echo '--- and the read-back that tells a DUPLICATE DELIVERY from a stale token: finished and still mine is a success, not a 409'
 SELECT seed, status AS state, (claim_token = '30000000-0000-0000-0000-000000000002') AS mine FROM matches WHERE seed = 43;
 SELECT m.seed, s.seat, s.rank, s.score, s.strikes FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.seed IN (42, 43) ORDER BY m.seed, s.seat;
@@ -322,6 +361,24 @@ SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS wan
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
   FROM json_array_elements((:'body')::json -> 'owners') o ORDER BY 1;
 UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-0000-000000000001';
+
+\echo '===== the routes preserve the fences the statements carry ====='
+-- S2.1. The races below prove the STATEMENTS; these prove that a ROUTE in front of one cannot lose
+-- what it carries. Both halves matter now that a runner reaches them over a WAN and can retry.
+
+\echo '--- a stale claim token writes nothing through the route, exactly as through the statement (expect 0)'
+-- $1 token, $2 runner, $3 match. A live runner and a real match id, so the ONLY thing wrong is the
+-- token -- which is the point: the route hands the same three values to the same statement, and the
+-- fence is the statement's, not the route's.
+EXECUTE k_start ('00000000-0000-0000-0000-0000000000ff',
+                 'c1000000-0000-0000-0000-000000000001',
+                 :'m43');
+
+\echo '--- finish is idempotent: the row is already finished and the token still matches, so the'
+\echo '    route reads it back and answers applied:false rather than the 409 a lost claim gets.'
+\echo '    Both were rows_affected = 0 before, and conflating them fails a healthy runner mid-match.'
+SELECT status AS finished_state, (claim_token = '30000000-0000-0000-0000-000000000001') AS token_still_matches
+  FROM matches WHERE seed = 42;
 
 \echo '===== identity: the handle is a label, and the index protects the namespace the readers use ====='
 
