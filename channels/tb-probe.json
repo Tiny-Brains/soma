@@ -1,0 +1,15 @@
+{
+  "channel_id": "tb-probe",
+  "name": "tb-probe",
+  "tags": ["pkg:soma"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/internal/probe/adapter",
+  "workflow_id": "tb-probe-run",
+  "config": {
+    "response": { "mode": "shaped" },
+    "timeout_ms": 120000,
+    "tracing": { "$from": "constants.clock_tracing" }
+  }
+}

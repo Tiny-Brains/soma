@@ -9,6 +9,10 @@
 # cannot survive it. It earned itself the day the match table became two tables, with two workflows
 # still selecting `matches.model_ids`.
 #
+# It walks INTO TASK GROUPS. The clocks' generator folds each run of tasks sharing a condition into
+# a group, and a walker that reads only the top-level list sees 9 of the clocks' 23 statements --
+# which is what jodi/scripts/check-sql.sh did from 15 September 2026 until the merge.
+#
 # What each statement DOES is scripts/verify/run.sh's walk; that a workflow answers at all is
 # scripts/smoke.sh.
 #
@@ -16,6 +20,11 @@
 #   DB_USER       its superuser            (default: read from the container)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# The clock workflows are generated and committed. A hand edit to one of them is caught here rather
+# than reverted by the next person who regenerates -- and it would be checked below as if it shipped.
+echo "==> the clock files match scripts/gen-clocks.py"
+python3 scripts/gen-clocks.py --check
 
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
@@ -43,15 +52,24 @@ def statements(tasks):
         if query:
             yield task["id"], query
 
+# Orion caps a workflow description at 2048 characters and refuses the create past it. Lint says
+# so too, but it is cheaper to fail here, beside the statements, than halfway through an apply.
+long_descriptions = []
 n = 0
 for path in sys.argv[1:]:
     doc = json.load(open(path))
+    if len(doc.get("description", "")) > 2048:
+        long_descriptions.append((path, len(doc["description"])))
     for task_id, query in statements(doc.get("tasks", [])):
         n += 1
         name = f"chk_{doc['workflow_id'].replace('-', '_')}_{task_id.replace('.', '_')}"
         print(rf"\echo '  {doc['workflow_id']} / {task_id}'")
         print(f"PREPARE {name} AS {query};")
 print(rf"\echo '-- {n} statements'")
+for path, length in long_descriptions:
+    print(f"  {path}: description is {length} characters, Orion's limit is 2048", file=sys.stderr)
+if long_descriptions:
+    sys.exit(f"==> {len(long_descriptions)} workflow description(s) too long")
 PY
 
 echo "==> preparing every query in workflows/*.json"

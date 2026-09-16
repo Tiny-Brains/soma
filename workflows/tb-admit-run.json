@@ -1,0 +1,699 @@
+{
+  "workflow_id": "tb-admit-run",
+  "name": "Clock: admit",
+  "description": "What moves a submission off `testing`. Per item it asks GitHub for the release's metadata, reads the manifest the competitor uploaded to the models bucket and checks it against the hash they declared, registers the model on THIS node by reference and digest -- the node fetches the object and re-hashes it, so a row that lies fails admission -- runs admission synchronously, activates it, plays it over the game's reference observations through the probe channel, applies the platform's policy to the stats, and writes one verdict. It never fetches a competitor's bytes over the internet: the bytes are in the bucket because the competitor PUT them there through a presigned URL Soma minted, and Orion's storage connector is what reads them. The weight class is the season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes one row per item and a per-row claim is already the mutual exclusion. The branch that matters is on `fault`: a competitor's mistake rejects the version and OUR failure releases the claim and gives the attempt back. docs/admission.md §4-§7.",
+  "tags": ["pkg:soma"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 64 },
+  "tasks": [
+    {
+      "id": "when_token",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "token",
+          "name": "This run's claim token",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [{ "path": "temp_data.token", "logic": { "random": ["uuid"] } }]
+            }
+          }
+        },
+        {
+          "id": "expire",
+          "name": "Reject what has run out of attempts",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "UPDATE model_versions SET status = 'rejected', reject_reason = 'TIMED_OUT', admit_started_at = NULL, admit_token = NULL WHERE status = 'testing' AND admit_attempts >= ($1)::int AND (admit_started_at IS NULL OR admit_started_at < now() - (($2)::int * interval '1 second'))",
+              "params": [
+                { "var": "metadata.vars.admit_attempts_max" },
+                { "var": "metadata.vars.admit_timeout_s" }
+              ],
+              "output": "temp_data.expired"
+            }
+          }
+        },
+        {
+          "id": "claim",
+          "name": "Claim up to admit_batch submissions",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "UPDATE model_versions m SET admit_started_at = now(), admit_attempts = m.admit_attempts + 1, admit_token = ($1)::uuid WHERE m.id IN (SELECT c.id FROM model_versions c WHERE c.status = 'testing' AND (c.admit_started_at IS NULL OR c.admit_started_at < now() - (($3)::int * interval '1 second')) ORDER BY c.created_at LIMIT ($2)::int FOR UPDATE SKIP LOCKED)",
+              "params": [
+                { "var": "temp_data.token" },
+                { "var": "metadata.vars.admit_batch" },
+                { "var": "metadata.vars.admit_timeout_s" }
+              ],
+              "output": "temp_data.claimed"
+            }
+          }
+        },
+        {
+          "id": "batch",
+          "name": "Read what this run claimed",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT json_build_object( 'n', count(*), 'items', coalesce(json_agg(json_build_object( 'model_id', v.id, 'model', ($5)::text || v.id::text, 'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash, 'artifact_key', v.artifact_key, 'manifest_key', regexp_replace(v.artifact_key, 'model\\.onnx$', 'manifest.json'), 'attempt', v.admit_attempts, 'budget_ops', coalesce((se.rules -> 'graph' ->> 'adapter_ops_max')::bigint, (g.manifest -> 'budgets' ->> 'adapter_ops_max')::bigint), 'observations', g.reference_observations, 'opset_min', coalesce((se.rules -> 'graph' ->> 'opset_min')::int, ($2)::int), 'opset_max', coalesce((se.rules -> 'graph' ->> 'opset_max')::int, ($3)::int), 'op_allowlist', coalesce( (SELECT jsonb_agg(o) FROM jsonb_array_elements_text(($4)::jsonb) AS o WHERE o IN (SELECT jsonb_array_elements_text( se.rules -> 'graph' -> 'op_allowlist'))), ($4)::jsonb), 'params_max', (se.rules -> 'graph' ->> 'params_max')::bigint, 'infer_us_max', (se.rules -> 'graph' ->> 'infer_us_max')::bigint, 'rules_ok', se.id IS NOT NULL) ORDER BY v.created_at), '[]'::json)) AS body FROM model_versions v JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.admit_token = ($1)::uuid AND v.status = 'testing'",
+              "params": [
+                { "var": "temp_data.token" },
+                { "var": "metadata.vars.opset_min" },
+                { "var": "metadata.vars.opset_max" },
+                { "var": "metadata.vars.op_allowlist" },
+                { "var": "metadata.vars.model_prefix" }
+              ],
+              "output": "temp_data.batch"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop when the work runs out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.batch.0.body.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "item",
+      "name": "Take submission i, and clear the last one",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.it",
+              "logic": {
+                "val": ["temp_data", "batch", 0, "body", "items", { "val": ["temp_data", "i"] }]
+              }
+            },
+            { "path": "temp_data.head", "logic": false },
+            { "path": "temp_data.man", "logic": false },
+            { "path": "temp_data.mtext", "logic": false },
+            { "path": "temp_data.signed", "logic": false },
+            { "path": "temp_data.pd", "logic": false },
+            { "path": "temp_data.manok", "logic": false },
+            { "path": "temp_data.reg", "logic": false },
+            { "path": "temp_data.adm", "logic": false },
+            { "path": "temp_data.act", "logic": false },
+            { "path": "temp_data.probe", "logic": false },
+            { "path": "temp_data.cls", "logic": false },
+            { "path": "temp_data.size", "logic": false },
+            { "path": "temp_data.ops", "logic": false },
+            { "path": "temp_data.dts", "logic": false },
+            { "path": "temp_data.admitted", "logic": false },
+            { "path": "temp_data.reason", "logic": false },
+            {
+              "path": "temp_data.retry",
+              "logic": {
+                "if": [
+                  { "!": { "var": "temp_data.it.budget_ops" } },
+                  "MANIFEST_INCOMPLETE",
+                  { "!": { "var": "temp_data.it.observations" } },
+                  "MANIFEST_INCOMPLETE",
+                  { "!": { "var": "temp_data.it.artifact_key" } },
+                  "MANIFEST_INCOMPLETE",
+                  false
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "head",
+      "name": "Is the artifact in the bucket?",
+      "condition": { "!": { "var": "temp_data.retry" } },
+      "continue_on_error": true,
+      "function": {
+        "name": "storage_head",
+        "input": {
+          "connector": "soma-models-internal",
+          "key": { "var": "temp_data.it.artifact_key" },
+          "output": "temp_data.head"
+        }
+      }
+    },
+    {
+      "id": "sign",
+      "name": "Sign a GET for the manifest",
+      "condition": {
+        "and": [{ "!": { "var": "temp_data.retry" } }, { "!!": { "var": "temp_data.head" } }]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-models-internal",
+          "method": "GET",
+          "key": { "var": "temp_data.it.manifest_key" },
+          "expires_in": "5m",
+          "output": "temp_data.signed"
+        }
+      }
+    },
+    {
+      "id": "fetch_text",
+      "name": "The manifest, as the bytes that were uploaded",
+      "condition": { "!!": { "var": "temp_data.signed" } },
+      "continue_on_error": true,
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "soma-models-http",
+          "method": "GET",
+          "path": {
+            "substr": [
+              { "var": "temp_data.signed" },
+              { "length": [{ "var": "metadata.vars.models_endpoint" }] }
+            ]
+          },
+          "output": "temp_data.mtext",
+          "response_format": "text"
+        }
+      }
+    },
+    {
+      "id": "when_fetch",
+      "condition": { "!!": { "var": "temp_data.mtext" } },
+      "tasks": [
+        {
+          "id": "fetch",
+          "name": "The manifest, parsed",
+          "continue_on_error": true,
+          "function": {
+            "name": "http_call",
+            "input": {
+              "connector": "soma-models-http",
+              "method": "GET",
+              "path": {
+                "substr": [
+                  { "var": "temp_data.signed" },
+                  { "length": [{ "var": "metadata.vars.models_endpoint" }] }
+                ]
+              },
+              "output": "temp_data.man"
+            }
+          }
+        },
+        {
+          "id": "manifest_ok",
+          "name": "Does it hash to what was declared?",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT ('sha256:' || encode(sha256(convert_to(($2)::text, 'UTF8')), 'hex') = ($1)::text) AS ok, length(($2)::text) AS bytes",
+              "params": [{ "var": "temp_data.it.manifest_hash" }, { "var": "temp_data.mtext" }],
+              "output": "temp_data.manok"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "shape",
+      "name": "The registration, rebuilt field by field",
+      "condition": { "===": [{ "var": "temp_data.manok.0.ok" }, true] },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.reg",
+              "logic": {
+                "abi": { "var": "temp_data.man.abi" },
+                "name": { "var": "temp_data.it.model" },
+                "version": { "??": [{ "var": "temp_data.man.version" }, "1"] },
+                "format": { "??": [{ "var": "temp_data.man.format" }, "onnx"] },
+                "description": { "??": [{ "var": "temp_data.man.description" }, ""] },
+                "inputs": { "var": "temp_data.man.inputs" },
+                "outputs": { "var": "temp_data.man.outputs" },
+                "probe_dims": {
+                  "??": [
+                    { "var": "temp_data.man.probe_dims" },
+                    {}
+                  ]
+                }
+              }
+            },
+            {
+              "path": "temp_data.reason",
+              "logic": {
+                "if": [
+                  { "var": "temp_data.reason" },
+                  { "var": "temp_data.reason" },
+                  { "!": { "var": "temp_data.man.inputs" } },
+                  "MANIFEST_INVALID",
+                  { "!": { "var": "temp_data.man.outputs" } },
+                  "MANIFEST_INVALID",
+                  null
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "reject_result",
+      "name": "A manifest may not decode its own head",
+      "condition": {
+        "and": [{ "!!": { "var": "temp_data.man" } }, { "!!": { "var": "temp_data.man.result" } }]
+      },
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.reason", "logic": "RESULT_NOT_ALLOWED" }] }
+      }
+    },
+    {
+      "id": "when_register",
+      "condition": {
+        "and": [
+          { "!!": { "var": "temp_data.reg" } },
+          { "!": { "var": "temp_data.reason" } },
+          { "!": { "var": "temp_data.retry" } }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "register",
+          "name": "Register it on this node, by reference and digest",
+          "continue_on_error": true,
+          "function": {
+            "name": "http_call",
+            "input": {
+              "connector": "soma-node-admin",
+              "method": "POST",
+              "path": "/models",
+              "body": {
+                "manifest": { "var": "temp_data.reg" },
+                "artifact": {
+                  "connector": "soma-models-internal",
+                  "key": { "var": "temp_data.it.artifact_key" },
+                  "digest": { "var": "temp_data.it.weights_hash" }
+                },
+                "tags": ["admission"]
+              },
+              "output": "temp_data.created"
+            }
+          }
+        },
+        {
+          "id": "admit",
+          "name": "Fetch, verify, read the graph, probe it",
+          "continue_on_error": true,
+          "function": {
+            "name": "http_call",
+            "input": {
+              "connector": "soma-node-admin",
+              "method": "POST",
+              "path": { "cat": ["/models/", { "var": "temp_data.it.model" }, "/admit?wait=true"] },
+              "output": "temp_data.adm"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sift",
+      "name": "Refused by whose fault?",
+      "condition": { "!": { "var": "temp_data.retry" } },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.admitted",
+              "logic": { "===": [{ "var": "temp_data.adm.data.admission.state" }, "passed"] }
+            },
+            {
+              "path": "temp_data.reason",
+              "logic": {
+                "if": [
+                  { "var": "temp_data.reason" },
+                  { "var": "temp_data.reason" },
+                  { "var": "temp_data.admitted" },
+                  null,
+                  { "!": { "var": "temp_data.head" } },
+                  "ARTIFACT_MISSING",
+                  { "!": { "var": "temp_data.man" } },
+                  "MANIFEST_MISSING",
+                  { "!==": [{ "var": "temp_data.manok.0.ok" }, true] },
+                  "MANIFEST_MISMATCH",
+                  { "===": [{ "var": "temp_data.adm.data.admission.state" }, "failed"] },
+                  {
+                    "cat": [
+                      {
+                        "upper": [
+                          { "??": [{ "var": "temp_data.adm.data.admission.stage" }, "admission"] }
+                        ]
+                      },
+                      "_FAILED"
+                    ]
+                  },
+                  null
+                ]
+              }
+            },
+            {
+              "path": "temp_data.retry",
+              "logic": {
+                "if": [
+                  { "var": "temp_data.retry" },
+                  { "var": "temp_data.retry" },
+                  { "var": "temp_data.admitted" },
+                  null,
+                  { "!": { "var": "temp_data.reason" } },
+                  "ADMISSION_UNREACHABLE",
+                  null
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "activate",
+      "name": "Activate it here, for the probe",
+      "condition": { "var": "temp_data.admitted" },
+      "continue_on_error": true,
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "soma-node-admin",
+          "method": "PATCH",
+          "path": { "cat": ["/models/", { "var": "temp_data.it.model" }, "/status"] },
+          "body": { "status": "active" },
+          "output": "temp_data.act"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "The adapter, against the reference observations",
+      "condition": {
+        "and": [{ "var": "temp_data.admitted" }, { "!": { "var": "temp_data.reason" } }]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "channel_call",
+        "input": {
+          "channel": "tb-probe",
+          "data": {
+            "model": { "var": "temp_data.it.model" },
+            "observations": { "var": "temp_data.it.observations" },
+            "budget_ops": { "var": "temp_data.it.budget_ops" }
+          },
+          "output": "temp_data.probe",
+          "timeout_ms": { "var": "metadata.vars.admit_deadline_ms" }
+        }
+      }
+    },
+    {
+      "id": "when_pd",
+      "condition": { "var": "temp_data.admitted" },
+      "tasks": [
+        {
+          "id": "pd",
+          "name": "What the probe measured at, as a document",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.pd",
+                  "logic": {
+                    "??": [
+                      { "var": "temp_data.adm.data.stats.probe_dims" },
+                      {}
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "metric",
+          "name": "The size this season measures by",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.size",
+                  "logic": {
+                    "+": [
+                      { "var": "temp_data.adm.data.stats.artifact_bytes" },
+                      { "var": "temp_data.manok.0.bytes" }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "classify",
+      "name": "Which class does it measure into",
+      "condition": {
+        "and": [{ "var": "temp_data.admitted" }, { "!!": { "var": "temp_data.size" } }]
+      },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT (SELECT e ->> 'class' FROM seasons s, jsonb_array_elements(s.weight_classes) AS e WHERE s.id = v.season_id AND (e ->> 'max_bytes')::bigint >= ($2)::bigint AND season_admits_class(s, (e ->> 'class')::ladder) ORDER BY (e ->> 'max_bytes')::bigint LIMIT 1) AS cls, (SELECT count(*) > 0 FROM seasons s, jsonb_array_elements(s.weight_classes) AS e WHERE s.id = v.season_id AND (e ->> 'max_bytes')::bigint >= ($2)::bigint) AS fits_any FROM model_versions v WHERE v.id = ($1)::uuid",
+          "params": [{ "var": "temp_data.it.model_id" }, { "var": "temp_data.size" }],
+          "output": "temp_data.clsrow"
+        }
+      }
+    },
+    {
+      "id": "when_judge",
+      "condition": { "var": "temp_data.admitted" },
+      "tasks": [
+        {
+          "id": "judge",
+          "name": "Class, opset, operators and the budget",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "temp_data.cls", "logic": { "var": "temp_data.clsrow.0.cls" } },
+                {
+                  "path": "temp_data.ops",
+                  "logic": {
+                    "reduce": [
+                      { "var": "temp_data.adm.data.stats.operators" },
+                      {
+                        "allow": { "var": "accumulator.allow" },
+                        "bad": {
+                          "if": [
+                            { "in": [{ "var": "current" }, { "var": "accumulator.allow" }] },
+                            { "var": "accumulator.bad" },
+                            {
+                              "merge": [
+                                { "var": "accumulator.bad" },
+                                [{ "var": "current" }]
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      { "allow": { "var": "temp_data.it.op_allowlist" }, "bad": [] }
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.reason",
+                  "logic": {
+                    "if": [
+                      { "var": "temp_data.reason" },
+                      { "var": "temp_data.reason" },
+                      { "!": { "var": "temp_data.size" } },
+                      null,
+                      {
+                        "and": [
+                          { "!": { "var": "temp_data.cls" } },
+                          { "var": "temp_data.clsrow.0.fits_any" }
+                        ]
+                      },
+                      "CLASS_NOT_OFFERED",
+                      { "!": { "var": "temp_data.cls" } },
+                      "TOO_LARGE",
+                      {
+                        "<": [
+                          { "var": "temp_data.adm.data.stats.opset" },
+                          { "var": "temp_data.it.opset_min" }
+                        ]
+                      },
+                      "OPSET_UNSUPPORTED",
+                      {
+                        ">": [
+                          { "var": "temp_data.adm.data.stats.opset" },
+                          { "var": "temp_data.it.opset_max" }
+                        ]
+                      },
+                      "OPSET_UNSUPPORTED",
+                      { ">": [{ "length": [{ "var": "temp_data.ops.bad" }] }, 0] },
+                      "OP_NOT_ALLOWED",
+                      {
+                        "and": [
+                          { "!!": { "var": "temp_data.it.params_max" } },
+                          {
+                            ">": [
+                              { "var": "temp_data.adm.data.stats.parameters" },
+                              { "var": "temp_data.it.params_max" }
+                            ]
+                          }
+                        ]
+                      },
+                      "PARAMS_EXCEEDED",
+                      {
+                        "and": [
+                          { "!!": { "var": "temp_data.probe" } },
+                          { "!": { "var": "temp_data.probe.ok" } },
+                          { "var": "temp_data.probe.over_budget" }
+                        ]
+                      },
+                      "ADAPTER_OVER_BUDGET",
+                      {
+                        "and": [
+                          { "!!": { "var": "temp_data.probe" } },
+                          { "!": { "var": "temp_data.probe.ok" } }
+                        ]
+                      },
+                      { "??": [{ "var": "temp_data.probe.reason" }, "ADAPTER_INVALID"] },
+                      {
+                        "and": [
+                          { "!!": { "var": "temp_data.it.infer_us_max" } },
+                          {
+                            ">": [
+                              { "var": "temp_data.probe.infer_us_max" },
+                              { "var": "temp_data.it.infer_us_max" }
+                            ]
+                          }
+                        ]
+                      },
+                      "TOO_SLOW",
+                      null
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.retry",
+                  "logic": {
+                    "if": [
+                      { "var": "temp_data.retry" },
+                      { "var": "temp_data.retry" },
+                      { "!": { "var": "temp_data.it.rules_ok" } },
+                      "SEASON_RULES_INCOMPLETE",
+                      { "!": { "var": "temp_data.probe" } },
+                      "PROBE_UNREACHABLE",
+                      null
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "archive",
+          "name": "Leave the admission node's active set empty",
+          "continue_on_error": true,
+          "function": {
+            "name": "http_call",
+            "input": {
+              "connector": "soma-node-admin",
+              "method": "PATCH",
+              "path": { "cat": ["/models/", { "var": "temp_data.it.model" }, "/status"] },
+              "body": { "status": "archived" },
+              "output": "temp_data.archived"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "verify",
+      "name": "testing -> verified",
+      "condition": {
+        "and": [
+          { "var": "temp_data.head" },
+          { "!": { "var": "temp_data.reason" } },
+          { "!": { "var": "temp_data.retry" } },
+          { "!!": { "var": "temp_data.cls" } }
+        ]
+      },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE model_versions SET status = 'verified', weight_class = ($2)::ladder, size_bytes = ($3)::bigint, param_count = ($4)::bigint, infer_us = ($5)::float8::bigint, manifest = ($6)::text, orion_version = ($7)::text, probe_dims = ($9)::jsonb, admit_started_at = NULL, reject_reason = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($8)::uuid",
+          "params": [
+            { "var": "temp_data.it.model_id" },
+            { "var": "temp_data.cls" },
+            { "var": "temp_data.size" },
+            { "var": "temp_data.adm.data.stats.parameters" },
+            { "var": "temp_data.probe.infer_us_max" },
+            { "var": "temp_data.mtext" },
+            { "var": "metadata.vars.orion_version" },
+            { "var": "temp_data.token" },
+            { "var": "temp_data.pd" }
+          ],
+          "output": "temp_data.verified"
+        }
+      }
+    },
+    {
+      "id": "reject",
+      "name": "Reject, with the word a competitor reads",
+      "condition": { "!!": { "var": "temp_data.reason" } },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE model_versions SET status = 'rejected', reject_reason = ($2)::text, admit_started_at = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($3)::uuid",
+          "params": [
+            { "var": "temp_data.it.model_id" },
+            { "var": "temp_data.reason" },
+            { "var": "temp_data.token" }
+          ],
+          "output": "temp_data.rejected"
+        }
+      }
+    },
+    {
+      "id": "giveback",
+      "name": "Our fault: release the claim and the attempt",
+      "condition": { "!!": { "var": "temp_data.retry" } },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE model_versions SET admit_started_at = NULL, admit_token = NULL, admit_attempts = greatest(admit_attempts - 1, 0) WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($2)::uuid",
+          "params": [{ "var": "temp_data.it.model_id" }, { "var": "temp_data.token" }],
+          "output": "temp_data.released"
+        }
+      }
+    }
+  ]
+}

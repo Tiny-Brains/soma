@@ -1,0 +1,20 @@
+# `tb.pairing` -- the plugin pair calls once a run to choose who plays whom. Built for
+# wasm32-unknown-unknown and turned into a component by `wasm-tools` (see build.sh); the built
+# bytes are committed beside the manifest so the package loads without a wasm toolchain.
+[package]
+name = "tb-pairing"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# cdylib is what `wasm-tools component new` consumes; rlib is what makes `cargo test` possible.
+# This plugin's whole contract is "seeded, pure, and it never seats a version twice", and every one
+# of those is a host test rather than something a workflow run would notice.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+orion-plugin-sdk.workspace = true

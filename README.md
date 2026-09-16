@@ -1,9 +1,16 @@
 # soma
 
-Soma is the public API and schema owner for TinyBrains. It ships an Orion 1.8.1 package of REST
-channels, workflows, and connectors, plus the Postgres migrations shared by the platform.
-It ships definitions and no server; [DevOps](https://github.com/Tiny-Brains/devops) chooses the
-orion-server instances that host them.
+Soma is the public API, the schema owner and the life cycle of a model version for TinyBrains:
+admission, trials, promotion, matchmaking and rating. It ships an Orion 1.8.1 package of REST
+channels, four cron clocks, workflows, connectors and two Rust-built WebAssembly plugins, plus the
+Postgres migrations shared by the platform. It ships definitions and no server;
+[DevOps](https://github.com/Tiny-Brains/devops) chooses the orion-server instances that host them.
+
+**Until 16 September 2026 the clocks were a repository of their own, `jodi`.** It always loaded into
+this package's Orion and read this package's `[vars]`, so the boundary bought nothing and cost a copy
+of every loader and check script -- one of which had stopped seeing 14 of its 23 statements. Its
+history is at [Tiny-Brains/jodi](https://github.com/Tiny-Brains/jodi), and its Status entries are
+kept below under **Before the merge**.
 
 ## The name
 
@@ -19,23 +26,32 @@ and the public access to it; the running API process itself is replaceable.
 - Submission recording and admin requests to open or close seasons.
 - The platform migrations, constraints, and Kalam's restricted database grants.
 - Signed read URLs for stored match replays.
+- The runner gate: the match statements a Kalam replica plays through, and the keys that admit one.
+- Admission verdicts based on the object in the bucket, the graph the node reads from it, and the manifest's adapters run over the game's reference observations.
+- Opponent selection, map coverage, trials, and bounded queue generation.
+- Rating folds, trial decisions, promotion, and predecessor replacement.
+- Withdrawal of obsolete queued matches and completion of season closure.
+- The database fences that protect those writes from stale clock runs.
 
 **It does not**
 
-- Admit, pair, count, promote, or withdraw versions; [Jodi](https://github.com/Tiny-Brains/jodi) runs those clocks.
 - Play matches or upload replays; [Kalam](https://github.com/Tiny-Brains/kalam) executes matches.
 - Run models; Orion's own `models` entity evaluates a manifest's adapters and its ONNX graph on whichever node needs it.
+- Fetch a competitor's bytes over the internet. The competitor uploads to a presigned URL this package mints, and the node's own `models` entity fetches, hashes, reads and probes.
+- Set a game's execution budgets; the registered cartridge manifest supplies them.
 - Implement game rules; [Ants](https://github.com/Tiny-Brains/ants) is the reference cartridge.
 - Define deployment addresses, credentials, or replica counts.
 
 ## Where it sits
 
 ```text
-[Browser / API client] -- HTTP --> [Soma] -- SQL --> [platform Postgres]
-                                     |   |
-                                  OAuth  signed replay GET
-                                     v   v
-                                [GitHub] [object store]
+[Browser / API client] -- HTTP /v1 ------------> [Soma routes] -- SQL --> [platform Postgres]
+[Kalam replica, api mode] -- HTTP /v1/runner/* -->   |    |                   ^
+                                                  OAuth  signed GET/PUT       | SQL, fenced
+                                                     v    v                   |
+                                               [GitHub] [object store]   [Soma clocks] --> [this node's models entity]
+                                                                              |
+                                                                              +--> [models bucket]
 ```
 
 | Direction | Party | Over | What moves |
@@ -45,8 +61,13 @@ and the public access to it; the running API process itself is replaceable.
 | writes | Postgres | soma-db SQL | Users, sessions, submission records, and season requests |
 | calls | GitHub | github-api HTTPS | OAuth exchange and account identity |
 | calls | Replay store | soma-blobs signing | Time-limited GET URLs; no replay upload |
+| reads | Postgres | soma-db SQL, from the clocks | Roster, seasons, manifests, demand, and completed results |
+| writes | Postgres | soma-db SQL, fenced, from the clocks | Queue rows, ratings, events, version status, and season closure |
+| calls | This node's admin API | soma-node-admin HTTP | Register a model by reference and digest, admit it synchronously, activate it for the probe, archive it after |
+| calls | The models bucket | soma-models-internal signing + soma-models-http GET | HEAD the artifact, and read the manifest the competitor uploaded |
 
-Jodi and Kalam coordinate through this schema, not through API calls to Soma.
+Kalam and the clocks coordinate through this schema and never call each other: a replica in `db`
+mode over SQL, a replica in `api` mode through the runner gate's statements.
 See the [system map](https://github.com/Tiny-Brains/devops#where-it-sits) for their placement.
 
 ## Interface
@@ -101,8 +122,8 @@ request handling and response construction, with matching soma-prefixed filename
 signed with `SOMA_SESSION_SECRET` and carry no audience at all — so a stolen cookie is not a runner
 and a stolen runner token is not a sign-in. It also needs its own rate limits:
 `per_user_write_rate` is 1 rps and would strangle a claim loop on the first machine. There is one
-cron channel, `soma-runner-reap`, which is this package's first; it is singular because Soma's Orion
-runs in cluster mode. `docs/schema.md` §4 and §4a are the statements and the routes.
+cron channel, `soma-runner-reap`, singular because Soma's Orion runs in cluster mode -- the same reason
+each of the four clocks below is. `docs/schema.md` §4 and §4a are the statements and the routes.
 
 Read routes are public unless they can return something private. The split is a property of the
 channel, never of a parameter: `GET /v1/matches` omits queued, cancelled and trial rows for
@@ -110,7 +131,7 @@ everyone, and `GET /v1/me/matches` is a separate route rather than `?owner=me`, 
 route that quietly returns more to some callers is the shape a privacy bug arrives in.
 
 A submission must satisfy the open season's rules. Recording it does not imply acceptance:
-Jodi performs admission and the trial before promotion. The callback is served by the sign-in
+the admit clock performs admission, and count decides the trial before promotion. The callback is served by the sign-in
 channel, so twenty-seven routes are implemented by twenty-six channels.
 
 > **This table is four rows short, and they are not new.** `channels/` carries
@@ -131,6 +152,34 @@ Its workflow is a near-copy of `soma-seasons-create`'s first three tasks **on pu
 a second thing to keep right. The role is read off the live session rather than off a claim in the
 cookie, so demoting a user or revoking a session takes effect on the next request.
 
+### The clocks
+
+Four cron channels and one internal channel, generated by `scripts/gen-clocks.py` and committed as
+`channels/tb-*.json` and `workflows/tb-*.json`. They have no public HTTP surface. Each clock has its
+own `forbid` singleton and the `latest` misfire policy; the schedules are in the generator.
+
+| Channel | Singleton key | One occurrence | Writes |
+|---|---|---|---|
+| tb-admit | admit | Claim testing versions and obtain admission facts | Model admission claims and verdicts |
+| tb-pair | pair | Choose trials and regular matches within available queue room | matches and match_seats |
+| tb-count | count | Fold results in finish order, decide trials, promote successors | ratings, rating_events, models, matches, clocks |
+| tb-withdraw | withdraw | Cancel obsolete pending rows and close eligible seasons | matches, seasons, clocks |
+| tb-probe | -- | Not a clock: the admit walk's `channel_call` target, one `model_infer` per reference observation | nothing |
+
+| Plugin | Export | Computation | Determinism |
+|---|---|---|---|
+| tb.rating | tb.rating.trueskill | Rank-based TrueSkill factor-graph update per ladder | Pure arithmetic over supplied inputs |
+| tb.pairing | tb.pairing.pair | Opponents, seats, maps, and match seeds | Pure; occurrence seed reproduces a plan |
+
+The [rating manifest](plugins/tb-rating/plugin.toml) and
+[pairing manifest](plugins/tb-pairing/plugin.toml) declare plugin inputs. Trial matches feed no
+ladder; a successful trial establishes playability, not victory. The two plugins are one cargo
+workspace, and their contracts check without running the clocks:
+
+```sh
+cargo test --manifest-path plugins/Cargo.toml
+```
+
 The migrations are also an interface. Apply both [0001_init.sql](migrations/0001_init.sql) and
 [0002_sessions.sql](migrations/0002_sessions.sql); the table below describes writer ownership.
 
@@ -140,13 +189,13 @@ The migrations are also an interface. Apply both [0001_init.sql](migrations/0001
 | sessions | Revocable sessions, with the browser and when it was last used | Soma |
 | live_sessions | Unexpired, unrevoked session view | None directly; derived from sessions and users |
 | games | Cartridge registration, its `about` copy, and current engine | Deployment registration |
-| seasons | Competition windows, rules, weight classes, and engine identity | Soma admin routes; Jodi closure; deployment engine updates |
-| models | Submitted versions and admission state | Soma inserts testing rows; Jodi admits and changes roster status |
-| matches | Queue, execution history, and count marker | Jodi inserts/counts/cancels; Kalam executes |
-| match_seats | Version snapshots and per-seat results | Jodi inserts; Kalam records results |
-| ratings | Per-version ladder state | Jodi count |
-| rating_events | Auditable before/after rating updates | Jodi count |
-| clocks | Run fences and roster epoch | Jodi; deployment bumps roster epoch on engine cutover |
+| seasons | Competition windows, rules, weight classes, and engine identity | Soma admin routes; the withdraw clock's closure; deployment engine updates |
+| models | Submitted versions and admission state | Soma inserts testing rows; the admit and count clocks admit and change roster status |
+| matches | Queue, execution history, and count marker | The pair, count and withdraw clocks insert, count and cancel; Kalam executes |
+| match_seats | Version snapshots and per-seat results | The pair clock inserts; Kalam records results |
+| ratings | Per-version ladder state | The count clock |
+| rating_events | Auditable before/after rating updates | The count clock |
+| clocks | Run fences and roster epoch | The clocks; deployment bumps roster epoch on engine cutover |
 
 Against the local DevOps instance, check the public route:
 
@@ -159,9 +208,10 @@ curl --fail --silent --show-error http://127.0.0.1:8080/v1/games
 Soma needs Orion and a migrated database. The [DevOps setup](https://github.com/Tiny-Brains/devops#run-it-test-it)
 provides both, plus replay storage and the browser proxy. Run package commands from this repo root.
 
-- Orion server 1.8.1 and Postgres 16 for the supported local stack.
+- Orion server 1.8.1 and Postgres 16 for the supported local stack, with `[plugins]` and `[models]` enabled.
 - curl plus jq or Python 3 for loading; Python 3 and Docker for the SQL check.
 - An OAuth App for sign-in; its callback must point at the browser-facing origin.
+- Stable Rust for the plugin tests; Python 3.11+, wasm-tools, and the wasm32-unknown-unknown target for a plugin rebuild.
 
 After provisioning the runtime settings below and pointing ORION_ADMIN at that instance, load:
 
@@ -173,13 +223,18 @@ Check the definitions and their SQL:
 
 ```sh
 orion-server --version
-orion-server lint . --deny-warnings   # references, schemas, and every declared env var
-orion-server clippy .                 # advisory: duplication, dead conditions, unordered pages
-orion-server fmt --check .            # the house style for definition JSON; drop --check to apply
+python3 scripts/gen-clocks.py --check # the committed clock files are what the generator writes
+./scripts/check-defs.sh               # that, plus lint, clippy and fmt, all --deny-warnings
+cargo test --manifest-path plugins/Cargo.toml
 ./scripts/check-sql.sh
 ./scripts/smoke.sh
 ./scripts/verify/run.sh
 ```
+
+Edit a clock's SQL in `scripts/gen-clocks.py` and regenerate with `python3 scripts/gen-clocks.py`,
+which formats what it writes with `orion-server fmt`. Rebuild a plugin with its own `build.sh`, or
+`plugins/build.sh <name>`; both run the host tests first and write the component and the generated
+plugin.json beside the source, neither of which is committed.
 
 The SQL script prepares every shipped query -- task groups included -- against a scratch database
 created from both migrations. It catches missing tables, columns, functions, and incompatible
@@ -210,54 +265,131 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | R2_ACCESS_KEY, R2_SECRET_KEY | Secret replay signing credentials | Signed replay access fails |
 | app_url, oauth_redirect_uri | Orion vars for post-login destination and callback | Redirects target the wrong origin or callback registration fails |
 | cookie_secure | Boolean Orion var for cookie transport | Must match HTTP development or HTTPS deployment |
-| prior_mu, prior_sigma, settled_sigma | Orion vars for leaderboard priors and provisional status | Must match Jodi's rating policy |
+| prior_mu, prior_sigma, settled_sigma | Orion vars for leaderboard priors, provisional status, and the clocks' initial ratings | One `[vars]` block serves the routes and the clocks, so there is nothing to keep equal |
 | season_gap_days | Orion var for the minimum gap between seasons | Missing or incorrect policy changes season-opening eligibility |
 | GITHUB_API_BASE | Load-script substitution for the github-api connector's base | Defaults to api.github.com; the connector serves sign-in and nothing else |
 | ORION_ADMIN, ORION_ADMIN_API_KEY | Load-script destination and optional secret bearer token | Defaults target local admin; protected APIs require the token |
-| SOMA_ALLOW_PRIVATE_DB | Loader flag, 1 for a private database address | Orion blocks a private database connection |
+| SOMA_ALLOW_PRIVATE_DB | Loader flag, 1 for private database, bucket and admin addresses | Orion's private-address guard blocks those connections |
+| MODELS_ENDPOINT, MODELS_BUCKET | The models bucket at its INTERNAL address, for soma-models-internal | The admit clock cannot HEAD an artifact or sign its manifest GET |
+| R2_ENDPOINT (loader) | Also substituted into soma-models-http as its base | The connector keeps its placeholder and the manifest fetch 404s |
+| SOMA_NODE_ADMIN | Loader substitution for soma-node-admin, the admin API admission registers a model on | Defaults to ORION_ADMIN, which is right on a node and wrong anywhere else |
+| ORION_ADMIN_BEARER | The whole `Bearer <key>` header value soma-node-admin sends | Every admin call is 401: a connector resolves `env://` only when the reference is the entire string |
+| PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating and tb.pairing | A node with trust keys quarantines the clocks that call an unsigned plugin |
+| game, presets | Ladder and map selection | Pairing has no valid selection context |
+| count_batch, pair_depth_target, burst, steady_cap | Batch and demand controls | Defaults are not supplied by this package |
+| cross_class_fraction, repair_cap | Pairing policy | Incorrect values alter coverage and demand |
+| sigma_inflation | A successor's rating uncertainty | Inconsistent priors change ladder behavior |
+| ts_beta, ts_tau, ts_draw_probability | Rating model parameters | Incorrect values change every fold |
+| forfeit_strikes | Pair's fallback strike ceiling when a season declares none, stamped on `matches.strike_ceiling` | Missing, pair halts at its insert |
+| admit_batch, admit_timeout_s, admit_attempts_max, admit_deadline_ms | Admission routing and claim policy | Missing values prevent reliable admission |
+| opset_min, opset_max, op_allowlist | Admitted ONNX dialect | Incorrect values admit or reject the wrong graphs |
 
 Orion also needs its own state storage, separate from the platform schema; DevOps supplies
 ORION_STATE_DB_URL and cluster configuration. The [instance template](https://github.com/Tiny-Brains/devops/blob/main/orion/soma.toml.tmpl)
-is the configuration reference, including session, quota, and season policy.
+is the configuration reference, including session, quota, season, pairing, rating and admission
+policy. Policy values are provisional deployment choices; `docs/config.md` names every tuning number
+and what measures it. Multiple hosts share Orion cluster state so each clock stays a cluster-wide
+singleton, while the SQL fences remain the correctness mechanism.
 The browser origin, registered OAuth callback, and proxy must agree. Replay URLs must likewise
 resolve from the browser, not only from containers.
 
 ## Layout
 
 ```text
-channels/                    HTTP paths, session auth, and quotas
-workflows/                   request handling, inline SQL, and response mapping
-connectors/soma-db.json       platform database connection
+channels/soma-*.json          HTTP paths, session auth, and quotas
+channels/tb-*.json            the four clocks and the probe channel (generated, committed)
+workflows/soma-*.json         request handling, inline SQL, and response mapping
+workflows/tb-*.json           the clocks' task graphs (generated, committed)
+connectors/soma-db.json       platform database connection, for the routes and the clocks
+connectors/soma-runner-db.json  the runner gate's database connection, as runner_gate
 connectors/github-api.json    GitHub API connection
 connectors/soma-blobs.json    replay GET signing; PUT disabled
+connectors/soma-models.json   the models bucket at its PUBLIC address: a competitor's presigned PUT
+connectors/soma-models-internal.json  the models bucket at its INTERNAL address: HEAD + presign GET
+connectors/soma-models-http.json  the object store over HTTP, for that presigned GET
+connectors/soma-node-admin.json   this node's own admin API, for admission
+shared/soma.json              constants and fragments the set references with $from and use
+plugins/Cargo.toml            the two plugin crates as one workspace
+plugins/build.sh              component and manifest build, shared by both
+plugins/tb-rating/            TrueSkill source, tests, and manifest
+plugins/tb-pairing/           seeded pairing source, tests, and manifest
 migrations/0001_init.sql      platform tables, constraints, fences, grants, and the shared functions
 migrations/0002_sessions.sql  sessions and live_sessions view
-scripts/load-package.sh      replacement of objects tagged pkg:soma
-scripts/check-sql.sh         preparation of every shipped query
-scripts/smoke.sh             every route called, against a running stack
-scripts/verify/              the schema walk: the scenario, both fence races, the seed and the grants
-docs/schema.md               the schema's design, and every statement the three packages run
-LICENSE                      repository licence
+scripts/gen-clocks.py         the clocks' generator and their readable SQL; `--check` catches drift
+scripts/load-package.sh       compile, sign, retire what is no longer shipped, apply
+scripts/check-defs.sh         generator drift, lint, clippy, fmt; no stack
+scripts/check-sql.sh          preparation of every shipped query, task groups included
+scripts/smoke.sh              every route called, against a running stack
+scripts/verify/               the schema walk: the scenario, both fence races, the seed and the grants
+docs/schema.md                the schema's design, and every statement the packages run
+docs/clocks.md                the clocks: fences, loop shape, demand, pairing, promotion
+docs/admission.md             the admit walk and its verdicts
+docs/rating-and-seasons.md    ratings, ladders, and a season's life
+docs/config.md                every tuning number, and what measures it
+LICENSE                       repository licence
 ```
 
 ## What must stay true
 
-- **Soma does not write competitive results or ratings.** This is a review boundary; its current database role is not restricted to API-only writes.
+- **No route writes a competitive result or a rating, and only count writes a rating.** Count's run fence is checked by every ladder-write statement it runs. Routes and clocks share `soma-db` and the owner role, so this is a review boundary, not a grant.
+- **A stale pairing cannot revive an obsolete roster.** Pair's insert checks the roster epoch and derives authoritative seat data.
+- **Admission verdicts belong to the current claim.** The per-version `admit_token` stops a timed-out run deciding a newer attempt.
+- **Infrastructure failures do not spend competitor attempts.** Admission branches on whose fault it was and returns the attempt when the failure is ours.
+- **Trials test playability.** A loss alone must not reject a candidate; trial matches produce no ladder fold.
+- **The generated clock files are the installed package.** `check-defs.sh` and `check-sql.sh` fail when they do not match `scripts/gen-clocks.py`.
 - **A shape many routes return is defined once, in the migration.** `season_json()` and `season_state()`, `model_ratings()`, `model_phase()`, `current_season()`, `match_seat_rows()` and the two `season_admits*()` rule predicates are where those shapes and judgements are built. Six routes return a season, three print "rank 6 of 47", three list a match's seats, and the submission rules are asked once by the insert that must not happen and once by the read that says why it did not. A second copy of any of them is a page that disagrees with another page, or a refusal whose reason denies it, with no way to notice.
-- **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; Jodi's admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
+- **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
 - **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
 - **Revocation remains effective before JWT expiry.** Session workflows consult live_sessions rather than trusting a signed token alone.
 - **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password. **The runner routes do not run under it.** They are in this package, over `soma-db`, so they execute as the database owner and the column grant is not what stops one of them writing a rating — review is. That is the price of one package instead of two, it is written down on the grant block itself, and undoing it is a `soma-runner-db` connector on `env://KALAM_DB_URL` plus a one-word swap in eight workflows. A runner statement that needs a grant added to the `kalam` role is a statement on the wrong connector.
 - **A runner holds no credential, and revocation is a JOIN.** It has no database URL and no write key: it gets a ten-minute token and presigned PUTs. Every match statement JOINs `live_runners`, *inside the statement and never as a guard task* — a JSONLogic guard fails open if it is ever wrong, and a JOIN cannot be forgotten — so a revoked key, a revoked runner or a demoted admin ends the next call rather than the next token.
-- **The eight match statements have one home, and it is now this repository.** A route is a skin over a statement; a second copy of the claim's SQL anywhere is the bug the move was meant to prevent. `scripts/verify/run.sh` compares the harness's copies against the shipped workflows and refuses to run if they differ, because both this repo's copies were silently stale for months before it did.
+- **The eight match statements have one home, and it is now this repository.** A route is a skin over a statement; a second copy of the claim's SQL anywhere is the bug the move was meant to prevent. `scripts/verify/run.sh` compares the harness's copies against the shipped workflows and refuses to run if they differ, because both this repo's copies were silently stale for months before it did. It compares its thirteen copies of the clocks' statements the same way.
 - **`finish` is idempotent under a duplicate delivery and fenced against a stale one**, and the two are distinguishable in the response. A route that conflates them fails a healthy runner mid-match.
-- **Package reloads respect ownership tags.** load-package.sh replaces pkg:soma objects without sweeping Jodi's definitions.
+- **Package reloads respect ownership tags.** load-package.sh retires only the pkg:soma objects the compiled artifact no longer carries -- routes, clocks, connectors and plugins alike -- and nothing tagged for Kalam. DevOps' loader sweeps the retired `pkg:jodi` tag off this node, so a deployment from before the merge sheds the old copies.
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
 - **Only a caller-invariant route may declare `cache`.** The response-cache key covers the method, the path params and the query — so two ids cannot collide — and covers *nothing about the caller*: no cookie, no claim. Caching an authenticated channel would serve one session's body to the next. The nine that cache are the nine anonymous reads; `soma-status` is anonymous too and stays uncached, because freshness is the whole answer it gives.
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**16 September 2026 (merge) — the clocks are Soma's.** `jodi` is folded into this repository and its
+package into this one: `channels/tb-*.json`, `workflows/tb-*.json`, `scripts/gen-clocks.py` (was
+`gen-jodi.py`), `plugins/`, and `docs/{clocks,admission,rating-and-seasons,config}.md` (`clocks.md`
+was `design.md`). The channel, workflow and plugin ids did not change, and neither did a single
+statement: the regenerated files are semantically identical to what jodi shipped, apart from the
+renames below.
+
+**The `jodi` role is gone.** The clocks run over `soma-db` as the owner, which now pools 20
+connections where the routes had 10 and the clocks another 10. `0001_init.sql` loses the role and
+its grants, `check-sql.sh` loses the `SET ROLE jodi` pass and its absence checks, and "no clock
+deletes, reads `sessions` or rewrites an entry" is a review boundary rather than a grant -- the same
+trade the runner routes made before N17. Renamed: `jodi-models` → `soma-models-internal`,
+`jodi-blobs-get` → `soma-models-http`, `jodi-orion` → `soma-node-admin`, `JODI_ORION_ADMIN` →
+`SOMA_NODE_ADMIN`, `JODI_ALLOW_PRIVATE_DB` → `SOMA_ALLOW_PRIVATE_DB`, `pkg:jodi` → `pkg:soma`.
+
+**What the merge found.** `jodi/scripts/check-sql.sh` walked only the top-level task list, so since
+`group_runs()` landed on 15 September it had PREPAREd 9 of the clocks' 23 statements -- count's fence,
+fold and pass, pair's demand and trials and admission's claim among the 14 it skipped. This repo's
+walker already descended, and all 91 statements prepare. `scripts/verify/run.sh` now compares its
+thirteen copies of clock statements with the generated workflows as it does Kalam's eight, and three
+copies that no longer matched anything shipped -- `c_verdicts`, `c_decide` and `c_batch`, earlier
+forms of what count reads as one document -- are replaced by `c_batch_doc`.
+
+**The plugins did not move.** The image builds `tb-pairing` `sha256:dac150b5…` and `tb-rating`
+`sha256:a962eade…`, the same bytes jodi's image built, although the build's path remap is now
+`/src=/soma`: the release profile strips, so no path survives into either component, and the
+signatures devops already holds stay valid. The generator's output is now formatted by
+`orion-server fmt`, because it is committed beside files held to the house style.
+
+**Verified.** `check-defs.sh` clean at 45 channels, 45 workflows and 10 connectors; 30 rating and 35
+pairing tests pass (jodi's docs said 27 pairing); `check-sql.sh` prepares 91 statements;
+`verify/run.sh` reports the same scenario output as HEAD apart from the three replaced statements;
+the image builds; and on a fresh volume the loader applied one `pkg:soma` with both plugins signed,
+the four clocks ran over `soma-db`, `smoke.sh` passed 48/48 as an admin, and `devops/scripts/dev/submission-storm.py`
+decided 30 of 30 submissions -- 29 promoted and rated, one rejected `UNPLAYABLE` during a models
+read-key outage the fresh volume caused (devops' Status has it). What is not exercised: the
+`pkg:jodi` → `pkg:soma` hand-over on a node that still runs the old package.
 
 **16 September 2026 (later) — the `Bearer ` space is a check now, and the token route's limit is a
 fleet ceiling.** `scripts/check-auth-scheme.py` runs in `check-defs.sh` and refuses an
@@ -592,10 +724,189 @@ POSTs, which is a deployment change for all three packages rather than a Soma ed
 API tokens for SDK/CLI use remain unimplemented, and an authenticated end-to-end sign-in still
 needs a configured OAuth App rather than a minted cookie.
 
+### Before the merge (was jodi)
+
+The Status entries of the `jodi` repository, as written there, oldest last. Paths in them are jodi's:
+`scripts/gen-jodi.py` is `scripts/gen-clocks.py`, `docs/design.md` is `docs/clocks.md`, and
+`connectors/jodi-*.json` are the renamed connectors above.
+
+**16 September 2026 — Jodi reaches no host outside the deployment.** The `commit` task is deleted
+with the GitHub release it read: `GET /repos/{repo}/commits/{tag}` was best effort, so a 404 or a
+rate limit already left `commit_sha` null and the walk carried on — it gated nothing and audited
+nothing. `connectors/jodi-github.json` goes with it (that task was its only user), and so do
+`commit_sha` from both verdict statements and `release_base`, **a `[vars]` value read by no task at
+all**. The admit walk is 26 tasks, not 27.
+
+The four connectors left are `jodi-db`, `jodi-orion`, `jodi-models` and `jodi-blobs-get`, and every
+one of them addresses something inside the deployment. That makes `admission.md` §2's fourth
+consequence a plain statement rather than a qualified one.
+
+Schema side, in `soma/migrations/0001_init.sql`: `model_versions` loses `release_tag` and
+`commit_sha`, `models` loses `repo` and the two GitHub ownership columns, and the batch document
+stops carrying `repo`/`release_tag` — which leaves its join to `models` dead, so that goes too.
+
+**15 September 2026 — nothing could be admitted, and then one submission could stop everyone.** The
+first real submissions ever to reach this clock found three defects, each behind the last. None had
+a symptom worth the name: the walk logged a clean run, the node reported the model admitted, and
+the row sat in `testing` -- which reads as slow, not as broken.
+
+1. **`verify` was gated on a value nothing writes.** `STILL_GOOD` read `temp_data.resident`, which
+   the old loader's reply set (`load.models.0.state`); the commit that replaced the loader with
+   Orion's `models` entity deleted every task that wrote it and left the read. `verify` is the only
+   task that reads `STILL_GOOD`, so its condition was simply never true. It now reads
+   `temp_data.head`, which is the residency fact the rebuilt walk actually has and the same one
+   `ARTIFACT_MISSING` is decided on.
+2. **`infer_us` was bound as an integer and measured as a fraction.** The probe reports
+   `1000 * inference_ms`, so what reached `($6)::bigint` was a JSON number with a decimal part, and
+   the driver refuses that before Postgres sees it. `verify` carries no `continue_on_error`, so the
+   failure killed the **whole run**: the claim was never released, `reject` and `giveback` never
+   ran, and the next sweep re-walked a model that was already registered — 409 on `register`, 404
+   on `activate` (*no draft version*), `PROBE_UNREACHABLE` for ever. The cast is now
+   `($6)::float8::bigint`: the column is whole microseconds and the measurement is not.
+
+**What found them, and what did not.** `check-defs.sh` passes on both — an undefined `temp_data`
+path is a value that is null, not a reference that dangles, and no lint can know a placeholder's
+type. `check-sql.sh` passes on both, because the statement is valid SQL either way. What found them
+was `devops/scripts/dev/submission-storm.py`, which submits as tens of competitors do and reads the
+verdicts back: the first defect showed as thirty rows stuck in `testing`, and the second was named
+in one line by the trace the first one hid.
+
+3. **One submission could stop admission for everyone**, and it is the same `None` trap as (2)'s
+   neighbours. `item` clears every per-item slot with `False` because dataflow-rs SKIPS a mapping
+   whose logic evaluates to null — and `temp_data.retry`'s own chain ended in `None`, so in the
+   normal case it wrote nothing and kept the *previous* item's value. Every task after it is gated
+   on `{"!": retry}`, so one submission whose probe timed out took the rest of its batch down with
+   it: skipped wholesale, released untouched. `claim` orders by `created_at` and `giveback` hands
+   the attempt BACK, so the poisoned row was re-claimed first on every tick, never reached
+   `admit_attempts_max`, and never expired. Found by the second storm run, where **24 submissions
+   sat at `admit_attempts` 0 behind one**; after the fix the same 24 cleared in under three minutes.
+
+**The re-walk is still not idempotent, and it is filed rather than fixed.** §5 calls the walk
+idempotent, and it is not: `register` 409s and `activate` 404s (*no draft version*) on a model this
+node has already archived, so a submission that needs a second attempt can never get one — and
+because `giveback` returns the attempt, it is never expired either. It is not hypothetical: under
+the second storm one submission in thirty hit it, when its probe exceeded `admit_deadline_ms`
+(5 000 ms) while the fleet was playing. Two things to decide together: whether a re-walk should
+re-register rather than 409, and whether admission's probe deadline can hold while the same node's
+CPU is serving matches.
+
+**15 September 2026 — the probe never ran, and `clippy` is why we know.** Two bugs in `tb-probe`,
+both from the rebuild commit three days earlier, both silent. The admit walk called it with `body`
+where `channel_call`'s payload field is `data`, and an unknown input key is *ignored*, not refused.
+And `tb-probe-run` read `data.observations` with no `parse_json`, while `channel_call` delivers its
+argument as the child's **payload** — so even the right key would not have been visible. Together:
+`init` failed on `length` of nothing, `continue_on_error` swallowed the 500, every `ADAPTER_*` arm
+of the reason ladder is guarded on `!!probe` so none fired, and the *retry* ladder set
+`PROBE_UNREACHABLE` — every submission released, retried, and finally rejected `TIMED_OUT`. **No
+model could be admitted.** `orion-server clippy` names the first in one line as
+`correctness.unknown_input_key`; nothing else this repo runs did. Verified fixed on the live stack:
+the probe now walks all 10 of the game's reference observations (`checked: 10`) where it previously
+crashed on task one.
+
+Also: `shared/jodi.json` holds the clock tracing block the five channels copied, and the generator
+gained `group_runs()`, which collapses each run of consecutive tasks sharing one condition into a
+task group. `clippy` went from 1 error + 11 warnings to 0/0. `scripts/load-package.sh` is now
+`orion-server compile` + `package apply`, carrying both wasm plugins and their signatures in one
+artifact; `scripts/check-defs.sh` is the no-stack gate. Compiling the regenerated set and diffing
+every entity against the old one shows **zero** differences, so the grouping changed nothing.
+
+**14 September 2026 — admission is Orion's, and the loader is gone.** The admit walk registers a
+submission on this node by reference and digest, runs admission synchronously (`/admit?wait=true`),
+activates it long enough to play it over the game's reference observations through the new
+`tb-probe` channel, applies the platform's policy to what the node reported, and archives it again.
+Nothing here fetches a competitor's bytes over the internet any more: they arrive in the models
+bucket through a presigned PUT Soma mints, and the node's storage connector is what reads them. The
+verdict now records `manifest`, `manifest_hash`, `orion_version` and `probe_dims` where it recorded
+the adapter, its hash and an evaluator digest, and the weight class is
+`artifact_bytes + len(manifest)`. devops/docs/decisions.md, the R-series.
+
+**11 September 2026 — a baseline is an ordinary version with a tag.** The demand view no longer
+gives a baseline a state of its own: it is paced by placement, unsettled and settled like every
+version, so a fresh stack plays its baselines' placement against each other and then idles. Its
+owner is held to `pairing.queue_share_max` like anyone's, and a season closes by settling only once
+its baselines have settled too. The one thing a baseline still does alone is sit opposite every
+trial: `P_TRIALS` is the only statement left that reads `users.role`, and the demand document
+carries no role at all (decision 28).
+
+The plugins' comments changed and their bytes did not: the image builds `tb-pairing`
+`sha256:dac150b5…` both before and after this change, and `tb-rating` `sha256:a962eade…`. The
+`f3dd85e9…` recorded below predates the owner-awareness change, which is what moved it.
+
+**11 September 2026 — two bugs a clean volume found, both from the season-rules change below.**
+`plugin.toml` still declared `cross_class_fraction` required after pair stopped passing it -- the
+season's value moved into `demand.limits` -- so Orion 1.7 refused the pair workflow at create and
+Jodi could not load on a fresh volume at all. It is optional now, which is what `lib.rs` already
+treated it as. And count's `priors` statement had grown the season-rule fallbacks `$2..$4` without
+its task passing them, so every fold failed validation and nothing was ever rated; the task passes
+the three `ts_*` vars, and the rating reads the row's season-effective values instead of `[vars]`,
+so a season's rating rule is honoured too. `check-sql.sh` caught neither: it prepares each statement
+but never compares its placeholders with the params its task passes -- a check that, run over all 77
+statements in the three packages, finds exactly this one.
+
+**10 September 2026 — the clocks run the version life cycle over an entry that is a row of its
+own.** Every statement that meant "the same competitor's other version" now means "the same
+*model's* other version": promotion supersedes within one lineage, withdraw names the right
+successor, and count's predecessor read is provably single-row. Jodi lost `UPDATE` on `models`
+entirely — an entry's name, its repository and its retirement are the competitor's and Soma's, a
+boundary that could not be drawn while the entry and the version were one row.
+
+The season's rules reach the clocks as `coalesce(rule, <the [vars] value>)`, so a season that
+declares nothing paces exactly as the deploy does. Admission carries each item's own season's graph
+rules **per item** rather than reading them from `metadata.vars`, which is strictly safer: a root
+var is one value for a whole run. Pair stamps `matches.strike_ceiling`, and the pairing plugin
+gained owner awareness — no match seats two versions of one competitor unless a season says
+otherwise, enforced in `P_INSERT` as well as in the plugin, because that half is correctness.
+
+**10 September 2026 — the package ships as an image, and nothing generated is committed.**
+`channels/`, `workflows/`, both components and both `plugin.json` files are gitignored; they are
+built by `Dockerfile` and carried in the artifact image under `/artifacts/`. DevOps copies that into
+a volume and mounts it where it used to mount this checkout, so the loader container — which has
+curl and jq and no toolchain — no longer needs this repository beside it. `connectors/` is the
+authored part and is copied through.
+
+The image regenerates the declarations and then runs `gen-jodi.py --check`, so a hand-edited
+workflow is a failed build. It builds the components under a pinned toolchain with
+`--remap-path-prefix`, so a plugin digest is a function of the source rather than of the machine:
+`docker build --no-cache` lands on `tb-pairing` `sha256:f3dd85e9…` and `tb-rating`
+`sha256:a962eade…` every time. All eight generated declarations are byte-identical to the ones that
+were committed.
+
+**Signatures moved out of the package.** A signature belongs to whoever holds the trust key, and a
+package that ships as an immutable image several deployments can share cannot carry one.
+`load-package.sh` now reads `PLUGIN_SIG_DIR`, falling back to beside the component when it is unset;
+devops mints signatures into its own `keys/signatures/` and mounts that. That also ends one
+repository writing into another's working tree.
+
+**10 September 2026 — the plugin workspace is edition 2024.** `cargo fix --edition` needed no source
+changes; clippy took two `collapsible_if` sites into let-chains (`tb-pairing/src/choose.rs`,
+`tb-rating/src/lib.rs`), and `rustfmt.toml` was added — the same `max_width = 100` /
+`use_small_heuristics = "Max"` ants uses — so `cargo fmt` keeps the style the workspace is
+written in rather than reformatting every file to rustfmt's defaults.
+
+**Both components were rebuilt and their digests moved**, which is what a plugin rebuild always
+means: `tb-pairing` is now `sha256:961948da…` and `tb-rating` `sha256:350e0212…`, and
+`devops/scripts/setup/sign-plugins.sh` has to run again or the node comes up `degraded` with its
+channels quarantined. No arithmetic changed — 57 host tests pass unchanged, and these two plugins
+are the only arithmetic that writes a ladder and the only thing that decides who plays whom.
+
+**Decision 46, 10 September 2026 — no compute cap.** The admit walk's `cap` task became `judge`: no
+`flop_caps` lookup, no `FLOPS_OVER_CAP`, and no `MANIFEST_INCOMPLETE` for a missing cap. `A_VERIFY`
+writes `models.infer_us` from `/validate`'s measured `infer_us_max` where it wrote `flops_estimate`
+from an estimate — recorded for the competitor, gating nothing. Regenerated and `check-sql.sh` passes.
+
+**10 September 2026.** All four clocks and both plugins are implemented; the host suites pass
+30 rating and 27 pairing tests, `check-sql.sh` passes, and Orion 1.8.1 package lint passes. The
+weight classes are read from the season rather than written into the admit workflow, and
+`gen-jodi.py --check` now guards the generated workflows against hand edits. Package loading, SQL
+behavior, and the full admission-to-promotion walk require the DevOps stack and are not established
+by those unit tests. An adapter revalidation sweep, remaining admission fault exercises, and tuning
+against a competitive roster remain open.
+
 ## More
 
 - Local references: [migrations](migrations/), [channel contracts](channels/), and [workflow response mappings](workflows/).
-- Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the three packages run against it.
+- Local references: the [clock generator](scripts/gen-clocks.py) and the plugin manifests linked above.
+- Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the packages run against it; [`docs/clocks.md`](docs/clocks.md) — the clocks; [`docs/admission.md`](docs/admission.md); [`docs/rating-and-seasons.md`](docs/rating-and-seasons.md); [`docs/config.md`](docs/config.md) — every number, and what measures it.
 - [The competitor guide](https://github.com/Tiny-Brains/web/tree/main/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
-- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Jodi](https://github.com/Tiny-Brains/jodi), [Kalam](https://github.com/Tiny-Brains/kalam), [DevOps](https://github.com/Tiny-Brains/devops).
+- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Kalam](https://github.com/Tiny-Brains/kalam), [DevOps](https://github.com/Tiny-Brains/devops). [Jodi](https://github.com/Tiny-Brains/jodi) is history only.
 - Apache-2.0: see [LICENSE](LICENSE).

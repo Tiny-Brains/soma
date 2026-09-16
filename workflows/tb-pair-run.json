@@ -1,0 +1,178 @@
+{
+  "workflow_id": "tb-pair-run",
+  "name": "Clock: pair",
+  "description": "Inserts the matches the ladder wants. Reads the roster epoch, the demand document and the waiting trials at sweep 0, asks the pairing plugin to fill the room, and puts the trial pairings first in the plan so a candidate waiting on its trial is never crowded out by the queue. Every insert checks the epoch FOR SHARE and halts the run if it has moved -- that, not a run fence, is pair's guarantee: a stale run can overfill by at most one run's worth, which the depth target bounds and the next run absorbs, but it can never pair a version that has left. The trial pairings are chosen in SQL, not by the plugin: the choice is mechanical and must not depend on the plugin's state. soma/docs/schema.md §6, docs/design.md §6.",
+  "tags": ["pkg:soma"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 200 },
+  "tasks": [
+    {
+      "id": "when_game",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "game",
+          "name": "Resolve the game",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT id FROM games WHERE slug = ($1)::text",
+              "params": [{ "var": "metadata.vars.game" }],
+              "output": "temp_data.game"
+            }
+          }
+        },
+        {
+          "id": "epoch",
+          "name": "Read the roster epoch",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT epoch FROM clocks WHERE key = 'roster'",
+              "params": [],
+              "output": "temp_data.roster"
+            }
+          }
+        },
+        {
+          "id": "demand",
+          "name": "Read demand, the pool and the room",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH live AS ( SELECT id, rules FROM seasons WHERE game_id = ($1)::uuid AND closed_at IS NULL ), lim AS ( SELECT coalesce((live.rules -> 'pairing' ->> 'burst')::int, ($2)::int) AS burst, coalesce((live.rules -> 'pairing' ->> 'steady_cap')::int, ($3)::int) AS steady_cap, coalesce((live.rules -> 'rating' ->> 'settled_sigma')::float8, ($4)::float8) AS settled_sigma, coalesce((live.rules -> 'pairing' ->> 'cross_class_fraction')::float8, ($6)::float8) AS cross_class_fraction, coalesce((live.rules -> 'pairing' ->> 'self_pairing')::bool, false) AS self_pairing, (live.rules -> 'pairing' ->> 'queue_share_max')::int AS queue_share_max, live.rules -> 'pairing' -> 'presets' AS presets FROM live ), v AS ( SELECT vv.id AS model_id, e.owner_id, vv.weight_class, max(r.sigma) FILTER (WHERE r.ladder = 'open' OR reach.n > 0) AS sigma, min(r.matches_played) FILTER (WHERE r.ladder = 'open' OR reach.n > 0) AS played FROM model_versions vv JOIN models e ON e.id = vv.model_id JOIN live ON live.id = vv.season_id LEFT JOIN ratings r ON r.version_id = vv.id LEFT JOIN LATERAL ( SELECT count(*) AS n FROM model_versions o WHERE o.season_id = vv.season_id AND o.status = 'active' AND o.weight_class = vv.weight_class AND o.id <> vv.id ) reach ON true WHERE vv.status = 'active' GROUP BY vv.id, e.owner_id, vv.weight_class ), f AS ( SELECT s.version_id AS model_id, count(*) AS in_flight FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.game_id = ($1)::uuid AND m.status IN ('pending', 'claimed', 'running', 'finished') GROUP BY s.version_id ), w AS ( SELECT v.model_id, v.owner_id, v.weight_class, v.sigma, v.played, coalesce(f.in_flight, 0) AS in_flight, CASE WHEN v.played < lim.burst THEN 'placement' WHEN v.sigma > lim.settled_sigma THEN 'unsettled' ELSE 'settled' END AS state, CASE WHEN v.played < lim.burst THEN lim.burst WHEN v.sigma > lim.settled_sigma THEN lim.steady_cap ELSE 0 END AS cap FROM v CROSS JOIN lim LEFT JOIN f ON f.model_id = v.model_id ), owner_load AS ( SELECT e.owner_id, count(*) AS in_flight FROM match_seats st JOIN matches m ON m.id = st.match_id JOIN model_versions o ON o.id = st.version_id JOIN models e ON e.id = o.model_id WHERE m.game_id = ($1)::uuid AND m.trial_version_id IS NULL AND m.status IN ('pending', 'claimed', 'running', 'finished') GROUP BY e.owner_id ), wants AS ( SELECT w.model_id, w.owner_id, w.weight_class, w.state, w.sigma, w.played, w.in_flight, greatest(least( greatest(w.cap - w.in_flight, 0), coalesce(lim.queue_share_max, 2147483647) - coalesce(ol.in_flight, 0) - coalesce(sum(greatest(w.cap - w.in_flight, 0)) OVER ( PARTITION BY w.owner_id ORDER BY greatest(w.cap - w.in_flight, 0) DESC, w.model_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) ), 0) AS want FROM w CROSS JOIN lim LEFT JOIN owner_load ol ON ol.owner_id = w.owner_id ), pool AS ( SELECT vv.id AS model_id, e.owner_id, vv.weight_class, (SELECT json_agg(json_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma) ORDER BY r.ladder) FROM ratings r WHERE r.version_id = vv.id) AS ratings FROM model_versions vv JOIN models e ON e.id = vv.model_id JOIN live ON live.id = vv.season_id WHERE vv.status = 'active' ), played AS ( SELECT s.version_id AS model_id, m.preset, count(*) AS n FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.game_id = ($1)::uuid AND m.status IN ('finished', 'rated') GROUP BY s.version_id, m.preset ), depth AS ( SELECT count(*) AS pending FROM matches WHERE game_id = ($1)::uuid AND status = 'pending' ) SELECT json_build_object( 'demand', (SELECT coalesce(sum(want), 0) FROM wants), 'depth', (SELECT pending FROM depth), 'room', greatest(least((SELECT coalesce(sum(want), 0) FROM wants), ($5)::int - (SELECT pending FROM depth)), 0), 'wants', (SELECT coalesce(json_agg(wants ORDER BY want DESC, sigma DESC), '[]'::json) FROM wants WHERE want > 0), 'pool', (SELECT coalesce(json_agg(pool), '[]'::json) FROM pool), 'played', (SELECT coalesce(json_agg(played), '[]'::json) FROM played), 'limits', (SELECT json_build_object( 'self_pairing', lim.self_pairing, 'cross_class_fraction', lim.cross_class_fraction, 'presets', lim.presets) FROM lim), 'owners', (SELECT coalesce(json_agg(json_build_object( 'owner_id', o.owner_id, 'in_flight', o.in_flight, 'room', greatest(lim.queue_share_max - o.in_flight, 0))), '[]'::json) FROM (SELECT DISTINCT w.owner_id, coalesce(max(ol.in_flight), 0) AS in_flight FROM w LEFT JOIN owner_load ol ON ol.owner_id = w.owner_id GROUP BY w.owner_id) o, lim WHERE lim.queue_share_max IS NOT NULL)) AS body",
+              "params": [
+                { "var": "temp_data.game.0.id" },
+                { "var": "metadata.vars.burst" },
+                { "var": "metadata.vars.steady_cap" },
+                { "var": "metadata.vars.settled_sigma" },
+                { "var": "metadata.vars.pair_depth_target" },
+                { "var": "metadata.vars.cross_class_fraction" }
+              ],
+              "output": "temp_data.demand"
+            }
+          }
+        },
+        {
+          "id": "trials",
+          "name": "Find candidates waiting for a trial",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH cand AS ( SELECT c.id, c.game_id, c.season_id, c.model_id, c.weight_class, e.owner_id, s.rules, (SELECT count(*) FROM matches x WHERE x.trial_version_id = c.id) AS trials FROM model_versions c JOIN models e ON e.id = c.model_id JOIN seasons s ON s.id = c.season_id WHERE c.game_id = ($1)::uuid AND c.status = 'verified' AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id AND l.status IN ('pending', 'claimed', 'running')) ), pick AS ( SELECT cand.*, p.name AS preset, p.players FROM cand CROSS JOIN LATERAL ( SELECT coalesce( (SELECT jsonb_agg(g.value) FROM jsonb_array_elements(($3)::jsonb) AS g (value) WHERE cand.rules -> 'pairing' -> 'presets' IS NULL OR coalesce(g.value ->> 'name', g.value #>> '{}') IN ( SELECT coalesce(sp.value ->> 'name', sp.value #>> '{}') FROM jsonb_array_elements(cand.rules -> 'pairing' -> 'presets') AS sp (value))), ($3)::jsonb) AS list ) sel JOIN LATERAL ( SELECT coalesce(e.value ->> 'name', e.value #>> '{}') AS name, coalesce((e.value ->> 'players')::int, 2) AS players FROM jsonb_array_elements(sel.list) WITH ORDINALITY AS e (value, ord) WHERE e.ord = 1 + (cand.trials % greatest(jsonb_array_length(sel.list), 1)) ) p ON true WHERE cand.trials < coalesce((cand.rules -> 'pairing' ->> 'trials_max')::int, ($2)::int) ), seated AS ( SELECT pick.id AS trial_version_id, pick.preset, pick.players, jsonb_build_array(pick.id) || coalesce(opp.ids, '[]'::jsonb) AS seats FROM pick LEFT JOIN LATERAL ( SELECT jsonb_agg(b.id ORDER BY b.rn) AS ids FROM (SELECT DISTINCT ON (be.owner_id) b.id, be.owner_id, row_number() OVER ( ORDER BY (b.weight_class = pick.weight_class) DESC, (SELECT count(*) FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE s.version_id = b.id AND m.status IN ('pending', 'claimed', 'running')), b.id) AS rn FROM model_versions b JOIN models be ON be.id = b.model_id JOIN users ub ON ub.id = be.owner_id AND ub.role = 'baseline' WHERE b.game_id = pick.game_id AND b.season_id = pick.season_id AND b.status = 'active' ORDER BY be.owner_id, b.id) b WHERE b.rn < pick.players ) opp ON true ) SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build_object( 'seats', seats, 'trial', trial_version_id, 'preset', preset, 'seed', (random() * 2147483647)::bigint)), '[]'::json)) AS body FROM seated WHERE jsonb_array_length(seats) = players",
+              "params": [
+                { "var": "temp_data.game.0.id" },
+                { "var": "metadata.vars.repair_cap" },
+                { "var": "metadata.vars.presets" }
+              ],
+              "output": "temp_data.trials"
+            }
+          }
+        },
+        {
+          "id": "pair",
+          "name": "Choose the room's pairings",
+          "function": {
+            "name": "tb.pairing.pair",
+            "input": {
+              "demand": { "var": "temp_data.demand.0.body" },
+              "presets": { "var": "metadata.vars.presets" },
+              "seed": { "var": "metadata.trigger.occurrence_id" },
+              "output": "temp_data.paired"
+            }
+          }
+        },
+        {
+          "id": "plan",
+          "name": "Trials first, then the room",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.plan",
+                  "logic": {
+                    "merge": [
+                      { "var": "temp_data.trials.0.body.pairings" },
+                      { "var": "temp_data.paired.pairings" }
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.n",
+                  "logic": {
+                    "+": [{ "var": "temp_data.trials.0.body.n" }, { "var": "temp_data.paired.n" }]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop when the plan runs out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "item",
+      "name": "Take pairing i",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.it",
+              "logic": { "val": ["temp_data", "plan", { "val": ["temp_data", "i"] }] }
+            },
+            { "path": "temp_data.pairing_id", "logic": { "random": ["uuid"] } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Insert the match and its seats",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH season AS ( SELECT s.id, s.game_id, s.engine_digest, s.rules FROM seasons s JOIN games g ON g.id = s.game_id AND g.slug = ($2)::text WHERE s.closed_at IS NULL ), seated AS MATERIALIZED ( SELECT seat.ord - 1 AS seat, v.id AS version_id, e.owner_id, v.weights_hash, v.manifest_hash, v.weight_class FROM unnest(($5)::uuid[]) WITH ORDINALITY AS seat (version_id, ord) JOIN model_versions v ON v.id = seat.version_id JOIN models e ON e.id = v.model_id JOIN season ON season.id = v.season_id WHERE v.status = 'active' OR (v.status = 'verified' AND v.id = ($6)::uuid) ), m AS ( INSERT INTO matches (game_id, season_id, engine_digest, seed, preset, seat_count, ladders, trial_version_id, pairing_id, strike_ceiling) SELECT season.game_id, season.id, season.engine_digest, ($3)::bigint, ($4)::text, cardinality(($5)::uuid[]), CASE WHEN ($6)::uuid IS NOT NULL THEN '{}'::ladder[] WHEN (SELECT count(DISTINCT weight_class) FROM seated) = 1 THEN ARRAY[(SELECT weight_class FROM seated LIMIT 1), 'open']::ladder[] ELSE ARRAY['open']::ladder[] END, ($6)::uuid, ($7)::uuid, coalesce((season.rules -> 'pairing' ->> 'forfeit_strikes')::smallint, ($8)::smallint) FROM season JOIN (SELECT key FROM clocks WHERE key = 'roster' AND epoch = ($1)::bigint FOR SHARE) fence ON true WHERE (SELECT count(*) FROM seated) = cardinality(($5)::uuid[]) AND (($6)::uuid IS NOT NULL OR coalesce((season.rules -> 'pairing' ->> 'self_pairing')::bool, false) OR (SELECT count(DISTINCT owner_id) FROM seated) = cardinality(($5)::uuid[])) RETURNING id ) INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, paired_ratings) SELECT m.id, s.seat, s.version_id, s.weights_hash, s.manifest_hash, (SELECT jsonb_agg(jsonb_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma) ORDER BY r.ladder) FROM ratings r WHERE r.version_id = s.version_id) FROM m, seated s",
+          "params": [
+            { "var": "temp_data.roster.0.epoch" },
+            { "var": "metadata.vars.game" },
+            { "var": "temp_data.it.seed" },
+            { "var": "temp_data.it.preset" },
+            { "var": "temp_data.it.seats" },
+            { "var": "temp_data.it.trial" },
+            { "var": "temp_data.pairing_id" },
+            { "var": "metadata.vars.forfeit_strikes" }
+          ],
+          "output": "temp_data.inserted"
+        }
+      }
+    },
+    {
+      "id": "held",
+      "name": "Halt if the roster moved under the insert",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { ">": [{ "var": "temp_data.inserted.rows_affected" }, 0] },
+          "on_reject": "halt"
+        }
+      }
+    }
+  ]
+}

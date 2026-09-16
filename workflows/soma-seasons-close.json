@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-seasons-close",
   "name": "Ask for the live season to close",
-  "description": "Admin only. Writes an INTENT -- close_requested_at on the live season -- which Jodi's withdraw clock consumes within the minute: it rejects the versions still waiting, cancels the queue, leaves in-flight matches to finish and count, and sets closed_at. An intent rather than the close itself keeps one copy of the close, in the package whose check-sql.sh checks it. 202 with the season as it stands; 409 when the game has no live season or the request was already made.",
+  "description": "Admin only. Writes an INTENT -- close_requested_at on the live season -- which the withdraw clock consumes within the minute: it rejects the versions still waiting, cancels the queue, leaves in-flight matches to finish and count, and sets closed_at. An intent rather than the close itself keeps one copy of the close, in the package whose check-sql.sh checks it. 202 with the season as it stands; 409 when the game has no live season or the request was already made.",
   "tags": ["pkg:soma"],
   "tasks": [
     {

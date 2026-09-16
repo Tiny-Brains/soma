@@ -1,8 +1,8 @@
 # The schema
 
-The contract all three Orion packages build against: a match row, its seat rows and its rating
-events, the `clocks` table and its two fences, and every statement Jodi and Kalam run against them,
-written out.
+The contract both Orion packages — Soma and Kalam — build against: a match row, its seat rows and
+its rating events, the `clocks` table and its two fences, and every statement the clocks and Kalam
+run against them, written out.
 
 **The shipped artifact is [`migrations/0001_init.sql`](../migrations/0001_init.sql)** — one
 initial schema rather than a migration chain, because nothing is released yet; versioning starts at
@@ -93,8 +93,8 @@ The walk, and who may make each move — from overview §4, unchanged:
 
 ```
 pending ──claim──▶ claimed ──start──▶ running ──finish──▶ finished ──count──▶ rated
-  ▲ ▲ │     Kalam              Kalam            Kalam                  Jodi
-  │ │ └────── a seat left, or the engine retired ──▶ cancelled        Jodi
+  ▲ ▲ │     Kalam              Kalam            Kalam                  clocks
+  │ │ └────── a seat left, or the engine retired ──▶ cancelled        clocks
   │ └──────── lease lapsed; the next claim reaps ◀──┴────┘            Kalam
   └────────── the loader refused residency; no lapse counted          Kalam
                              a third lapse, the refusal ceiling,
@@ -189,7 +189,7 @@ CREATE TABLE matches (
     status               match_status NOT NULL DEFAULT 'pending',
     created_at           timestamptz  NOT NULL DEFAULT now(),
 
-    -- what to play — Jodi's pair clock, at insert
+    -- what to play — the pair clock, at insert
     engine_digest        text         NOT NULL,      -- the engine this row requires
     seed                 bigint       NOT NULL,
     preset               text         NOT NULL,
@@ -216,11 +216,11 @@ CREATE TABLE matches (
     fault_seat           smallint,                   -- the seat a fault is attributed to
     closed_at            timestamptz,                -- failed or cancelled
 
-    -- why it will not be played — Jodi
+    -- why it will not be played — the clocks
     withdrawn_reason     text,
     successor_version_id         uuid         REFERENCES models (id),
 
-    -- what it did to the ladder — Jodi's count clock
+    -- what it did to the ladder — the count clock
     rated_at             timestamptz,
     rated_seq            bigint,                     -- total order of counting
 
@@ -379,7 +379,7 @@ Two flavours in one table, as finding 2 decided. A **run fence** row is claimed 
 task with its occurrence's `(scheduled_for, attempt)` and checked `FOR SHARE` by every write of
 that run. The **roster** row's `epoch` is bumped inside every statement that changes who contests
 — promotion, rejection, retirement — and pair reads it at run start and checks it `FOR SHARE` on
-every insert. Which of `pair` and `withdraw` claim a run fence is Jodi's; the rows cost nothing.
+every insert. Which of `pair` and `withdraw` claim a run fence is the clocks' own business; the rows cost nothing.
 
 ### 3.7 Indexes and the fill factor
 
@@ -477,9 +477,9 @@ The token exchange upserts on `(key_id, label)` and deliberately **does not clea
 revoked machine may keep announcing itself, and it keeps being refused. Resurrection by reconnection
 would make revocation advisory.
 
-**Neither `jodi` nor `kalam` is granted anything here**, the way neither is granted anything on
-`sessions`. Runner identity is Soma's auth surface: a replica has no more business reading who may
-start a runner than reading who may sign in.
+**`kalam` is granted nothing here**, the way it is granted nothing on `sessions`, and neither was
+`jodi` while the clocks had a role of their own. Runner identity is Soma's auth surface: a replica
+has no more business reading who may start a runner than reading who may sign in.
 
 `matches.played_by` names the runner, written once at claim. It is not a security control — the
 operator is an admin — it is how "which machine is wedged" is answerable at all, and the reap does
@@ -529,7 +529,7 @@ competitor with five models holds five rows, and a cap applied in one reader and
 would print a rank the other page cannot justify.
 
 **`match_seat_rows` lost its `strike_limit` parameter.** Telling a forfeit from a defeat needs the
-ceiling, and it used to be plumbed from Jodi's `[vars]` through every Soma route that called it —
+ceiling, and it used to be plumbed from the clocks' `[vars]` through every Soma route that called it —
 so Soma's rendering of a forfeit depended on a number in another package's config. It is read off
 `matches.strike_ceiling` now: the rule the wave actually played by, and nothing else.
 
@@ -620,8 +620,8 @@ seats its task list has · `$5` the runner.
 the oldest row nobody else holds, trials first. Two callers racing do not queue behind each other —
 the second skips the locked row and takes the next — and Postgres is the arbiter whether they are
 four cron lanes in one process or forty across ten machines. There is no scheduler, no assignment
-table and no registry consulted at pairing time, which is what keeps decision R8 true: **Jodi never
-calls a replica.** An assigning coordinator would need a liveness model and a rebalancer for a
+table and no registry consulted at pairing time, which is what keeps decision R8 true: **no clock
+ever calls a replica.** An assigning coordinator would need a liveness model and a rebalancer for a
 machine that vanishes mid-match; pull-plus-lease is self-healing instead, because a runner that has
 vanished is indistinguishable from one that is slow and the lease resolves both by the same
 statement with nobody having to decide which it was.
@@ -838,7 +838,7 @@ coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
          ($6)::int)
 ```
 
-from **the row's own season**, the shape Jodi already uses for `adapter_ops_max`. A season that
+from **the row's own season**, the shape admission already uses for `adapter_ops_max`. A season that
 declares nothing plays by the cartridge's published limits — which is where `turn_ms` and
 `max_turns` have always really lived, `games.manifest` being written from `cartridge.json` by the
 loader. `refusal_ceiling` has no manifest key, because the cartridge has no opinion about how often
@@ -991,7 +991,7 @@ whether or not the main statement uses its output: without it, a plugin reply wi
 number of entries would mark the row `rated` and apply nothing, and `rows_affected` would report
 zero as if the fence had been lost. With it, the mark lands only when exactly one posterior per
 seat per ladder arrived; a count between zero and the expected number means a rating row was
-missing, which Jodi alerts on rather than halts. A run applying the same match twice from one
+missing, which count alerts on rather than halts. A run applying the same match twice from one
 prior would also collide on `rating_events`' primary key — the chain constraint doing the fence's
 job a second time. The `FOR SHARE` on the fence row is what orders this check against a newer
 run's claim in §5.1, which takes the row lock: one of the two waits, and whichever runs second
@@ -1018,7 +1018,7 @@ SELECT json_build_object('model_id', c.id, 'owner_id', c.owner_id, 'game_id', c.
                 AND t.status IN ('finished', 'failed', 'cancelled'))
 ```
 
-The rules are finding 6b's; the words are Jodi's. Three outcomes, three statements:
+The rules are finding 6b's; the words are the clocks'. Three outcomes, three statements:
 
 **Pass** — `finished`, the candidate's seat not forfeited. One statement: mark the trial, bump the
 roster, supersede the predecessor, activate the candidate, seed its two rating rows and write
@@ -1076,7 +1076,7 @@ SELECT model_id, ladder, 0, mu, sigma FROM seeded                  -- the histor
 ```
 
 `$3` the trial row · `$4` the candidate · `$5`, `$6` the prior `mu`, `sigma` · `$7` the sigma
-inflation — provisional from Jodi, final from 06. `rows_affected` is 2, the two `seq = 0`
+inflation — provisional from the clocks' config, final from 06. `rows_affected` is 2, the two `seq = 0`
 events. The aggregate over
 `pred` in `cand`'s predicate orders the predecessor's demotion before the candidate's activation.
 It is no longer what makes the statement correct: the one-active rule is an exclusion constraint
@@ -1113,7 +1113,7 @@ UPDATE model_versions md
 **Re-pair** — `failed` unattributed, or `cancelled`. Count writes nothing: the row is already
 terminal and not live, so pair's next run inserts a fresh trial (§6.2) because the candidate is
 verified with no live trial row. The cap is count's: when `trials` in the read above reaches
-Jodi's number without a pass, the reject statement runs with the unplayable reason.
+the configured number without a pass, the reject statement runs with the unplayable reason.
 
 ### 5.4 Promotion's second statement — withdraw the predecessor's queue
 
@@ -1141,7 +1141,7 @@ count re-pairs it.
 SELECT epoch FROM clocks WHERE key = 'roster'
 ```
 
-Held in `data` for the run. The demand view and the depth read are Jodi's.
+Held in `data` for the run. The demand view and the depth read are pair's.
 
 ### 6.2 The fenced insert — one per match, the match and its seats in one statement
 
@@ -1337,7 +1337,7 @@ Beyond the §8 decisions, three things the review did not reach:
 1. **`reason` on a `finished` row** stays the engine's free text (schema §5). Kalam must say
    whether a forfeit overwrites it or is inferred from the seat's `strikes` — the rows carry both.
 2. **`paired_ratings`' content** is derived here from `ratings` at insert; whether the pairing
-   plugin wants more recorded — the demand it answered, the fraction it drew — is Jodi's.
+   plugin wants more recorded — the demand it answered, the fraction it drew — is the clocks'.
 3. **Trial rows and the count fence.** A `failed` or `cancelled` trial is never marked; count
    decides it from `models.status = 'verified'` and re-decides idempotently. That is simpler than
    a mark but means the verdict read in §5.3 scans `verified` models every run — cheap under

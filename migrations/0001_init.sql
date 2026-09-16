@@ -1,10 +1,11 @@
 -- Soma -- the platform schema. One initial file rather than a migration chain: nothing is
 -- released, so 0001 is rewritten in place until it is. Postgres 13+.
 --
--- Three writers share this database, each confined by its grant (bottom of the file):
---   soma   -- users, sessions, the INSERT of a models row (an entry) and of a model_versions row.
---   jodi   -- the version life cycle: matches, match_seats, ratings, rating_events, clocks.
---   kalam  -- the match player. SELECT on two tables, UPDATE on the columns it reports.
+-- Three roles write this database (grants at the bottom of the file):
+--   soma         -- the owner. The routes (users, sessions, an entry and a version) and the clocks
+--                   (the version life cycle: matches, match_seats, ratings, rating_events, clocks).
+--   kalam        -- the match player. SELECT on two tables, UPDATE on the columns it reports.
+--   runner_gate  -- the eight runner routes: kalam's columns plus runner identity.
 -- Nothing above is trusted to enforce one-active-version, one-submission-in-flight or
 -- one-live-trial. The partial unique indexes and the exclusion constraint are.
 --
@@ -141,9 +142,9 @@ LANGUAGE sql IMMUTABLE AS $$
       -- -- was removed on 15 September 2026 and is NOT a gap to fill back in casually. It read the
       -- initializers' declared types off the loader's own inspection, and the loader is gone: what
       -- a node reports at admission is `stats`, which carries parameters, nodes, operators,
-      -- ir_version and opset and says nothing about how a weight is stored. Jodi selected the rule
-      -- and no verdict ever tested it, so a season declaring 'int8' was refusing nothing. Restoring
-      -- it means a number Orion measures, not a column here.
+      -- ir_version and opset and says nothing about how a weight is stored. The admit clock
+      -- selected the rule and no verdict ever tested it, so a season declaring 'int8' was refusing
+      -- nothing. Restoring it means a number Orion measures, not a column here.
       -- Advisory by default and null in every season the platform ships. Decision 46 removed the
       -- compute cap on measurement: wall clock belongs to the admission host, so a verdict turning
       -- on it depends on a noisy neighbour and a re-run can flip it. A season that sets this is
@@ -616,10 +617,10 @@ CREATE TABLE model_versions (
     manifest         text,
 
     -- Where the bytes live: the object key under the models bucket. GENERATED, never written --
-    -- Soma mints a presigned PUT for exactly this key when the submission is accepted, Jodi reads
-    -- the object from it at admission, and every replica's roster clock fetches it from there by
-    -- digest. Three readers, one spelling, and no statement that could disagree with another about
-    -- where a version's bytes are.
+    -- Soma mints a presigned PUT for exactly this key when the submission is accepted, the admit
+    -- clock reads the object from it at admission, and every replica's roster clock fetches it
+    -- from there by digest. Three readers, one spelling, and no statement that could disagree
+    -- with another about where a version's bytes are.
     artifact_key     text GENERATED ALWAYS AS ('models/' || id::text || '/model.onnx') STORED,
 
     -- Which Orion served the verdict; a change in it is what makes a sweep necessary (R10). It
@@ -1295,8 +1296,8 @@ $$;
 -- function: a forfeited seat is `dq` and a beaten one is `loss`.
 --
 -- The strike limit is READ OFF THE MATCH ROW rather than passed in. It used to be a parameter every
--- caller had to plumb from Jodi's config into a Soma route, which meant Soma's rendering of a
--- forfeit depended on a number in another package's [vars]. matches.strike_ceiling is the rule the
+-- caller had to plumb from the pair clock's config into a route, which meant a route's rendering
+-- of a forfeit depended on a number in another package's [vars]. matches.strike_ceiling is the rule the
 -- wave actually played by, so the seat is judged by it and by nothing else.
 CREATE FUNCTION match_seat_rows(p_match uuid)
 RETURNS TABLE (seat smallint, version_id uuid, model_id uuid, model_name text,
@@ -1439,35 +1440,15 @@ GRANT SELECT, INSERT ON runners TO runner_gate;
 GRANT UPDATE (label, engine_digest, node_version, orion_version, ops_budget, arch, last_seen_at)
     ON runners TO runner_gate;
 
--- NEITHER ROLE IS GRANTED ANYTHING ON runner_keys, runners OR live_runners, and the absence is
--- deliberate in the way `sessions` is below: runner identity is Soma's auth surface, the same as
--- session identity, and a replica has no more business reading who may start a runner than it has
--- reading who may sign in.
-
--- Jodi runs the VERSION life cycle -- a smaller claim than it was, now that the entry is a row of
--- its own. The verbs are DERIVED from jodi/workflows/*.json, and jodi/scripts/check-sql.sh
--- re-derives them on every run, so a new statement needing a grant it does not have fails there
--- rather than at 3am.
+-- THE `kalam` ROLE IS GRANTED NOTHING ON runner_keys, runners, live_runners OR sessions, and the
+-- absence is deliberate: runner identity is Soma's auth surface, the same as session identity, and
+-- a replica has no more business reading who may start a runner than it has reading who may sign in.
 --
--- Three absences are the point of the exercise: no DELETE anywhere, nothing on `sessions` -- that
--- is Soma's auth surface -- and NO UPDATE ON `models`. An entry's name and its retirement are the
--- competitor's and Soma's; Jodi has no business rewriting either. Before
--- the split that boundary could not be drawn, because the entry and the version were one row.
--- rating_events is INSERT-only because Jodi appends the audit trail and never reads it back.
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'jodi') THEN
-        CREATE ROLE jodi LOGIN;
-    END IF;
-END $$;
-
-GRANT USAGE ON SCHEMA public TO jodi;
-GRANT SELECT ON clocks, games, matches, match_seats, models, model_versions, ratings, seasons, users
-    TO jodi;
-GRANT INSERT ON matches, match_seats, rating_events, ratings TO jodi;
-GRANT UPDATE ON clocks, matches, model_versions, ratings, seasons TO jodi;
--- `nextval` needs the sequence as well as the table: count stamps every match it folds with
--- rated_seq, so without this the fold fails on the FIRST finished match -- and because `finished`
--- counts as in-flight when pair measures demand, the whole ladder then stops behind it.
-GRANT USAGE ON SEQUENCE rating_seq TO jodi;
+-- THERE IS NO CLOCK ROLE. The clocks -- admit, pair, count, withdraw -- run as the owner over
+-- `soma-db`, the connector the routes use. Until 16 September 2026 they were a separate package
+-- over a `jodi` role with no DELETE anywhere, nothing on `sessions` and no UPDATE on `models`; the
+-- package merged into this one and the role went with it. What still confines them is
+-- `soma-db`'s `operations.delete = false` and review: a clock statement that deletes, reads
+-- `sessions` or rewrites an entry is a review failure, not a grant error.
 
 COMMIT;

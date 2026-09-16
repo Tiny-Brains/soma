@@ -12,12 +12,17 @@
 #   clippy   what lint cannot prove but can be certain of: a run of steps repeating one
 #            condition, an object copied across the set, an input key the function ignores.
 #            IT FOUND A REAL BUG: `channel_call` silently ignores an unknown input key, so
-#            jodi's admit walk called tb-probe with `body` instead of `data` and every
+#            the admit walk called tb-probe with `body` instead of `data` and every
 #            submission stalled on PROBE_UNREACHABLE. That is why it runs with --deny-warnings.
-#   fmt      the house style, so a diff is the change and not a reformat.
+#   fmt      the house style, so a diff is the change and not a reformat -- over the generated
+#            clock files too, which the generator formats as it writes them.
+#
+# Before all three, the clocks' channels and workflows must equal what scripts/gen-clocks.py
+# generates: they are committed, and a hand edit is reverted by the next person who regenerates.
 #
 # What this does NOT check is whether the SQL inside those definitions resolves against the
-# schema -- that is ./scripts/check-sql.sh, which needs the database.
+# schema -- that is ./scripts/check-sql.sh, which needs the database -- or the plugins' arithmetic,
+# which is `cargo test --manifest-path plugins/Cargo.toml`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,8 +37,11 @@ case "$have" in
   *) echo "orion-server $have is not 1.8.x: it does not understand this package's blocks and will report misleading schema errors" >&2; exit 1 ;;
 esac
 
+echo "==> the clock files match scripts/gen-clocks.py"
+python3 scripts/gen-clocks.py --check
+
 echo "==> lint"
-orion-server lint . --deny-warnings 
+orion-server lint . --deny-warnings
 
 echo "==> clippy"
 orion-server clippy . --deny-warnings 

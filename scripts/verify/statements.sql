@@ -1,6 +1,6 @@
--- Every statement docs/schema.md §4-§7 and jodi/docs/rating-and-seasons.md §6 specify, PREPAREd so
+-- Every statement docs/schema.md §4-§7 and docs/rating-and-seasons.md §6 specify, PREPAREd so
 -- Postgres parses and plans each, then EXECUTEd by scenario.sql and the race files. The statements
--- a season touches are taken from jodi/scripts/gen-jodi.py's text, so this harness walks what ships.
+-- a season touches are taken from scripts/gen-clocks.py's text, so this harness walks what ships.
 -- Parameter types are the casts those documents use.
 
 -- THE EIGHT MATCH STATEMENTS ARE COPIED, VERBATIM, FROM soma/workflows/soma-runner-*.json,
@@ -8,6 +8,17 @@
 -- by hand once and went stale without anyone noticing -- this file still carried the pre-R7
 -- two-CTE wave claim, with resident-weights affinity, months after a one-row claim shipped --
 -- so run.sh now asserts the copies are identical rather than trusting that they are.
+--
+-- THE THIRTEEN CLOCK STATEMENTS ARE COPIED VERBATIM TOO, from workflows/tb-*-run.json, and run.sh
+-- compares them the same way: c_fence, c_batch_doc, c_priors, c_fold, c_pass, c_reject,
+-- c_withdraw_pred, p_game, p_epoch, p_demand_doc, p_trials, p_insert and w_sweep. Regenerate them
+-- from the workflows; never retype one. c_verdicts, c_decide and c_batch were earlier forms of
+-- what count now reads as ONE document, c_batch_doc, and went when that was noticed.
+--
+-- HARNESS-ONLY, and nothing ships them: c_pass_reversed (the promotion with its two updates in
+-- the opposite order, which the deferred one-active rule must still commit), a_chain (the audit
+-- of the rating chain), d_demand (the demand view on its own, the shape devops' autoscaler.sql
+-- reads) and the two s_* reads.
 
 -- 4.1 reap -- the cron channel's only task, once a second in one place.
 -- workflows/soma-runner-reap.json / reap
@@ -51,30 +62,11 @@ WITH m AS (UPDATE matches SET status = 'finished', reason = ($4)::text, turns = 
 PREPARE c_fence AS
 UPDATE clocks SET scheduled_for = ($1)::timestamptz, attempt = ($2)::int, updated_at = now() WHERE key = 'count' AND (scheduled_for, attempt) < (($1)::timestamptz, ($2)::int);
 
-PREPARE c_batch (int) AS
-SELECT id FROM matches WHERE status = 'finished' ORDER BY played_at, id LIMIT ($1)::int;
-
 PREPARE c_priors AS
 SELECT json_build_object( 'id', m.id, 'trial_model_id', m.trial_version_id, 'ladders', m.ladders, 'seat_count', m.seat_count, 'seats', (SELECT json_agg(json_build_object( 'seat', s.seat, 'model_id', s.version_id, 'rank', s.rank, 'strikes', s.strikes, 'ratings', (SELECT json_agg(json_build_object( 'ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma) ORDER BY r.ladder) FROM ratings r WHERE r.version_id = s.version_id AND r.ladder = ANY (m.ladders))) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id) ) AS row, coalesce((se.rules -> 'rating' ->> 'beta')::float8, ($2)::float8) AS beta, coalesce((se.rules -> 'rating' ->> 'tau')::float8, ($3)::float8) AS tau, coalesce((se.rules -> 'rating' ->> 'draw_probability')::float8, ($4)::float8) AS draw_probability FROM matches m JOIN seasons se ON se.id = m.season_id WHERE m.id = ($1)::uuid AND m.status = 'finished';
 
 PREPARE c_fold AS
 WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id IS NULL AND jsonb_array_length(($4)::jsonb) = m.seat_count * cardinality(m.ladders) RETURNING m.id ), post AS ( SELECT p.* FROM mark, jsonb_to_recordset(($4)::jsonb) AS p (seat smallint, model_id uuid, ladder text, mu float8, sigma float8) ), applied AS ( UPDATE ratings r SET mu = post.mu, sigma = post.sigma, matches_played = r.matches_played + 1, updated_at = now() FROM post, ratings old WHERE r.version_id = post.model_id AND r.ladder = post.ladder::ladder AND old.version_id = r.version_id AND old.ladder = r.ladder RETURNING r.version_id, r.ladder, r.matches_played AS seq, post.seat, old.mu AS mu_before, old.sigma AS sigma_before, r.mu AS mu_after, r.sigma AS sigma_after ) INSERT INTO rating_events (version_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after) SELECT a.version_id, a.ladder, a.seq, mark.id, a.seat, a.mu_before, a.sigma_before, a.mu_after, a.sigma_after FROM applied a, mark;
-
-PREPARE c_verdicts AS
-SELECT json_build_object('model_id', c.id, 'owner_id', ce.owner_id, 'game_id', c.game_id,
-         'trials', (SELECT count(*) FROM matches t WHERE t.trial_version_id = c.id),
-         'last', (SELECT json_build_object('id', t.id, 'status', t.status,
-                          'fault_seat', t.fault_seat, 'fault_reason', t.fault_reason,
-                          'candidate_seat', cs.seat, 'candidate_rank', cs.rank,
-                          'candidate_strikes', cs.strikes)
-                    FROM matches t
-                    JOIN match_seats cs ON cs.match_id = t.id AND cs.version_id = c.id
-                   WHERE t.trial_version_id = c.id
-                   ORDER BY t.created_at DESC LIMIT 1)) AS row
-  FROM model_versions c JOIN models ce ON ce.id = c.model_id
- WHERE c.status = 'verified'
-   AND EXISTS (SELECT 1 FROM matches t WHERE t.trial_version_id = c.id
-                AND t.status IN ('finished', 'failed', 'cancelled'));
 
 PREPARE c_pass AS
 WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), live AS ( SELECT s.id, coalesce((s.rules -> 'rating' ->> 'prior_mu')::float8, ($5)::float8) AS prior_mu, coalesce((s.rules -> 'rating' ->> 'prior_sigma')::float8, ($6)::float8) AS prior_sigma, coalesce((s.rules -> 'rating' ->> 'sigma_inflation')::float8, ($7)::float8) AS inflation FROM seasons s JOIN model_versions c ON c.season_id = s.id WHERE c.id = ($4)::uuid AND s.closed_at IS NULL ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence, live WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id = ($4)::uuid RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM mark WHERE c.key = 'roster' RETURNING c.epoch ), pred AS ( UPDATE model_versions p SET status = 'superseded' FROM bump, model_versions cand WHERE cand.id = ($4)::uuid AND p.model_id = cand.model_id AND p.season_id = cand.season_id AND p.status = 'active' RETURNING p.id ), cand AS ( UPDATE model_versions c SET status = 'active' FROM bump WHERE c.id = ($4)::uuid AND c.status = 'verified' AND (SELECT count(*) FROM pred) >= 0 RETURNING c.id, c.weight_class ), seeded AS ( INSERT INTO ratings (version_id, ladder, mu, sigma, seed_mu, seed_sigma) SELECT cand.id, l.ladder, coalesce(prev.mu, live.prior_mu), coalesce(seed.sigma, live.prior_sigma), prev.mu, seed.sigma FROM cand CROSS JOIN live CROSS JOIN LATERAL (VALUES (cand.weight_class), ('open'::ladder)) AS l (ladder) LEFT JOIN pred ON true LEFT JOIN ratings prev ON prev.version_id = pred.id AND prev.ladder = l.ladder CROSS JOIN LATERAL ( SELECT CASE WHEN prev.sigma IS NULL THEN NULL ELSE least(prev.sigma * live.inflation, live.prior_sigma) END AS sigma ) seed RETURNING version_id, ladder, mu, sigma ) INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after) SELECT version_id, ladder, 0, mu, sigma FROM seeded;
@@ -177,7 +169,7 @@ SELECT e.version_id, e.ladder, e.seq
  WHERE e.mu_before IS DISTINCT FROM p.mu_after OR e.sigma_before IS DISTINCT FROM p.sigma_after;
 
 
--- ---------------------------------------------------------------- jodi/docs/design.md's SQL (jodi/docs/design.md)
+-- ---------------------------------------------------------------- docs/clocks.md's SQL
 -- the demand view (02 §4): state, cap and want per version
 PREPARE d_demand (uuid, int, int, float8) AS
 WITH live AS (
@@ -220,30 +212,6 @@ SELECT model_id, weight_class, state, sigma, played, in_flight,
   FROM w
  ORDER BY want DESC, sigma DESC, model_id;
 
-
--- the verdict read (02 §5.1): the decision computed in SQL
-PREPARE c_decide (int, int) AS
-SELECT c.id AS model_id, c.version, t.id AS trial_id, t.status AS trial_status, n.trials,
-       CASE WHEN t.status = 'finished' AND cs.strikes < ($1)::int THEN 'pass'
-            WHEN t.status = 'finished'                          THEN 'reject'
-            WHEN t.status = 'failed' AND t.fault_seat = cs.seat  THEN 'reject'
-            WHEN n.trials >= ($2)::int                           THEN 'reject'
-            ELSE 'repair' END AS decision,
-       CASE WHEN t.status = 'finished' AND cs.strikes < ($1)::int THEN NULL
-            WHEN t.status = 'finished'                          THEN 'FORFEIT'
-            WHEN t.status = 'failed' AND t.fault_seat = cs.seat  THEN 'FAULT:' || t.fault_reason
-            WHEN n.trials >= ($2)::int                           THEN 'UNPLAYABLE'
-            ELSE NULL END AS reason
-  FROM model_versions c
-  JOIN LATERAL (SELECT t.* FROM matches t
-                 WHERE t.trial_version_id = c.id
-                   AND t.status IN ('finished', 'failed', 'cancelled')
-                 ORDER BY t.created_at DESC LIMIT 1) t ON true
-  JOIN match_seats cs ON cs.match_id = t.id AND cs.version_id = c.id
-  JOIN LATERAL (SELECT count(*) AS trials FROM matches x WHERE x.trial_version_id = c.id) n ON true
- WHERE c.status = 'verified'
-   AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id
-                      AND l.status IN ('pending', 'claimed', 'running'));
 
 -- the trial insert's read (02 §6.4), with the seat count coming from the preset (decision 14):
 -- a two-seat map seats one baseline, a four-seat map three, and a map needing more baselines than

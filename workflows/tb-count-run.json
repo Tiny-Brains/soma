@@ -1,0 +1,217 @@
+{
+  "workflow_id": "tb-count-run",
+  "name": "Clock: count",
+  "description": "The only writer of a ladder. Claims its run fence at the first task and halts if it lost, then walks one document of work: every unmarked finished match in finish order, followed by every trial that has reached a terminal state. A fold is one plugin call and one fenced statement; a verdict is promotion (two statements) or rejection or nothing at all. Folds come first so a trial is decided after every result that arrived before it. A fold that affects zero rows halts the run -- the fence moved, or the row was already counted -- and the next occurrence starts from a clean read. A pass that affects zero rows does not halt: a concurrent run decided the candidate, and the withdraw after it is idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. soma/docs/schema.md §5, docs/design.md §5.",
+  "tags": ["pkg:soma"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 400 },
+  "tasks": [
+    {
+      "id": "when_fence",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "fence",
+          "name": "Claim the run fence",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "UPDATE clocks SET scheduled_for = ($1)::timestamptz, attempt = ($2)::int, updated_at = now() WHERE key = 'count' AND (scheduled_for, attempt) < (($1)::timestamptz, ($2)::int)",
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" }
+              ],
+              "output": "temp_data.fence"
+            }
+          }
+        },
+        {
+          "id": "fenced",
+          "name": "Halt if a newer run holds it",
+          "function": {
+            "name": "filter",
+            "input": {
+              "condition": { ">": [{ "var": "temp_data.fence.rows_affected" }, 0] },
+              "on_reject": "halt"
+            }
+          }
+        },
+        {
+          "id": "batch",
+          "name": "Read this run's work",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH folds AS ( SELECT json_build_object('kind', 'fold', 'id', m.id) AS item, 0 AS grp, m.played_at AS ord, m.id FROM matches m WHERE m.status = 'finished' AND m.trial_version_id IS NULL ORDER BY m.played_at, m.id LIMIT ($1)::int ), verdicts AS ( SELECT json_build_object( 'kind', 'verdict', 'model_id', c.id, 'trial_id', t.id, 'predecessor_id', (SELECT p.id FROM model_versions p WHERE p.model_id = c.model_id AND p.season_id = c.season_id AND p.status = 'active'), 'trials', n.trials, 'decision', CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN 'pass' WHEN t.status = 'finished' THEN 'reject' WHEN t.status = 'failed' AND t.fault_seat = cs.seat THEN 'reject' WHEN n.trials >= tm.trials_max THEN 'reject' ELSE 'repair' END, 'reason', CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN NULL WHEN t.status = 'finished' THEN 'FORFEIT' WHEN t.status = 'failed' AND t.fault_seat = cs.seat THEN 'FAULT:' || t.fault_reason WHEN n.trials >= tm.trials_max THEN 'UNPLAYABLE' ELSE NULL END) AS item, 1 AS grp, t.played_at AS ord, c.id FROM model_versions c JOIN seasons cse ON cse.id = c.season_id CROSS JOIN LATERAL (SELECT coalesce((cse.rules -> 'pairing' ->> 'trials_max')::int, ($2)::int) AS trials_max) tm JOIN LATERAL (SELECT t.* FROM matches t WHERE t.trial_version_id = c.id AND t.status IN ('finished', 'failed', 'cancelled') ORDER BY t.created_at DESC LIMIT 1) t ON true JOIN match_seats cs ON cs.match_id = t.id AND cs.version_id = c.id JOIN LATERAL (SELECT count(*) AS trials FROM matches x WHERE x.trial_version_id = c.id) n ON true WHERE c.status = 'verified' AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id AND l.status IN ('pending', 'claimed', 'running')) ) SELECT json_build_object('n', count(*), 'items', coalesce(json_agg(item ORDER BY grp, ord, id), '[]'::json)) AS body FROM (SELECT * FROM folds UNION ALL SELECT * FROM verdicts) x",
+              "params": [
+                { "var": "metadata.vars.count_batch" },
+                { "var": "metadata.vars.repair_cap" }
+              ],
+              "output": "temp_data.rows"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop when the work runs out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.rows.0.body.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "item",
+      "name": "Take item i",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.it",
+              "logic": {
+                "val": ["temp_data", "rows", 0, "body", "items", { "val": ["temp_data", "i"] }]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when_priors",
+      "condition": { "==": [{ "var": "temp_data.it.kind" }, "fold"] },
+      "tasks": [
+        {
+          "id": "priors",
+          "name": "Read the seats' priors",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT json_build_object( 'id', m.id, 'trial_model_id', m.trial_version_id, 'ladders', m.ladders, 'seat_count', m.seat_count, 'seats', (SELECT json_agg(json_build_object( 'seat', s.seat, 'model_id', s.version_id, 'rank', s.rank, 'strikes', s.strikes, 'ratings', (SELECT json_agg(json_build_object( 'ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma) ORDER BY r.ladder) FROM ratings r WHERE r.version_id = s.version_id AND r.ladder = ANY (m.ladders))) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id) ) AS row, coalesce((se.rules -> 'rating' ->> 'beta')::float8, ($2)::float8) AS beta, coalesce((se.rules -> 'rating' ->> 'tau')::float8, ($3)::float8) AS tau, coalesce((se.rules -> 'rating' ->> 'draw_probability')::float8, ($4)::float8) AS draw_probability FROM matches m JOIN seasons se ON se.id = m.season_id WHERE m.id = ($1)::uuid AND m.status = 'finished'",
+              "params": [
+                { "var": "temp_data.it.id" },
+                { "var": "metadata.vars.ts_beta" },
+                { "var": "metadata.vars.ts_tau" },
+                { "var": "metadata.vars.ts_draw_probability" }
+              ],
+              "output": "temp_data.match"
+            }
+          }
+        },
+        {
+          "id": "rate",
+          "name": "TrueSkill",
+          "function": {
+            "name": "tb.rating.trueskill",
+            "input": {
+              "match": { "var": "temp_data.match.0.row" },
+              "beta": { "var": "temp_data.match.0.beta" },
+              "tau": { "var": "temp_data.match.0.tau" },
+              "draw_probability": { "var": "temp_data.match.0.draw_probability" },
+              "output": "temp_data.post"
+            }
+          }
+        },
+        {
+          "id": "fold",
+          "name": "Mark rated and apply the posteriors",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id IS NULL AND jsonb_array_length(($4)::jsonb) = m.seat_count * cardinality(m.ladders) RETURNING m.id ), post AS ( SELECT p.* FROM mark, jsonb_to_recordset(($4)::jsonb) AS p (seat smallint, model_id uuid, ladder text, mu float8, sigma float8) ), applied AS ( UPDATE ratings r SET mu = post.mu, sigma = post.sigma, matches_played = r.matches_played + 1, updated_at = now() FROM post, ratings old WHERE r.version_id = post.model_id AND r.ladder = post.ladder::ladder AND old.version_id = r.version_id AND old.ladder = r.ladder RETURNING r.version_id, r.ladder, r.matches_played AS seq, post.seat, old.mu AS mu_before, old.sigma AS sigma_before, r.mu AS mu_after, r.sigma AS sigma_after ) INSERT INTO rating_events (version_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after) SELECT a.version_id, a.ladder, a.seq, mark.id, a.seat, a.mu_before, a.sigma_before, a.mu_after, a.sigma_after FROM applied a, mark",
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.id" },
+                { "var": "temp_data.post" }
+              ],
+              "output": "temp_data.folded"
+            }
+          }
+        },
+        {
+          "id": "held",
+          "name": "Halt if the fence moved under the fold",
+          "function": {
+            "name": "filter",
+            "input": {
+              "condition": { ">": [{ "var": "temp_data.folded.rows_affected" }, 0] },
+              "on_reject": "halt"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "when_pass",
+      "condition": { "==": [{ "var": "temp_data.it.decision" }, "pass"] },
+      "tasks": [
+        {
+          "id": "pass",
+          "name": "Promote and seed",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), live AS ( SELECT s.id, coalesce((s.rules -> 'rating' ->> 'prior_mu')::float8, ($5)::float8) AS prior_mu, coalesce((s.rules -> 'rating' ->> 'prior_sigma')::float8, ($6)::float8) AS prior_sigma, coalesce((s.rules -> 'rating' ->> 'sigma_inflation')::float8, ($7)::float8) AS inflation FROM seasons s JOIN model_versions c ON c.season_id = s.id WHERE c.id = ($4)::uuid AND s.closed_at IS NULL ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence, live WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id = ($4)::uuid RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM mark WHERE c.key = 'roster' RETURNING c.epoch ), pred AS ( UPDATE model_versions p SET status = 'superseded' FROM bump, model_versions cand WHERE cand.id = ($4)::uuid AND p.model_id = cand.model_id AND p.season_id = cand.season_id AND p.status = 'active' RETURNING p.id ), cand AS ( UPDATE model_versions c SET status = 'active' FROM bump WHERE c.id = ($4)::uuid AND c.status = 'verified' AND (SELECT count(*) FROM pred) >= 0 RETURNING c.id, c.weight_class ), seeded AS ( INSERT INTO ratings (version_id, ladder, mu, sigma, seed_mu, seed_sigma) SELECT cand.id, l.ladder, coalesce(prev.mu, live.prior_mu), coalesce(seed.sigma, live.prior_sigma), prev.mu, seed.sigma FROM cand CROSS JOIN live CROSS JOIN LATERAL (VALUES (cand.weight_class), ('open'::ladder)) AS l (ladder) LEFT JOIN pred ON true LEFT JOIN ratings prev ON prev.version_id = pred.id AND prev.ladder = l.ladder CROSS JOIN LATERAL ( SELECT CASE WHEN prev.sigma IS NULL THEN NULL ELSE least(prev.sigma * live.inflation, live.prior_sigma) END AS sigma ) seed RETURNING version_id, ladder, mu, sigma ) INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after) SELECT version_id, ladder, 0, mu, sigma FROM seeded",
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.trial_id" },
+                { "var": "temp_data.it.model_id" },
+                { "var": "metadata.vars.prior_mu" },
+                { "var": "metadata.vars.prior_sigma" },
+                { "var": "metadata.vars.sigma_inflation" }
+              ],
+              "output": "temp_data.promoted"
+            }
+          }
+        },
+        {
+          "id": "withdraw",
+          "name": "Withdraw the predecessor's queue",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "UPDATE matches m SET status = 'cancelled', withdrawn_reason = 'SUPERSEDED', successor_version_id = ($2)::uuid, closed_at = now() WHERE m.status = 'pending' AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.version_id = ($1)::uuid)",
+              "params": [
+                { "var": "temp_data.it.predecessor_id" },
+                { "var": "temp_data.it.model_id" }
+              ],
+              "output": "temp_data.withdrawn"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "reject",
+      "name": "Reject, with the reason a competitor reads",
+      "condition": { "==": [{ "var": "temp_data.it.decision" }, "reject"] },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence WHERE m.id = ($3)::uuid AND m.status = 'finished' RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM fence WHERE c.key = 'roster' AND (SELECT count(*) FROM mark) >= 0 RETURNING c.epoch ) UPDATE model_versions v SET status = 'rejected', reject_reason = ($5)::text FROM bump WHERE v.id = ($4)::uuid AND v.status = 'verified'",
+          "params": [
+            { "var": "metadata.trigger.scheduled_for" },
+            { "var": "metadata.trigger.attempt" },
+            { "var": "temp_data.it.trial_id" },
+            { "var": "temp_data.it.model_id" },
+            { "var": "temp_data.it.reason" }
+          ],
+          "output": "temp_data.rejected"
+        }
+      }
+    }
+  ]
+}

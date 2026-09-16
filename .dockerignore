@@ -1,3 +1,10 @@
 .git/
 docs/
 scripts/verify/
+# The host's plugin build tree and outputs. Copying either in would let a stale local build shadow
+# the one the Dockerfile makes.
+plugins/target/
+plugins/*/*.wasm
+plugins/*/plugin.json
+plugins/*/*.wasm.sig
+__pycache__/

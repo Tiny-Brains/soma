@@ -1,0 +1,15 @@
+{
+  "channel_id": "tb-count",
+  "name": "tb-count",
+  "tags": ["pkg:soma"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "tb-count-run",
+  "transport_config": {
+    "schedule": "*/10 * * * * *",
+    "timezone": "UTC",
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid", "key": "count" }
+  },
+  "config": { "timeout_ms": 60000, "tracing": { "$from": "constants.clock_tracing" } }
+}

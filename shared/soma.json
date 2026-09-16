@@ -45,7 +45,8 @@
       "query": "SELECT json_build_object('id', u.id, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
       "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
       "output": "temp_data.who"
-    }
+    },
+    "clock_tracing": { "errors_only": true, "task_details": true }
   },
   "fragments": {
     "refuse": {

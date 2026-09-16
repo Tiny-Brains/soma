@@ -1,0 +1,55 @@
+# tb.pairing -- who plays whom, and on which map.
+#
+# `./build.sh` rebuilds the component beside this manifest, running the host tests first; both it
+# and the plugin.json generated from this file are committed, so the package loads without a wasm
+# toolchain. Pair calls this once a run, after reading the demand document (docs/design.md §6.1)
+# and before its insert loop; the contract is docs/design.md §6.2.
+#
+# It decides quality, never correctness: every rule in it could be replaced by "pick uniformly" and
+# the ladder would still be right, only slower to learn -- the correctness lives in the insert
+# statement, which derives the hashes, the ladders and the contesting check itself and refuses a
+# pairing made against a roster that has since moved.
+abi = "orion:plugin@1.0.0"
+name = "tb.pairing"
+version = "0.1.0"
+component = "tb-pairing.wasm"
+
+[[functions]]
+name = "tb.pairing.pair"
+description = "Choose up to the room's worth of pairings from the demand document, seeded and pure"
+category = "transform"
+
+# The whole demand read. An expression, because the workflow points it at what the read task wrote
+# rather than restating its shape.
+[[functions.input_fields]]
+name = "demand"
+description = "The demand document: room, wants, the pool that may be seated, and presets played"
+kind = "object"
+required = true
+template_at = true
+
+[[functions.input_fields]]
+name = "presets"
+description = "The game's presets, one of which each pairing is played on"
+kind = "array"
+required = true
+template_at = true
+
+# Not required, because pair no longer passes it: the season's value arrives in `demand.limits`, and
+# this input is only the fallback lib.rs reads when that is absent. Declared required, Orion 1.7
+# refuses the pair workflow at create -- which is what a fresh load hit on 11 September 2026.
+[[functions.input_fields]]
+name = "cross_class_fraction"
+description = "Fallback only: how often an opponent is drawn from another weight class, when demand.limits does not say"
+kind = "number"
+required = false
+template_at = true
+
+# Required rather than defaulted: a plugin that silently paired from a fixed seed would look
+# identical until someone tried to replay a decision.
+[[functions.input_fields]]
+name = "seed"
+description = "The run's occurrence id, so a retried occurrence proposes exactly the same plan"
+kind = "string"
+required = true
+template_at = true

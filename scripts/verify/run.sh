@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Walk the schema: every statement the three packages run against it, the scenario, the two fence
+# Walk the schema: every statement the two packages run against it, the scenario, the two fence
 # races, and the Kalam role exercised rather than asserted.
 #
 #   soma/scripts/verify/run.sh            # from anywhere; needs the db container up
@@ -10,8 +10,9 @@
 # are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
 # `soma` or `orion_state` is touched.
 #
-# check-sql.sh checks what SOMA ships; this checks what the SCHEMA promises everyone -- which is why
-# the statements here are Jodi's and Kalam's as well. Those two repos verify their own copies.
+# check-sql.sh checks that what Soma ships PARSES; this checks what the SCHEMA promises -- the
+# runner gate's match statements (Kalam's, served here), the clocks' ladder statements, and the
+# `kalam` role a db-mode replica still holds.
 set -euo pipefail
 cd "$(dirname "$0")"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
@@ -37,20 +38,36 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 # and a copy nobody compares is a copy that drifts: this file carried the pre-R7 two-CTE wave claim
 # for months after a one-row claim shipped, so every race it "proved" was proving a statement that
 # did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
+#
+# The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json.
+# Until the clocks moved into this repository nothing compared them at all, and three of the copies
+# (c_verdicts, c_decide, c_batch) had already outlived the statements they copied. The clock tasks
+# live inside TASK GROUPS, which is why the lookup below descends.
 echo "===== the statements under test are the statements that ship ====="
 python3 - <<'PY'
 import json, re, sys, pathlib
 PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim", "claim"),
          ("k_row", "soma-runner-claim", "row"), ("k_start", "soma-runner-start", "start"),
          ("k_release", "soma-runner-release", "release"), ("k_renew", "soma-runner-renew", "renew"),
-         ("k_finish", "soma-runner-finish", "finish")]
+         ("k_finish", "soma-runner-finish", "finish"),
+         ("c_fence", "tb-count-run", "fence"), ("c_batch_doc", "tb-count-run", "batch"),
+         ("c_priors", "tb-count-run", "priors"), ("c_fold", "tb-count-run", "fold"),
+         ("c_pass", "tb-count-run", "pass"), ("c_reject", "tb-count-run", "reject"),
+         ("c_withdraw_pred", "tb-count-run", "withdraw"),
+         ("p_game", "tb-pair-run", "game"), ("p_epoch", "tb-pair-run", "epoch"),
+         ("p_demand_doc", "tb-pair-run", "demand"), ("p_trials", "tb-pair-run", "trials"),
+         ("p_insert", "tb-pair-run", "insert"), ("w_sweep", "tb-withdraw-run", "sweep")]
 prepared = pathlib.Path("statements.sql").read_text()
+def tasks(ts):
+    for t in ts:
+        yield t
+        yield from tasks(t.get("tasks", []))
 flat = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(";")
 bad = []
 for name, wf, task in PAIRS:
     doc = json.load(open(f"../../workflows/{wf}.json"))
-    shipped = next(t["function"]["input"]["query"] for t in doc["tasks"] if t["id"] == task)
-    m = re.search(rf"^PREPARE {name} AS\n(.*?);$", prepared, re.S | re.M)
+    shipped = next(t["function"]["input"]["query"] for t in tasks(doc["tasks"]) if t["id"] == task)
+    m = re.search(rf"^PREPARE {name}(?: \([^)]*\))? AS\n(.*?);$", prepared, re.S | re.M)
     if not m:
         bad.append(f"{name}: no PREPARE in statements.sql")
     elif flat(m.group(1)) != flat(shipped):
@@ -123,7 +140,7 @@ BEGIN
     SELECT count(*) INTO n FROM games WHERE active_engine_digest IS NOT NULL;
     ASSERT n = 1, 'the game must carry an engine digest, placeholder or not';
 
-    -- jodi/docs/rating-and-seasons.md: exactly one live season, pinning the game's digest, with the baselines in it
+    -- docs/rating-and-seasons.md: exactly one live season, pinning the game's digest, with the baselines in it
     SELECT count(*) INTO n FROM seasons s JOIN games g ON g.id = s.game_id
       WHERE s.closed_at IS NULL AND s.engine_digest = g.active_engine_digest;
     ASSERT n = 1, 'the game must have exactly one live season, on its digest';

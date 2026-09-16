@@ -1,0 +1,21 @@
+# `tb.rating` -- the TrueSkill update count calls once per finished match to turn a set of priors
+# and a ranking into posteriors. Built for wasm32-unknown-unknown and turned into a component by
+# `wasm-tools` (see build.sh); the built bytes are committed beside the manifest so the package
+# loads without a wasm toolchain.
+[package]
+name = "tb-rating"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# cdylib is what `wasm-tools component new` consumes; rlib is what makes `cargo test` possible.
+# The arithmetic here is the only thing in TinyBrains that writes a ladder, and it is tested on the
+# host against the reference implementation rather than only exercised through a workflow.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+orion-plugin-sdk.workspace = true

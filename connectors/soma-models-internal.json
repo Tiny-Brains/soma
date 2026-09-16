@@ -1,0 +1,17 @@
+{
+  "id": "soma-models-internal",
+  "name": "soma-models-internal",
+  "connector_type": "storage",
+  "tags": ["pkg:soma"],
+  "config": {
+    "type": "storage",
+    "provider": "s3",
+    "endpoint": "env://MODELS_ENDPOINT",
+    "region": "auto",
+    "bucket": "env://MODELS_BUCKET",
+    "access_key": "env://R2_ACCESS_KEY",
+    "secret_key": "env://R2_SECRET_KEY",
+    "operations": { "presign_get": true, "presign_put": false, "head": true },
+    "force_path_style": true
+  }
+}

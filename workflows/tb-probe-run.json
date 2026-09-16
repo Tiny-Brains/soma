@@ -1,0 +1,177 @@
+{
+  "workflow_id": "tb-probe-run",
+  "name": "Probe an adapter",
+  "description": "Run an admitted model over each of the game's reference observations and report what it cost. Orion's admission probe runs the GRAPH over zero-filled inputs and never evaluates an adapter; this is what exercises the adapter, the shapes it produces and the budget it spends. `ops` and `peak_ops` are Orion 1.8.1's (#324): before them a budget could only be set by argument, and a competitor could not be told what theirs cost.",
+  "tags": ["pkg:soma"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 64 },
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Read the request",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "in" } }
+    },
+    {
+      "id": "init",
+      "name": "Open the walk",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "temp_data.n", "logic": { "length": [{ "var": "data.in.observations" }] } },
+            { "path": "data.ok", "logic": true },
+            { "path": "data.over_budget", "logic": false },
+            { "path": "data.reason", "logic": null },
+            { "path": "data.ops_max", "logic": 0 },
+            { "path": "data.infer_us_max", "logic": 0 },
+            { "path": "data.checked", "logic": 0 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "more",
+      "name": "Stop when the observations run out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "pick",
+      "name": "Take observation i, and clear the last one",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.obs",
+              "logic": { "val": ["data", "in", "observations", { "val": ["temp_data", "i"] }] }
+            },
+            { "path": "temp_data.out", "logic": false },
+            { "path": "temp_data.st", "logic": false }
+          ]
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "name": "One inference",
+      "continue_on_error": true,
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": { "var": "data.in.model" },
+          "input": { "var": "temp_data.obs" },
+          "output": "temp_data.out",
+          "raw": true,
+          "stats_output": "temp_data.st"
+        }
+      }
+    },
+    {
+      "id": "tally",
+      "name": "What it cost, and whether it answered",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.checked", "logic": { "+": [{ "var": "data.checked" }, 1] } },
+            {
+              "path": "data.ops_max",
+              "logic": {
+                "if": [
+                  {
+                    ">": [
+                      { "??": [{ "var": "temp_data.st.peak_ops" }, 0] },
+                      { "var": "data.ops_max" }
+                    ]
+                  },
+                  { "var": "temp_data.st.peak_ops" },
+                  { "var": "data.ops_max" }
+                ]
+              }
+            },
+            {
+              "path": "data.infer_us_max",
+              "logic": {
+                "if": [
+                  {
+                    ">": [
+                      {
+                        "*": [
+                          1000,
+                          { "??": [{ "var": "temp_data.st.inference_ms" }, 0] }
+                        ]
+                      },
+                      { "var": "data.infer_us_max" }
+                    ]
+                  },
+                  { "*": [1000, { "var": "temp_data.st.inference_ms" }] },
+                  { "var": "data.infer_us_max" }
+                ]
+              }
+            },
+            {
+              "path": "temp_data.rank",
+              "logic": {
+                "if": [
+                  { "!": { "var": "temp_data.out.policy" } },
+                  0,
+                  { "length": [{ "shape": [{ "var": "temp_data.out.policy" }] }] }
+                ]
+              }
+            },
+            {
+              "path": "data.ok",
+              "logic": {
+                "and": [
+                  { "var": "data.ok" },
+                  { "!!": { "var": "temp_data.out.policy" } },
+                  { "in": [{ "var": "temp_data.rank" }, [2, 4]] }
+                ]
+              }
+            },
+            {
+              "path": "data.over_budget",
+              "logic": {
+                "or": [
+                  { "var": "data.over_budget" },
+                  {
+                    "and": [
+                      { "!!": { "var": "data.in.budget_ops" } },
+                      {
+                        ">": [
+                          { "??": [{ "var": "temp_data.st.peak_ops" }, 0] },
+                          { "var": "data.in.budget_ops" }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "path": "data.reason",
+              "logic": {
+                "if": [
+                  { "var": "data.reason" },
+                  { "var": "data.reason" },
+                  { "!": { "var": "temp_data.out.policy" } },
+                  "ADAPTER_INVALID",
+                  { "!": { "in": [{ "var": "temp_data.rank" }, [2, 4]] } },
+                  "HEAD_UNREADABLE",
+                  null
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

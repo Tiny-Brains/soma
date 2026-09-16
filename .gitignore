@@ -1,2 +1,17 @@
 # Logs the verify harness writes while the two fence races run, and removes on success.
 scripts/verify/*.log
+
+# The plugin build tree and its outputs. `plugins/build.sh` writes each component and the
+# plugin.json beside its plugin.toml while you work here; what ships is what `Dockerfile` builds
+# under a pinned toolchain with remapped paths, because a plugin digest is what the signature is
+# over and what every node verifies.
+plugins/target/
+plugins/*/*.wasm
+plugins/*/plugin.json
+
+# Detached plugin signatures. A signature belongs to whoever holds the trust key, not to this
+# package -- load-package.sh reads PLUGIN_SIG_DIR, and devops keeps them under its own keys/. This
+# pattern stays only so a host-side signing run cannot leave one behind here.
+plugins/*/*.wasm.sig
+
+__pycache__/

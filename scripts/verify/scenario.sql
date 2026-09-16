@@ -164,8 +164,8 @@ SELECT seed, status, lapses, claim_token IS NULL AS token_cleared,
 EXECUTE c_fence ('2026-09-07 10:00:00+00', 1);
 EXECUTE c_fence ('2026-09-07 09:59:00+00', 1);
 EXECUTE c_fence ('2026-09-07 10:00:00+00', 2);
-\echo '--- count: batch (expect 2 ids); priors for the ranked row'
-EXECUTE c_batch (10);
+\echo '--- count: batch document (expect n 3: two folds, then the verdict on alice v2 -- decision pass, trials 1); priors for the ranked row'
+EXECUTE c_batch_doc (10, 3);
 EXECUTE c_priors (:'m43', 4.1667, 0.0833, 0.10);
 \echo '--- count: fold under the stale fence (expect 0, row still finished); under the live fence (expect 4); again (expect 0); on the trial row (expect 0, row untouched)'
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 1, :'m43',
@@ -183,9 +183,8 @@ VALUES ('20000000-0000-0000-0000-000000000001', 'nano', 1, :'m43', 0, 30, 4, 29.
 EXECUTE a_chain;
 SELECT version_id, ladder, mu, sigma, matches_played FROM ratings ORDER BY version_id, ladder;
 
-\echo '--- count: verdict read (expect alice v2: trials 1, last finished, candidate_seat 0, candidate_rank 1)'
-EXECUTE c_verdicts;
-EXECUTE c_decide (5, 3);
+\echo '--- count: batch document after the fold (expect n 2: the fold still waiting, then the verdict on alice v2 -- decision pass, reason null, trials 1)'
+EXECUTE c_batch_doc (10, 3);
 \echo '--- count: pass under the live fence (expect INSERT 0 2); model_versions_one_active_excl must not fire'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
@@ -232,8 +231,8 @@ SELECT id AS m50 FROM matches WHERE seed = 50 \gset
 UPDATE matches SET status = 'failed', fault_reason = 'HASH_MISMATCH', fault_seat = 0,
        claim_token = NULL, lease_expires_at = NULL, closed_at = now()
  WHERE id = :'m50';
-EXECUTE c_verdicts;
-EXECUTE c_decide (5, 3);
+\echo '--- count: batch document (expect n 2: the fold still waiting, then the verdict on v3 -- decision reject, reason FAULT:HASH_MISMATCH)'
+EXECUTE c_batch_doc (10, 3);
 EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'HASH_MISMATCH');
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
@@ -323,7 +322,7 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
    '1.8.1', '{"in": ["scatter"]}');
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
-\echo '--- jodi/docs/design.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on preset 1 (expect n 1, 2 seats)'
+\echo '--- docs/clocks.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on preset 1 (expect n 1, 2 seats)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
   '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
 \echo '--- decision 14: the preset decides the seat count. Only one baseline exists here, so a 4-seat map is left unpaired rather than seated short (expect n 0)'
@@ -345,7 +344,7 @@ SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
-\echo '--- jodi/docs/design.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
+\echo '--- docs/clocks.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
 \echo '    decision 28: the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight -- it used to read state baseline, want 0)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
   '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
