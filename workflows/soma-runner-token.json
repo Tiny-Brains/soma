@@ -1,0 +1,168 @@
+{
+  "workflow_id": "soma-runner-token",
+  "name": "Exchange a runner key for a token",
+  "description": "The only unauthenticated runner route, and the only one that ever sees the long-lived key: it is presented once every ten minutes to one route and never accompanies a match write, so the credential that can finish a match is the short-lived one. A RUNNER SELF-REGISTERS RATHER THAN BEING ENROLLED -- the upsert on (key_id, label) means 'start a runner' is copy the key and run the image, and a second machine on the same key is simply a second row. The upsert deliberately does NOT clear revoked_at: a revoked runner may keep announcing itself, and it keeps being refused, because resurrection by reconnection would make revocation advisory. Refusals are 401 for a key that matches no live admin's live key and 409 for a node whose ops_budget disagrees with the season -- the second is a misconfiguration check and is worth exactly that, because with trusted operators misconfiguration is what actually happens.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "and": [{ "var": "data.req.key" }, { "var": "data.req.label" }] } },
+        "status": 400,
+        "body": { "error": "key_and_label_required" },
+        "name": "A runner names itself",
+        "description": "The label is the machine's own name and is half the upsert key, so it is required rather than defaulted: a runner that did not say which machine it is would take over another one's row."
+      }
+    },
+    {
+      "id": "digest",
+      "name": "Hash the presented key",
+      "function": {
+        "name": "crypto",
+        "input": {
+          "op": "hash",
+          "algorithm": "sha256",
+          "data": { "var": "data.req.key" },
+          "encoding": "hex",
+          "output": "temp_data.key_hash"
+        }
+      }
+    },
+    {
+      "id": "register",
+      "name": "Register this runner",
+      "description": "An invalid key matches no row and writes nothing, so the refusal needs no separate lookup and this statement never has to branch on whether the key existed. The JOIN to a live admin is inside the statement rather than in a guard task -- a JSONLogic guard fails OPEN if it is ever wrong, and a JOIN cannot be forgotten.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO runners (key_id, label, engine_digest, node_version, orion_version, ops_budget, arch, last_seen_at) SELECT k.id, btrim(($2)::text), ($3)::text, ($4)::text, ($5)::text, ($6)::bigint, ($7)::text, now() FROM runner_keys k JOIN users u ON u.id = k.user_id AND u.role = 'admin' WHERE k.key_hash = ($1)::text AND k.revoked_at IS NULL AND btrim(($2)::text) <> '' ON CONFLICT (key_id, label) DO UPDATE SET engine_digest = EXCLUDED.engine_digest, node_version = EXCLUDED.node_version, orion_version = EXCLUDED.orion_version, ops_budget = EXCLUDED.ops_budget, arch = EXCLUDED.arch, last_seen_at = now()",
+          "params": [
+            { "var": "temp_data.key_hash" },
+            { "var": "data.req.label" },
+            { "var": "data.req.engine_digest" },
+            { "var": "data.req.node_version" },
+            { "var": "data.req.orion_version" },
+            { "var": "data.req.ops_budget" },
+            { "var": "data.req.arch" }
+          ],
+          "output": "temp_data.registered"
+        }
+      }
+    },
+    {
+      "id": "identify",
+      "name": "Read the runner back",
+      "description": "Through live_runners, so a revoked key, a revoked runner, a deleted user or an admin who is no longer one all answer nothing here -- the same read the eight match statements make, asked once at the door. ops_required is the tightest adapter_ops_max any live season declares; a deployment running one game has exactly one.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('runner_id', lr.id, 'key_id', lr.key_id, 'label', lr.label, 'max_in_flight', lr.max_in_flight, 'ops_budget', r.ops_budget, 'ops_required', (SELECT min((s.rules -> 'graph' ->> 'adapter_ops_max')::bigint) FROM seasons s WHERE s.closed_at IS NULL AND coalesce((s.rules -> 'graph' ->> 'enabled')::bool, false) AND s.rules -> 'graph' ->> 'adapter_ops_max' IS NOT NULL)) AS body FROM live_runners lr JOIN runners r ON r.id = lr.id JOIN runner_keys k ON k.id = lr.key_id WHERE k.key_hash = ($1)::text AND lr.label = btrim(($2)::text)",
+          "params": [{ "var": "temp_data.key_hash" }, { "var": "data.req.label" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 401,
+        "body": { "error": "invalid_key" },
+        "name": "No live runner",
+        "description": "One answer for a key that never existed, a key that was revoked, a runner that was revoked and an owner who is no longer an admin. They are one refusal on purpose: telling them apart would tell an anonymous caller which keys are real."
+      }
+    },
+    {
+      "id": "misconfigured",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "temp_data.rows.0.body.ops_required" } },
+            {
+              "!=": [
+                { "var": "temp_data.rows.0.body.ops_budget" },
+                { "var": "temp_data.rows.0.body.ops_required" }
+              ]
+            }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "ops_budget_mismatch",
+          "detail": {
+            "reported": { "var": "temp_data.rows.0.body.ops_budget" },
+            "required": { "var": "temp_data.rows.0.body.ops_required" }
+          }
+        },
+        "name": "The node's budget is not the season's",
+        "description": "engine.ops_budget is Orion INSTANCE config and cannot ride the claim response the way turn_ms does, so it is self-reported and checked here. A node admitted under one ceiling and playing under another strikes seats for a rule nobody wrote down; refusing the token is how that becomes a message instead of a mystery."
+      }
+    },
+    {
+      "id": "touch",
+      "name": "Stamp the key as used",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE runner_keys SET last_used_at = now() WHERE key_hash = ($1)::text",
+          "params": [{ "var": "temp_data.key_hash" }],
+          "output": "temp_data.touched"
+        }
+      }
+    },
+    {
+      "id": "token",
+      "name": "Mint the runner token",
+      "description": "TEN MINUTES, and the audience is what separates the two token families: aud 'runner' signed with RUNNER_TOKEN_SECRET, browser sessions signed with SOMA_SESSION_SECRET and carrying no audience at all, so a stolen cookie is not a runner and a stolen runner token is not a sign-in. The key id travels as a claim rather than as a `kid` header, because the verifying side lists one unnamed key and header routing would look for a key id that is not there. Expiry is not the revocation mechanism -- live_runners is -- it is the bound on how long a leaked token is worth anything.",
+      "function": {
+        "name": "jwt_sign",
+        "input": {
+          "algorithm": "HS256",
+          "key": "env://RUNNER_TOKEN_SECRET",
+          "claims": {
+            "sub": { "var": "temp_data.rows.0.body.runner_id" },
+            "key_id": { "var": "temp_data.rows.0.body.key_id" },
+            "label": { "var": "temp_data.rows.0.body.label" }
+          },
+          "expires_in": "10m",
+          "issuer": "soma",
+          "audience": "runner",
+          "output": "temp_data.token"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "token": { "var": "temp_data.token" },
+                "expires_in": 600,
+                "runner_id": { "var": "temp_data.rows.0.body.runner_id" },
+                "label": { "var": "temp_data.rows.0.body.label" },
+                "max_in_flight": { "var": "temp_data.rows.0.body.max_in_flight" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

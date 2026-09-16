@@ -1,0 +1,70 @@
+{
+  "workflow_id": "soma-runner-release",
+  "name": "Release a claimed match",
+  "description": "NOT A FAULT AND NOT A LAPSE. A runner calls this when it cannot play a row -- the usual cause is a model its own roster clock has not registered yet -- and the row goes back to the queue with a refusal spent rather than a strike. The ceiling is what stops a runner that is permanently behind passing one row round the fleet for ever: at the third refusal the row fails as MODEL_UNAVAILABLE and says so, which is a diagnosable end. refusals and lapses are counted apart because they mean different things about the fleet.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "release",
+      "name": "Release",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE matches SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'MODEL_UNAVAILABLE' END, closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END WHERE id = ($5)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND ($2)::boolean AND played_by = ($4)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid)",
+          "params": [
+            { "var": "data.req.claim_token" },
+            true,
+            { "var": "metadata.vars.refusal_ceiling" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.released"
+        }
+      }
+    },
+    {
+      "id": "lost",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.released.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "claim_lost" },
+        "name": "The claim is gone",
+        "description": "Nothing to release means the row was already taken back -- by the reap, or by another attempt. The runner's answer is the same either way: claim again."
+      }
+    },
+    {
+      "id": "state",
+      "name": "Read what became of the row",
+      "description": "The runner is told whether its refusal was the one that failed the row, because a refusal that ends a match is worth logging loudly at the edge and an ordinary one is not.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('released', true, 'refusals', m.refusals, 'failed', m.status = 'failed', 'fault_reason', m.fault_reason) AS body FROM matches m WHERE m.id = ($1)::uuid",
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

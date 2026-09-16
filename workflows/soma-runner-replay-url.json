@@ -1,0 +1,102 @@
+{
+  "workflow_id": "soma-runner-replay-url",
+  "name": "Sign a PUT for this attempt's replay",
+  "description": "THE ONE CREDENTIAL A RUNNER NO LONGER HOLDS. The replay bucket's secret key used to sit on the replica; now the gate signs and the runner PUTs to whatever URL it is handed, so its storage connector carries nothing. The key is computed HERE, from the claim this deployment issued -- replay_prefix/<match>/<claim_token>.json -- which is strictly better than a runner computing it: a runner cannot write under another attempt's key even by accident.\n\nThe bulk path stops here on purpose. The replay goes straight to the object store and never through this node, because putting a match's envelope through a REST workflow would make one node the throughput bottleneck of the whole ladder for no gain a presigned per-attempt PUT does not already give.\n\nOrdering is presign, PUT, finish, and a runner that dies between the PUT and the finish leaves an orphan blob under a key naming an attempt that never counted -- which is exactly what a per-attempt key is for.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "verify",
+      "name": "Verify the claim",
+      "description": "Signed only for a claim this gate issued and still holds. Without this read the route would sign a writable URL for anyone with a token, which is the one thing a presign must never do.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT m.id AS match_id FROM matches m WHERE m.id = ($1)::uuid AND m.claim_token = ($2)::uuid AND m.status = 'running' AND m.played_by = ($3)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($3)::uuid)",
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "data.req.claim_token" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "lost",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.match_id" } },
+        "status": 409,
+        "body": { "error": "claim_lost" },
+        "name": "The claim is gone",
+        "description": "No claim, no URL. A runner whose lease lapsed mid-match must not be handed somewhere to write the result of a match that has already been returned to the queue."
+      }
+    },
+    {
+      "id": "key",
+      "name": "Name the attempt",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.key",
+              "logic": {
+                "cat": [
+                  { "var": "metadata.vars.replay_prefix" },
+                  "/",
+                  { "var": "metadata.params.id" },
+                  "/",
+                  { "var": "data.req.claim_token" },
+                  ".json"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "presign",
+      "name": "Sign the PUT",
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-runner-blobs",
+          "method": "PUT",
+          "key": { "var": "temp_data.key" },
+          "expires_in": "15m",
+          "output": "temp_data.signed"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "description": "`endpoint` is returned because http_call prefixes its connector's base URL onto the path it is given, so the runner subtracts this from the signed URL. It used to read that value from its own [vars]; sending it means one fewer number that has to be equal in two places.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "url": { "var": "temp_data.signed" },
+                "key": { "var": "temp_data.key" },
+                "endpoint": { "var": "metadata.vars.blob_endpoint" },
+                "expires_in": 900
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

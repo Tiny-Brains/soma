@@ -1,0 +1,55 @@
+{
+  "workflow_id": "soma-runners-list",
+  "name": "List the runners",
+  "description": "Admin only. THE FLEET, not one admin's machines: a runner that is wedged is everyone's problem, so this route is scoped to the deployment rather than to the caller, unlike GET /v1/runner-keys. It answers the two operational questions nothing else can -- which machine is playing, and which machine is holding rows it is not finishing -- which is what matches.played_by exists for. `live` recomputes live_runners' predicate as a field rather than filtering by it, because a revoked runner is exactly the row an operator is looking for.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT coalesce(json_agg(json_build_object('id', r.id, 'label', r.label, 'key_id', r.key_id, 'key_label', k.label, 'key_prefix', k.key_prefix, 'owner', u.handle, 'engine_digest', r.engine_digest, 'node_version', r.node_version, 'orion_version', r.orion_version, 'ops_budget', r.ops_budget, 'arch', r.arch, 'max_in_flight', r.max_in_flight, 'first_seen_at', r.first_seen_at, 'last_seen_at', r.last_seen_at, 'revoked_at', r.revoked_at, 'live', (r.revoked_at IS NULL AND k.revoked_at IS NULL AND u.role = 'admin'), 'in_flight', (SELECT count(*) FROM matches m WHERE m.played_by = r.id AND m.status IN ('claimed', 'running')), 'played', (SELECT count(*) FROM matches m WHERE m.played_by = r.id AND m.status IN ('finished', 'rated'))) ORDER BY r.last_seen_at DESC), '[]'::json) AS body FROM runners r JOIN runner_keys k ON k.id = r.key_id JOIN users u ON u.id = k.user_id",
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

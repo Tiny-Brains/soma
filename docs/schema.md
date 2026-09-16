@@ -448,6 +448,43 @@ hashes are on the seat rows. With `matches_status_shape`, the grant is also what
 of states that are not its: a valid `cancelled` row needs `withdrawn_reason`, a valid `rated` row
 needs `rated_at`, and Kalam can write neither.
 
+### 3.8a `runner_keys` and `runners` — who plays a match
+
+A replica used to be a process holding the `kalam` role, so "which machine played this" was answered
+by which container was up. A runner reaches the platform over `/v1/runner/*` from hardware that may
+be nowhere near the deployment, and these two tables are the whole of its identity.
+
+| | |
+|---|---|
+| `runner_keys` | an admin's credential. A **table**, not a column on `users`, so an admin can hold two and retire one without a gap — rotation with no window in which nothing works |
+| `runners` | one row per running process, **self-registered** at token exchange on `(key_id, label)`. An admin enrols nothing: "start a runner" is copy the key and run the image, and a second machine on the same key is a second row |
+| `live_runners` | the predicate written once — `live_sessions`' argument applied to runners |
+
+**The key is stored as a digest, not as key material.** `key_hash` is sha256 over what the create
+route returned exactly once, so reading this table does not let anyone start a runner and a database
+dump does not include the fleet. `key_prefix` (`tbr_a1b2c3d4`) is display material: enough to
+recognise a key in a list, useless to present. The lookup is still one indexed probe because the
+digest is deterministic — a salted password hash would have forced a scan and a verify per row, for
+256 bits of machine-generated randomness that does not need stretching.
+
+**`live_runners` is the revocation mechanism, and expiry is not.** A runner's token lasts ten
+minutes, but every match statement JOINs this view, so a revoked key, a revoked runner, a deleted
+user **or an admin who is no longer one** all end the runner's next call rather than its next
+token. It is the rule Soma's admin routes already follow by reading `role` off the live row instead
+of off a cookie claim.
+
+The token exchange upserts on `(key_id, label)` and deliberately **does not clear `revoked_at`**: a
+revoked machine may keep announcing itself, and it keeps being refused. Resurrection by reconnection
+would make revocation advisory.
+
+**Neither `jodi` nor `kalam` is granted anything here**, the way neither is granted anything on
+`sessions`. Runner identity is Soma's auth surface: a replica has no more business reading who may
+start a runner than reading who may sign in.
+
+`matches.played_by` names the runner, written once at claim. It is not a security control — the
+operator is an admin — it is how "which machine is wedged" is answerable at all, and the reap does
+not clear it, so a lapsed attempt keeps the attribution of the machine that lost it.
+
 ### 3.9 Seeds
 
 `games.active_engine_digest = 'sha256:placeholder'` for `ants`, overwritten by the deploy step;
@@ -498,13 +535,35 @@ so Soma's rendering of a forfeit depended on a number in another package's confi
 
 ---
 
-## 4. Kalam's statements
+## 4. The match statements, and the routes in front of them
 
-Every one conditioned on the claim token, so a stale attempt updates nothing (principle 4).
-Parameters: `$engine` from `[vars]`, `$resident` from the loader, `$K` and `$lease` from Kalam,
-`$token` minted per claim with `{"random": ["uuid"]}`.
+**These eight statements ship from `soma/workflows/soma-runner-*.json`.** They used to live in
+`kalam/scripts/gen-kalam.py` and run on a replica's own database connection; a replica now reaches
+them over `/v1/runner/*` and holds no credential at all. Nothing about what they *do* changed in the
+move — every property below was bought by a finding in `devops/docs/decisions.md` §2 and each one
+survives byte for byte — but three predicates were added, all about the caller rather than the
+match, and §4a is the routes.
 
-### 4.1 Reap — `db_write`, first task of every claim occurrence
+**The copies in this file are formatted for reading and are not the authority.** The authority is
+the workflow JSON; `scripts/verify/statements.sql` carries a verbatim copy, and
+`scripts/verify/run.sh` refuses to run if the two differ. That check exists because this page and
+that harness both carried the pre-R7 two-CTE wave claim for months after a one-row claim shipped,
+and nothing noticed.
+
+Every statement is conditioned on the claim token, so a stale attempt updates nothing (principle 4).
+`$token` is minted **by the gate** with `{"random": ["uuid"]}` — it used to be minted by the runner,
+which was safe inside one trust domain and is better central now that a runner is elsewhere: two
+runners cannot collide on a token they did not choose.
+
+**The three additions**, and they are the whole of what moving off-site cost the SQL:
+
+| Added | To | Why |
+|---|---|---|
+| `EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = $runner)` | every statement | revocation and demotion take effect on the next call. Inside the statement, never as a guard task: a JSONLogic guard fails **open** if it is ever wrong, and a JOIN cannot be forgotten |
+| the in-flight count against `runners.max_in_flight` | claim | a wedged machine can otherwise sit on rows until their leases lapse. Uncorrelated, so it is an InitPlan evaluated once per claim rather than per candidate row |
+| `played_by = $runner` | claim, and read by the rest | which machine played this, and which machine is wedged. Without it the fleet is unobservable |
+
+### 4.1 Reap — `db_write`, its own cron channel
 
 ```sql
 UPDATE matches
@@ -519,234 +578,284 @@ UPDATE matches
 ```
 
 Its own statement rather than a CTE inside the claim, because a CTE's writes are invisible to the
-claim in the same snapshot: folded in, a reaped row would wait one more poll to be claimed. Two
-round trips per poll is the cost; the claim-under-load spike prices it, and folding is a
-one-line change if it matters. `rows_affected` is worth a metric: it counts crashes.
+claim in the same snapshot: folded in, a reaped row would wait one more poll to be claimed.
 
-### 4.2 Claim — `db_write`
+**It is no longer every caller's first task.** It was, and that cost was invisible in cluster: at N
+runners polling four lanes it is 0.8N reaps a second, each scanning an index whose size is itself
+proportional to N — quadratic work for a statement that normally matches nothing. `soma-runner-reap`
+runs it once a second in one place instead. That is only *one* place because Soma's Orion is in
+**cluster mode**, where a cron singleton is singular across the state database — the exact property
+a Kalam replica must never have, which is why a replica has no `[cluster]` block.
+
+`rows_affected` is worth a metric: in cluster it counted crashes. Off-site it counts sleeping
+laptops, dropped home links and closed terminals, and it will be routine rather than exceptional.
+`played_by` is deliberately **not** cleared, so a lapsed attempt keeps the attribution of the
+machine that lost it.
+
+### 4.2 Claim — `db_write`, one row
 
 ```sql
-WITH first AS MATERIALIZED (
-    SELECT m.id, m.preset
-      FROM matches m
+WITH pick AS MATERIALIZED (
+    SELECT m.id FROM matches m
      WHERE m.status = 'pending' AND m.engine_digest = ($1)::text
-     ORDER BY (m.trial_version_id IS NOT NULL) DESC,                    -- trials first
-              EXISTS (SELECT 1 FROM match_seats s                      -- then what this loader holds
-                       WHERE s.match_id = m.id
-                         AND s.weights_hash = ANY (($2)::text[])) DESC,
-              m.created_at, m.id
-     LIMIT 1
-       FOR UPDATE SKIP LOCKED
-), wave AS MATERIALIZED (
-    SELECT m.id
-      FROM matches m, first f
-     WHERE m.status = 'pending' AND m.engine_digest = ($1)::text
-       AND m.preset = f.preset                                          -- one preset per wave (decision 18)
-       AND (m.id = f.id
-            OR EXISTS (SELECT 1 FROM match_seats a                      -- rows sharing the first row's models
-                         JOIN match_seats b ON b.weights_hash = a.weights_hash
-                        WHERE a.match_id = f.id AND b.match_id = m.id))
-     ORDER BY (m.id = f.id) DESC, (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id
-     LIMIT ($3)::int
-       FOR UPDATE OF m SKIP LOCKED
-)
+       AND m.seat_count <= ($4)::int
+       AND EXISTS (SELECT 1 FROM live_runners lr
+                    WHERE lr.id = ($5)::uuid
+                      AND (SELECT count(*) FROM matches h
+                            WHERE h.played_by = ($5)::uuid
+                              AND h.status IN ('claimed', 'running')) < lr.max_in_flight)
+     ORDER BY (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id
+     LIMIT 1 FOR UPDATE SKIP LOCKED)
 UPDATE matches m
-   SET status           = 'claimed',
-       claim_token      = ($4)::uuid,
-       lease_expires_at = now() + ($5)::int * interval '1 second'
-  FROM wave
- WHERE m.id = wave.id
+   SET status = 'claimed', claim_token = ($2)::uuid,
+       lease_expires_at = now() + ($3)::int * interval '1 second',
+       played_by = ($5)::uuid
+  FROM pick WHERE m.id = pick.id
 ```
 
-`$1` engine digest · `$2` resident weights hashes, `text[]` · `$3` K · `$4` token · `$5` lease
-seconds. Trial priority and affinity choose the first row; the wave is filled with rows that share
-its models and its preset, so one inference serves the wave by construction (finding 9–11).
-`SKIP LOCKED` is the whole of coordination between replicas. `rows_affected` is the wave size;
-zero ends the run.
+`$1` the engine digest the caller can play · `$2` the token · `$3` lease seconds · `$4` how many
+seats its task list has · `$5` the runner.
 
-### 4.3 Read the wave — `db_read`
+**This is the only coordinator there is.** `FOR UPDATE SKIP LOCKED` with `LIMIT 1`: a caller takes
+the oldest row nobody else holds, trials first. Two callers racing do not queue behind each other —
+the second skips the locked row and takes the next — and Postgres is the arbiter whether they are
+four cron lanes in one process or forty across ten machines. There is no scheduler, no assignment
+table and no registry consulted at pairing time, which is what keeps decision R8 true: **Jodi never
+calls a replica.** An assigning coordinator would need a liveness model and a rebalancer for a
+machine that vanishes mid-match; pull-plus-lease is self-healing instead, because a runner that has
+vanished is indistinguishable from one that is slow and the lease resolves both by the same
+statement with nobody having to decide which it was.
 
-> **REVISED BY THE BUILD, 8 September 2026: this is TWO reads, and it has to be.** The statement
-> below reads the *claimed* rows, and Kalam §4.1 asked it to number them. It cannot do both jobs
-> at once, because the barrier between them changes which rows there are: a row refused by the
-> loader is released or failed, and if `m` was assigned before that, the engine — which indexes its
-> matches `0..n_started-1` — and the refs — which still carry `0..n_claimed-1` — disagree. `observe`
-> matches a ref on `(m, seat)`, so the mismatch is silent: every view arrives with no ref, the play
-> row names no model, and the wave plays a thousand turns against nothing. So:
->
-> * **before the barrier**, one read of the wave's *models*, which is all the hold needs and needs
->   no numbering at all:
->
->   ```sql
->   SELECT DISTINCT s.weights_hash, s.manifest_hash
->     FROM matches m JOIN match_seats s ON s.match_id = m.id
->    WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'
->    ORDER BY s.weights_hash, s.manifest_hash
->   ```
->
-> * **after `start`**, the numbered read, filtered on `'running'` so `m` numbers exactly the rows
->   that will be played, with `m` repeated onto every seat because the refs are a flat list matched
->   on `(m, seat)`:
->
->   ```sql
->   WITH w AS (
->       SELECT m.id, m.seed, m.preset, m.seat_count, m.trial_version_id,
->              (row_number() OVER (ORDER BY m.id) - 1)::int AS m
->         FROM matches m
->        WHERE m.claim_token = ($1)::uuid AND m.status = 'running'
->   )
->   SELECT json_build_object('m', w.m, 'id', w.id, 'seed', w.seed, 'preset', w.preset,
->            'seat_count', w.seat_count, 'trial_version_id', w.trial_version_id,
->            'seats', (SELECT json_agg(json_build_object('m', w.m, 'seat', s.seat,
->                         'model_id', s.version_id, 'weights_hash', s.weights_hash,
->                         'manifest_hash', s.manifest_hash) ORDER BY s.seat)
->                        FROM match_seats s WHERE s.match_id = w.id)) AS row
->     FROM w ORDER BY w.m
->   ```
->
-> Both ship in `kalam/workflows/tb-wave-run.json` and are PREPAREd by `kalam/scripts/check-sql.sh`.
-> The form below is kept because it is what the two were derived from.
+`seat_count <= $4` is the refusal that must stay: a seat is a task and the task list is fixed, so a
+6-player preset claimed by a 4-lane runner would be a match played short a seat. Refusing to claim
+is visible in the queue; playing it short is a match nobody can explain.
+
+The queue partitions on `engine_digest` for free, which is what makes a mixed-engine rollout work.
+
+### 4.3 Read the claimed row — `db_read`
 
 ```sql
 SELECT json_build_object(
-         'id', m.id, 'seed', m.seed, 'preset', m.preset, 'trial_version_id', m.trial_version_id,
+         'id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count,
+         'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling,
          'seats', (SELECT json_agg(json_build_object(
-                      'seat', s.seat, 'model_id', s.version_id,
-                      'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash)
-                    ORDER BY s.seat)
-                     FROM match_seats s WHERE s.match_id = m.id)
-       ) AS row
+                     'm', 0, 'seat', s.seat, 'version_id', s.version_id,
+                     'model', ($2)::text || s.version_id::text,
+                     'strike_ceiling', m.strike_ceiling,
+                     'weights_hash', s.weights_hash,
+                     'manifest_hash', s.manifest_hash) ORDER BY s.seat)
+                    FROM match_seats s WHERE s.match_id = m.id)) AS row,
+       m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at
   FROM matches m
  WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'
- ORDER BY m.id
 ```
 
-Postgres builds the shape, as every Soma read does; the workflow decodes no arrays.
+Read back only under the token AND `status = 'claimed'`, so a runner that lost its claim between the
+two statements plays nothing. One row, so no `row_number()`: the engine's wave still has an `m` and
+it is 0 for the whole run.
 
-### 4.4 Start, release, fail — after the residency barrier
+`model` is **derived** rather than stored — the version id is the model id (R9), so a row and a node
+cannot disagree about what to call a model. `weights_hash` and `manifest_hash` are carried for the
+replay envelope: the record of what was paired, not what the version row says today.
 
-> **REVISED BY THE BUILD, 8 September 2026: the barrier's unit is a MODEL, not a row.** All three
-> statements below take `id = ANY(($2)::uuid[])`, which assumes the workflow can turn "the loader
-> refused this model" into "these rows seat it". It cannot: the loader answers about
-> `(weights_hash, manifest_hash)` pairs, and joining a refused pair back to the rows that name it is
-> a join from element scope into root scope — the one thing this JSONLogic dialect has no way to
-> express (`03-spike/FINDINGS.md` §2.6). Postgres does the join instead, which also makes `start`
-> need no list at all:
->
-> ```sql
-> -- release: $2 is the refused weights hashes, text[]
-> UPDATE matches SET … WHERE claim_token = ($1)::uuid AND status = 'claimed'
->    AND EXISTS (SELECT 1 FROM match_seats s
->                 WHERE s.match_id = matches.id AND s.weights_hash = ANY (($2)::text[]))
->
-> -- fail, set-valued: $2 is [{weights_hash, reason}], and DISTINCT ON picks the lowest
-> -- offending seat when a row has more than one
-> UPDATE matches m SET status = 'failed', fault_reason = x.reason, fault_seat = x.seat,
->        closed_at = now(), lease_expires_at = NULL
->   FROM (SELECT DISTINCT ON (s.match_id) s.match_id, s.seat, v.reason
->           FROM jsonb_to_recordset(($2)::jsonb) AS v (weights_hash text, reason text)
->           JOIN match_seats s ON s.weights_hash = v.weights_hash
->          ORDER BY s.match_id, s.seat) AS x
->  WHERE m.id = x.match_id AND m.claim_token = ($1)::uuid AND m.status = 'claimed'
->
-> -- start: everything still claimed once those two have run
-> UPDATE matches SET status = 'running' WHERE claim_token = ($1)::uuid AND status = 'claimed'
-> ```
->
-> This is also Kalam §4.2's ask for a set-valued named-fault statement, answered in a better
-> shape than the one it asked for. The single-row form stays correct for a fault attributed
-> mid-play — though a `model_infer` failure is classified by Orion's own fault categories, so there is at
-> present no signal to attribute one on.
+**`row` is the one object that must not change shape.** It is what a replica reads today, and
+proving the HTTP move did not touch how a match is played means comparing it. The two values the
+route also needs — the lease it just took and the digest the row demands — ride beside it as their
+own columns rather than being folded in.
+
+### 4.4 Start and release
 
 ```sql
--- the rows the loader holds
+-- start
 UPDATE matches SET status = 'running'
- WHERE claim_token = ($1)::uuid AND status = 'claimed' AND id = ANY (($2)::uuid[])
+ WHERE id = ($3)::uuid AND claim_token = ($1)::uuid AND status = 'claimed'
+   AND played_by = ($2)::uuid
+   AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($2)::uuid)
+
+-- release: NOT a fault and NOT a lapse
+UPDATE matches
+   SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status,
+       refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL,
+       fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'MODEL_UNAVAILABLE' END,
+       closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END
+ WHERE id = ($5)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND ($2)::boolean
+   AND played_by = ($4)::uuid
+   AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid)
 ```
 
-```sql
--- refused for want of memory: back to the queue, no lapse spent, under its own ceiling
-UPDATE matches
-   SET status           = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status,
-       refusals         = refusals + 1,
-       claim_token      = NULL,
-       lease_expires_at = NULL,
-       fault_reason     = CASE WHEN refusals + 1 >= ($3)::int THEN 'UNLOADABLE' END,
-       closed_at        = CASE WHEN refusals + 1 >= ($3)::int THEN now() END
- WHERE claim_token = ($1)::uuid AND status = 'claimed' AND id = ANY (($2)::uuid[])
-```
+The barrier between the read and the start is **local to the runner** and costs nothing at either
+end, which is why claim and start are two routes rather than one.
 
-```sql
--- refused by name, or a fault mid-play that Kalam can attribute: failed at once, with the seat
-UPDATE matches
-   SET status               = 'failed',
-       fault_reason         = ($3)::text,
-       fault_seat           = ($4)::smallint,
-       closed_at            = now(),
-       engine_digest_played = ($5)::text,
-       orion_version = ($6)::text,
-       lease_expires_at     = NULL
- WHERE claim_token = ($1)::uuid AND id = ($2)::uuid AND status IN ('claimed', 'running')
-```
+Release is what a runner calls when its own roster clock has not caught up with a model the row
+seats. The row goes back to the queue with a **refusal** spent rather than a strike, and `refusals`
+is counted apart from `lapses` because the two mean different things about the fleet. At the ceiling
+the row fails as `MODEL_UNAVAILABLE`, which is what stops a runner that is permanently behind
+passing one row round the fleet for ever.
+
+> **A ninth statement is gone.** `K_FAIL` failed a whole wave by weights hash, needed because the
+> loader answered about `(weights_hash, manifest_hash)` pairs and a workflow could not join that
+> back to rows. The wave went with R7 and the loader went with the 1.8.1 rebuild, and a fault on a
+> seat is reported through the finish now. `scripts/verify/scenario.sql` sets that state with a
+> plain `UPDATE`, marked as setup rather than as a statement under test.
 
 ### 4.5 Renew — every N turns
 
 ```sql
-UPDATE matches
-   SET lease_expires_at = now() + ($2)::int * interval '1 second'
- WHERE claim_token = ($1)::uuid AND status = 'running'
+UPDATE matches SET lease_expires_at = now() + ($2)::int * interval '1 second'
+ WHERE id = ($4)::uuid AND claim_token = ($1)::uuid AND status = 'running'
+   AND played_by = ($3)::uuid
+   AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($3)::uuid)
 ```
 
-Zero rows: the lease was reaped and the wave belongs to someone else — halt and release the
-models (finding 7b). Fewer rows than live matches is Kalam's to rule on. This is the statement
-the fill factor exists for: no indexed column changes, so it is heap-only.
+**The lease has always been the database's clock**, and that is what makes moving the caller onto a
+machine whose clock nobody controls free: the runner never sends a timestamp. No indexed column
+changes, so the update stays heap-only — the reason `matches` carries `fillfactor = 70` and the
+reason `lease_expires_at` is deliberately unindexed (§3.7).
 
-### 4.6 Finish — one statement per row, as its match ends
+**What changed is the answer, not the statement.** In cluster, `halt_unless(wrote(renewed))` was
+right: a renew that wrote nothing meant the claim was gone. Over a WAN a renew that *errored* means
+almost nothing, and the two must be told apart — so the route answers `200 {applied, lease_expires_at}`
+and lets the runner decide. `applied: false` is the claim genuinely gone: halt. A transport failure
+is a retry, and the margin for retrying is the ratio the two numbers must keep:
+
+> `renew_every_n_turns × turn_ms × 3 < lease_seconds`
+
+The response returns the new `lease_expires_at` because the runner now needs its own runway, which
+in cluster it never had to know.
+
+### 4.6 Finish — one statement, as the match ends
 
 ```sql
 WITH m AS (
     UPDATE matches
-       SET status               = 'finished',
-           reason               = ($4)::text,
-           turns                = ($5)::int,
-           played_ms            = ($6)::int,
-           engine_digest_played = ($7)::text,
-           orion_version = ($8)::text,
-           replay_key           = ($9)::text,
-           played_at            = now(),
-           lease_expires_at     = NULL
+       SET status = 'finished', reason = ($4)::text, turns = ($5)::int,
+           played_ms = GREATEST(0, (EXTRACT(EPOCH FROM (now() - ($6)::timestamptz)) * 1000)::int),
+           engine_digest_played = ($7)::text, orion_version = ($8)::text,
+           replay_key = ($9)::text, played_at = now(), lease_expires_at = NULL
      WHERE id = ($2)::uuid AND claim_token = ($1)::uuid AND status = 'running'
-       AND (SELECT count(DISTINCT v.seat)                                -- the result names every seat once
-              FROM jsonb_to_recordset(($3)::jsonb) AS v (seat smallint)
+       AND played_by = ($10)::uuid
+       AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($10)::uuid)
+       AND (SELECT count(DISTINCT v.seat) FROM jsonb_to_recordset(($3)::jsonb) AS v (seat smallint)
              WHERE v.seat BETWEEN 0 AND seat_count - 1) = seat_count
- RETURNING id
-)
+ RETURNING id)
 UPDATE match_seats s
    SET rank = v.rank, score = v.score, strikes = v.strikes,
        infer_us_total = v.infer_us_total, infer_us_max = v.infer_us_max,
        infer_turns = v.infer_turns
-  FROM m,
-       jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int,
-                                             strikes smallint, infer_us_total bigint,
-                                             infer_us_max int, infer_turns int)
+  FROM m, jsonb_to_recordset(($3)::jsonb)
+       AS v (seat smallint, rank smallint, score int, strikes smallint,
+             infer_us_total bigint, infer_us_max int, infer_turns int)
  WHERE s.match_id = m.id AND s.seat = v.seat
 ```
 
-> **One change from the build:** `played_ms` is not passed in, it is computed here from a new `$6`
-> — the instant the wave opened, which the workflow captures with Orion's `{"now": []}` and carries
-> in `data`. Postgres has the other end of the subtraction, so it happens where both are exact:
-> `played_ms = GREATEST(0, (EXTRACT(EPOCH FROM (now() - ($6)::timestamptz)) * 1000)::int)`. Every
-> match in a wave opens together, so this is the match's own duration. The later parameters shift
-> by one accordingly.
+`$1` token · `$2` match · `$3` the result, one element per seat · `$4` the engine's end reason ·
+`$5`, `$6` turns and duration · `$7`, `$8` the digests that played it · `$9` the replay key ·
+`$10` the runner.
 
-`$1` token · `$2` match · `$3` the result, one element per seat:
-`[{"seat": 0, "rank": 1, "score": 10, "strikes": 0, "infer_us_total": 78360, "infer_us_max": 1001,
-"infer_turns": 150}, …]`, forfeited seats ranked last (finding
-12.5) · `$4` the engine's end reason · `$5`, `$6` turns and duration · `$7`, `$8` the digests that
-played it · `$9` the replay key. `rows_affected` is `seat_count`; zero means the token is stale or
-the result is malformed, and in both cases nothing was written. The replay `PUT` precedes it under
-a key naming the token, so a stale attempt's blob is an orphan under its own key rather than a
-replacement (finding 7d). `claim_token` stays on the finished row: it is the attempt that counted.
+One statement: the row and all its seats move together or neither does. The seat-count check refuses
+a result naming fewer seats than the match has — that row stays running and the reap returns it to
+the queue, which is recoverable, where a half-written match is not.
+
+The replay `PUT` precedes it under a key naming the token, so a stale attempt's blob is an orphan
+under its own key rather than a replacement (finding 7d). `claim_token` stays on the finished row:
+it is the attempt that counted — and §4a.2 is why that matters more than it used to.
+
+### 4.7 The roster — `db_read`, every tick
+
+The statement is unchanged and is quoted in full in `workflows/soma-runner-roster.json`. Two
+properties are worth repeating here because they are easy to lose in a refactor:
+
+- **`verified` as well as `active`.** A verified version's trial is a real match, paired before
+  promotion, so a runner that waited for `active` could never play the trial that produces it.
+- **The manifest is rebuilt field by field, at the centre.** A competitor's manifest can name a
+  `reference` — the one field that could point outside their own version — and rebuilding the
+  document key by key leaves it nowhere to survive. `name` becomes the platform's model id for the
+  same reason: Orion takes a model's id from the manifest and a competitor's name is not the
+  platform's (R9). **This rebuild must never move to the edge.** It is the reason a malformed
+  manifest cannot reach a node's registration, and it stops being true the moment a runner builds
+  the document itself.
+
+---
+
+## 4a. The routes in front of them
+
+One channel and one workflow per route, Soma's house shape: `sync`, `rest`, `response.mode: shaped`,
+a flat task list ending in `data.body` + `data._orion.response`.
+
+| Route | Statements | Answers |
+|---|---|---|
+| `POST /v1/runner/token` | key lookup, `runners` upsert, `jwt_sign` | `{token, expires_in, runner_id}` |
+| `POST /v1/runner/claim` | 4.2, 4.3 | `200` the row + the execution contract, or **`204`** |
+| `POST /v1/runner/matches/{id}/start` | 4.4 | `{started}` |
+| `POST /v1/runner/matches/{id}/release` | 4.4 | `{released, refusals, failed}` |
+| `POST /v1/runner/matches/{id}/renew` | 4.5 | `{applied, lease_expires_at}` |
+| `POST /v1/runner/matches/{id}/replay-url` | — (`storage_presign` PUT) | `{url, key, endpoint}` |
+| `POST /v1/runner/matches/{id}/finish` | 4.6, then a read-back | `{applied, state}` |
+| `GET  /v1/runner/roster` | 4.7 | the same `body` object it built before |
+| — *(cron, not a route)* | 4.1 | `soma-runner-reap`, once a second |
+
+Five more are admin-facing and session-authed, over `runner_keys` and `runners`:
+`POST`/`GET /v1/runner-keys`, `DELETE /v1/runner-keys/{id}`, `GET /v1/runners`,
+`DELETE /v1/runners/{id}`.
+
+### 4a.1 The claim answers 204, and carries the execution contract
+
+An idle runner polling four lanes every five seconds is 0.8 requests a second **independent of how
+busy the ladder is**, so the idle answer is the one that has to be cheap: one indexed probe and no
+body. It is also the first thing that will strain, and it strains on a number that has nothing to do
+with queue depth.
+
+The 200 carries three objects — `match` (§4.3's `row`), `claim`, and **`contract`**:
+
+```json
+{ "turn_ms": 1000, "max_turns": 1000, "model_prefix": "tb.v",
+  "engine_digest": "sha256:…", "replay_prefix": "replays",
+  "renew_every_n_turns": 30, "lease_seconds": 300, "refusal_ceiling": 3 }
+```
+
+`strike_ceiling` already worked this way — decision 54 put it on the row so a trial is judged by the
+rule it was played under. This extends the same argument to everything else a match is played under.
+These were `[vars]` on each replica, asserted equal across repositories by
+`devops/scripts/check/configs.sh`, **which cannot read a machine on somebody's desk**: a value that
+must be equal in two places is instead sent from the one place that owns it. `engine_digest` comes
+off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.
+
+Three values cannot ride the row because they are Orion *instance* config rather than workflow data:
+`engine.ops_budget`, `orion_version` and `max_timeout_ms`. A node cannot be told its own ops budget.
+The runner reports them at token exchange and the gate refuses one whose budget is not the season's —
+a misconfiguration check, which is worth exactly that, because with trusted operators
+misconfiguration is what actually happens.
+
+### 4a.2 Finish must be idempotent, because now it can be delivered twice
+
+In cluster this call could not be delivered twice. Over a WAN it can, and §4.6 alone cannot tell "I
+already did this" from "my token is stale" — both are `rows_affected = 0`. A runner that finished,
+lost the response and retried would report a fault on a match it had just completed correctly.
+
+So the route writes and then **reads the row back under the same token**:
+
+| `rows_affected` | row now reads | answer |
+|---|---|---|
+| 1 | finished | `200 {applied: true, state: "finished"}` |
+| 0 | `finished` **and** `claim_token` matches | `200 {applied: false, state: "finished"}` — duplicate delivery, a success |
+| 0 | anything else | `409 {applied: false, state: …}` — the claim really is gone |
+
+This is the "write, then diagnose" shape the package already uses for every refusal, applied to the
+one statement where the ambiguity is new. A route that conflates the two fails a healthy runner
+mid-match.
+
+### 4a.3 What the gate holds so a runner does not
+
+- **The database.** The runner has no connection string. The routes run over `soma-db`, and
+  `0001_init.sql`'s grant block records what that costs: the column-limited `kalam` role is no
+  longer what stops a runner statement writing a rating. Review is.
+- **The replay bucket's write key.** `soma-runner-blobs` is `presign_put` only, and the gate signs
+  for the key **it** computes from the claim it issued — `replay_prefix/{match}/{claim_token}.json`
+  — so a runner cannot write under another attempt's key even by accident. `soma-blobs` stays
+  `presign_get` only: a read connector that can also write is one nobody can reason about.
+- **Nothing on the bulk path.** The replay PUTs straight to the object store. Putting it through a
+  REST workflow would make one node the throughput bottleneck of the whole ladder for no gain a
+  presigned per-attempt URL does not already give.
 
 ---
 

@@ -383,6 +383,89 @@ CREATE TABLE users (
 -- expression index is only a valid arbiter in the exact form it was declared in.
 CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 
+-- ------------------------------------------------------------------- runners
+
+-- WHO PLAYS A MATCH IS NOW A ROW. A replica used to be a process holding the `kalam` Postgres role,
+-- so "which machine played this" was answered by which container was up. A runner reaches the
+-- platform over /v1/runner/* instead, from hardware that may be nowhere near the deployment, and
+-- these two tables are the whole of its identity: a credential an admin holds, and a process that
+-- presented it.
+
+-- An admin's runner credential. A TABLE rather than a column on users, so an admin can hold two
+-- keys and retire one without a gap -- rotation with no window in which nothing works.
+--
+-- HASHED, NOT STORED. `key_hash` is sha256 over the key the create route returned exactly once, so
+-- this table cannot re-mint a credential and reading it is not the same as holding one. That is a
+-- stronger property than the design first asked for -- it wanted the key visible in the admin UI --
+-- and it costs one column: `key_prefix` is display material, enough to recognise a key in a list
+-- and useless to present. The lookup stays a single indexed probe because the hash is
+-- deterministic; a salted password hash would have forced a scan and then a verify.
+CREATE TABLE runner_keys (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+
+    -- The admin's own words: which key this is, so retiring the right one is possible.
+    label        text        NOT NULL,
+
+    key_hash     text        NOT NULL UNIQUE,   -- sha256 of the key, hex
+    key_prefix   text        NOT NULL,          -- 'tbr_a1b2c3d4', the half that may be shown
+
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz,                   -- stamped at each token exchange
+    revoked_at   timestamptz,
+
+    CONSTRAINT runner_keys_label_shape
+        CHECK (btrim(label) <> '' AND length(label) <= 64)
+);
+
+-- One row per running process. SELF-REGISTERED at token exchange on (key_id, label): an admin
+-- enrols nothing, so "start a runner" is copy the key and run the image, and a second runner on the
+-- same key is simply a second row. Removing the enrolment flow is the point -- there is no state a
+-- human has to create before a machine can work.
+CREATE TABLE runners (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    key_id        uuid        NOT NULL REFERENCES runner_keys (id) ON DELETE CASCADE,
+    label         text        NOT NULL,          -- the host's own name, by default
+
+    -- REPORTED AT TOKEN EXCHANGE, and they are facts about a runner rather than authority over one.
+    -- Three values cannot ride the claim response the way turn_ms and max_turns do, because they
+    -- are Orion instance config rather than workflow data: a node cannot be told its own
+    -- ops_budget. So the runner says them and the gate checks what it can -- which is worth doing
+    -- precisely because the operators are trusted: misconfiguration is what actually happens.
+    engine_digest text,
+    node_version  text,
+    orion_version text,                          -- which Orion ran the adapters; a sweep is per upgrade
+    ops_budget    bigint,
+    arch          text,                          -- 'arm64' | 'amd64'; operational, never enforced
+
+    -- How many rows this runner may hold at once. A wedged runner is not an attack -- the operator
+    -- is an admin -- but it can sit on rows until their leases lapse, and one predicate on the
+    -- claim makes that impossible. It is also how a beefier host is allowed sixteen lanes without
+    -- editing a definition anywhere.
+    max_in_flight smallint    NOT NULL DEFAULT 4,
+
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at  timestamptz NOT NULL DEFAULT now(),
+    revoked_at    timestamptz,
+
+    CONSTRAINT runners_max_in_flight_positive CHECK (max_in_flight > 0),
+
+    UNIQUE (key_id, label)
+);
+
+-- live_sessions' argument applied to runners, and it is the same argument: a revoked key, a revoked
+-- runner, a deleted user OR AN ADMIN WHO IS NO LONGER ONE all end the runner's next call. Every
+-- runner statement JOINs this rather than trusting the bearer token it arrived with, so a demotion
+-- takes effect at once -- the rule Soma's admin routes already follow by reading `role` off the
+-- live row instead of off a cookie claim. A JSONLogic guard would fail OPEN if it were ever wrong;
+-- a JOIN cannot be forgotten.
+CREATE VIEW live_runners AS
+    SELECT r.id, r.key_id, r.label, r.max_in_flight, k.user_id
+      FROM runners r
+      JOIN runner_keys k ON k.id = r.key_id AND k.revoked_at IS NULL
+      JOIN users u       ON u.id = k.user_id AND u.role = 'admin'
+     WHERE r.revoked_at IS NULL;
+
 -- --------------------------------------------------------------------- models
 
 -- ONE ROW PER ENTRY, and AN ENTRY IS A NAME. A competitor makes one by naming it; from then on
@@ -603,6 +686,13 @@ CREATE TABLE matches (
     lease_expires_at     timestamptz,
     lapses               smallint     NOT NULL DEFAULT 0,   -- leases that expired mid-play
     refusals             smallint     NOT NULL DEFAULT 0,   -- loader refusals for want of memory
+
+    -- WHICH MACHINE HOLDS IT, written at claim. Not a security control -- a runner is operated by
+    -- an admin -- but without it every operational question about the fleet is unanswerable: which
+    -- machine played this match, and which machine is wedged. Nullable because an in-cluster
+    -- replica claiming over `kalam-db` writes no runner id, and because a reaped row keeps the
+    -- attribution of the attempt that lapsed.
+    played_by            uuid         REFERENCES runners (id),
 
     -- ---- what Kalam reports
     reason               text,        -- free text, never an enum: game-defined
@@ -849,6 +939,13 @@ CREATE UNIQUE INDEX matches_one_live_trial_uniq
 -- how many trials a candidate has had, for the re-pair cap
 CREATE INDEX matches_trial_history_idx
     ON matches (trial_version_id) WHERE trial_version_id IS NOT NULL;
+
+-- How many rows one runner is holding: the claim's in-flight ceiling and nothing else. Partial,
+-- like every other index on this table, and read once per claim as an uncorrelated InitPlan rather
+-- than per candidate row. `played_by` is written ONCE, at claim, so indexing it costs the claim's
+-- page and nothing on the renew path -- which is the same reason lease_expires_at is NOT indexed.
+CREATE INDEX matches_runner_in_flight_idx
+    ON matches (played_by) WHERE status IN ('claimed', 'running');
 
 -- match_seats ---------------------------------------------------------------
 
@@ -1196,6 +1293,21 @@ ALTER TABLE matches SET (fillfactor = 70);
 -- until one is set neither role can log in. Roles are cluster-global while this schema is
 -- per-database, which is why each create is guarded.
 
+-- ONE WRITER IS NOT CONFINED HERE, AND IT IS DELIBERATE. The /v1/runner/* routes run the eight
+-- match statements from inside Soma's package, over `soma-db` -- the OWNER connection. So a runner's
+-- claim, start, renew and finish are executed with full rights, and the column-level grant below is
+-- not what stops one writing a rating; review is. That is a real weakening of the boundary and it
+-- buys one package instead of two.
+--
+-- What still holds: a runner never reaches the database at all. It holds no credential, and every
+-- statement it triggers is one of the eight shipped in soma/workflows/soma-runner-*.json, each
+-- fenced on its claim token. The exposure is a bad statement in this repository, not a bad actor on
+-- a desk -- which is the same class of risk every other Soma route already carries.
+--
+-- Narrowing it later is small and should stay small: a `soma-runner-db` connector on
+-- env://KALAM_DB_URL and a one-word swap in eight workflows. Do not add a grant to the `kalam` role
+-- to make the runner routes work -- if they need one, they are on the wrong connector.
+
 -- Kalam plays matches. It can read the two tables it plays from and write only the columns it
 -- reports, so "Kalam writes no rating" is a fact of the grant: it cannot rate a match, cancel one,
 -- pair one, or touch models, model_versions, ratings, users or clocks at all. It reads
@@ -1221,6 +1333,13 @@ GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
     ON matches TO kalam;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO kalam;
+-- NOT `played_by`: an in-cluster replica writing over kalam-db is not a runner and has no runner id
+-- to name. The column stays null for it, which is exactly the right answer to "which machine".
+
+-- NEITHER ROLE IS GRANTED ANYTHING ON runner_keys, runners OR live_runners, and the absence is
+-- deliberate in the way `sessions` is below: runner identity is Soma's auth surface, the same as
+-- session identity, and a replica has no more business reading who may start a runner than it has
+-- reading who may sign in.
 
 -- Jodi runs the VERSION life cycle -- a smaller claim than it was, now that the entry is a row of
 -- its own. The verbs are DERIVED from jodi/workflows/*.json, and jodi/scripts/check-sql.sh

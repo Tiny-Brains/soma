@@ -1,0 +1,98 @@
+{
+  "workflow_id": "soma-runner-finish",
+  "name": "Finish the match",
+  "description": "ONE STATEMENT: the row and all its seats move together or neither does. The seat-count check refuses a result naming fewer seats than the match has -- that row stays running and the reap returns it to the queue, which is recoverable, where a half-written match is not.\n\nIDEMPOTENT UNDER A DUPLICATE DELIVERY, WHICH IS NEW AND NECESSARY. In cluster this call could not be delivered twice; over a WAN it can, and the old statement alone cannot tell 'I already did this' from 'my token is stale' -- both are rows_affected = 0. A runner that finished correctly, lost the response and retried would have reported a fault on a match it had just completed. So the route writes and then READS BACK under the same token: finished-and-mine is a success with applied:false, and anything else is a 409. The two must stay distinguishable in the response or a healthy runner fails mid-match.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "finish",
+      "name": "Finish the row and its seats",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH m AS (UPDATE matches SET status = 'finished', reason = ($4)::text, turns = ($5)::int, played_ms = GREATEST(0, (EXTRACT(EPOCH FROM (now() - ($6)::timestamptz)) * 1000)::int), engine_digest_played = ($7)::text, orion_version = ($8)::text, replay_key = ($9)::text, played_at = now(), lease_expires_at = NULL WHERE id = ($2)::uuid AND claim_token = ($1)::uuid AND status = 'running' AND played_by = ($10)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($10)::uuid) AND (SELECT count(DISTINCT v.seat) FROM jsonb_to_recordset(($3)::jsonb) AS v (seat smallint) WHERE v.seat BETWEEN 0 AND seat_count - 1) = seat_count RETURNING id) UPDATE match_seats s SET rank = v.rank, score = v.score, strikes = v.strikes, infer_us_total = v.infer_us_total, infer_us_max = v.infer_us_max, infer_turns = v.infer_turns FROM m, jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int, strikes smallint, infer_us_total bigint, infer_us_max int, infer_turns int) WHERE s.match_id = m.id AND s.seat = v.seat",
+          "params": [
+            { "var": "data.req.claim_token" },
+            { "var": "metadata.params.id" },
+            { "var": "data.req.result" },
+            { "var": "data.req.reason" },
+            { "var": "data.req.turns" },
+            { "var": "data.req.opened_at" },
+            { "var": "data.req.engine_digest" },
+            { "var": "data.req.orion_version" },
+            { "var": "data.req.replay_key" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "state",
+      "name": "Diagnose what the row says now",
+      "description": "Runs only when the write moved nothing, and asks the one question that separates the two zero-row cases: is this row finished AND still carrying my token.",
+      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('state', m.status, 'mine', (m.claim_token = ($2)::uuid), 'replay_key', m.replay_key) AS body FROM matches m WHERE m.id = ($1)::uuid",
+          "params": [{ "var": "metadata.params.id" }, { "var": "data.req.claim_token" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "conflict",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            {
+              "!": {
+                "and": [
+                  { "==": [{ "var": "temp_data.why.0.body.state" }, "finished"] },
+                  { "!!": { "var": "temp_data.why.0.body.mine" } }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "claim_lost",
+          "applied": false,
+          "state": { "var": "temp_data.why.0.body.state" }
+        },
+        "name": "The claim really is gone",
+        "description": "Reached when the row is not finished under this token: a stale attempt, a reaped lease, a partial seat set, a revoked runner. The state is named in the body because a runner's log is the only place this is ever read."
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "applied": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] },
+                "state": "finished"
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

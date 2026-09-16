@@ -39,6 +39,22 @@ INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
   ('20000000-0000-0000-0000-000000000001', 'nano', 30, 4),
   ('20000000-0000-0000-0000-000000000001', 'open', 31, 3.5);
 
+\echo '--- runners: one admin key, two machines self-registered on it, one revoked (expect mini-1, mini-2)'
+-- A runner is not enrolled: it upserts itself on (key_id, label) at token exchange, so these rows
+-- are what that leaves behind. mini-2 is allowed ONE row in flight, which is what the ceiling below
+-- is measured against. The hash is a stand-in: the key itself never reaches the database.
+INSERT INTO users (id, github_id, handle, role)
+VALUES ('00000000-0000-0000-0000-0000000000ad', 9, 'ops', 'admin');
+INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix)
+VALUES ('c0000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000ad',
+        'the fleet', 'sha256:not-a-real-digest', 'tbr_deadbeef');
+INSERT INTO runners (id, key_id, label, engine_digest, max_in_flight) VALUES
+  ('c1000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'mini-1', 'sha256:e1', 4),
+  ('c1000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000001', 'mini-2', 'sha256:e1', 1),
+  ('c1000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001', 'gone',   'sha256:e1', 4);
+UPDATE runners SET revoked_at = now() WHERE id = 'c1000000-0000-0000-0000-000000000003';
+SELECT label, max_in_flight FROM live_runners ORDER BY label;
+
 \echo '--- pair: epoch read; trial insert (expect INSERT 0 2 seats); ranked insert (expect 2); second live trial (expect unique violation)'
 EXECUTE p_epoch;
 EXECUTE p_insert (0, 'ants', 42, 'default',
@@ -63,35 +79,47 @@ SELECT id AS m42 FROM matches WHERE seed = 42 \gset
 SELECT id AS m43 FROM matches WHERE seed = 43 \gset
 SELECT id AS m46 FROM matches WHERE seed = 46 \gset
 
-\echo '--- kalam: reap (expect 0); claim K=8 (expect 2: the trial first, then the same-preset row sharing the baseline)'
+\echo '--- kalam: reap (expect 0); claim ONE row, trials first (expect 1)'
 EXECUTE k_reap;
-EXECUTE k_claim ('sha256:e1', '{}', 8, '30000000-0000-0000-0000-000000000001', 60);
-EXECUTE k_read ('30000000-0000-0000-0000-000000000001');
-\echo '--- kalam: a second replica claims what is left (expect 1: the other-preset row)'
-EXECUTE k_claim ('sha256:e1', '{}', 8, '30000000-0000-0000-0000-000000000002', 60);
-\echo '--- kalam: start (expect 2); renew (expect 2); renew with a foreign token (expect 0)'
-EXECUTE k_start ('30000000-0000-0000-0000-000000000001');
-EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60);
-EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v');
+\echo '--- a second runner takes the NEXT row rather than queueing behind the first: SKIP LOCKED is the only coordinator there is (expect 1)'
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 4, 'c1000000-0000-0000-0000-000000000002');
+\echo '--- the in-flight ceiling: mini-2 is allowed one row, so its next claim takes nothing (expect 0)'
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000003', 60, 4, 'c1000000-0000-0000-0000-000000000002');
+\echo '--- a REVOKED runner claims nothing, however live its token: the check is a JOIN inside the statement (expect 0)'
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 4, 'c1000000-0000-0000-0000-000000000003');
+\echo '--- mini-1 takes the row that is left, and every claim named the machine that took it'
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+SELECT m.seed, r.label AS played_by FROM matches m JOIN runners r ON r.id = m.played_by ORDER BY m.seed;
+\echo '--- kalam: start on ANOTHER runner''s claim (expect 0); start it properly (expect 1 each); renew (expect 1); renew on a foreign token (expect 0)'
+EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000002', :'m42');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001', :'m42');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000002', 'c1000000-0000-0000-0000-000000000002', :'m43');
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60, 'c1000000-0000-0000-0000-000000000001', :'m42');
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60, 'c1000000-0000-0000-0000-000000000001', :'m42');
 \echo '--- kalam: a malformed result naming one seat twice (expect 0, row still running); finish both rows (expect UPDATE 2 seats each); finish again (expect 0)'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":0,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001');
 SELECT seed, status FROM matches WHERE seed = 42;
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json');
-EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json');
-EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m43',
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002');
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002');
+\echo '--- and the read-back that tells a DUPLICATE DELIVERY from a stale token: finished and still mine is a success, not a 409'
+SELECT seed, status AS state, (claim_token = '30000000-0000-0000-0000-000000000002') AS mine FROM matches WHERE seed = 43;
 SELECT m.seed, s.seat, s.rank, s.score, s.strikes FROM match_seats s JOIN matches m ON m.id = s.match_id WHERE m.seed IN (42, 43) ORDER BY m.seed, s.seat;
 \echo '--- kalam: the other replica lapses; reap after expiry (expect 1: back to pending, lapses 1, token cleared)'
-UPDATE matches SET lease_expires_at = now() - interval '1 second' WHERE claim_token = '30000000-0000-0000-0000-000000000002';
+UPDATE matches SET lease_expires_at = now() - interval '1 second' WHERE claim_token = '30000000-0000-0000-0000-000000000005';
 EXECUTE k_reap;
-SELECT seed, status, lapses, claim_token IS NULL AS token_cleared FROM matches WHERE seed = 46;
+SELECT seed, status, lapses, claim_token IS NULL AS token_cleared,
+       played_by IS NOT NULL AS still_attributed FROM matches WHERE seed = 46;
 
 \echo '--- count: fence claim attempt 1 (expect 1); an older occurrence (expect 0); a retry, attempt 2 (expect 1)'
 EXECUTE c_fence ('2026-09-07 10:00:00+00', 1);
@@ -158,24 +186,28 @@ EXECUTE p_insert (1, 'ants', 50, 'default',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
-EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000003', 60);
-EXECUTE k_fail ('30000000-0000-0000-0000-000000000003',
-  '[{"weights_hash":"sha256:wa3","reason":"HASH_MISMATCH"}]');
+-- K_FAIL IS GONE. Kalam shipped a ninth statement that failed a whole wave by weights hash; the
+-- wave went with R7 and the statement with it. A match now fails by the reap's third lapse or the
+-- release ceiling, and a fault on a seat is reported through the finish. So this UPDATE is SETUP,
+-- not a statement under test -- it puts the row in the state count's reject verdict reads.
+UPDATE matches SET status = 'failed', fault_reason = 'HASH_MISMATCH', fault_seat = 0,
+       claim_token = NULL, lease_expires_at = NULL, closed_at = now()
+ WHERE id = :'m50';
 EXECUTE c_verdicts;
 EXECUTE c_decide (5, 3);
 EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'HASH_MISMATCH');
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
-\echo '--- memory refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed UNLOADABLE)'
+\echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed MODEL_UNAVAILABLE)'
 EXECUTE p_insert (2, 'ants', 51, 'default',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
-EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000004', 60);
-EXECUTE k_release ('30000000-0000-0000-0000-000000000004', ARRAY[:'m51'::uuid], 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_release ('30000000-0000-0000-0000-000000000006', true, 5, 'c1000000-0000-0000-0000-000000000001', :'m51');
 SELECT seed, status, refusals, lapses FROM matches WHERE seed = 51;
-EXECUTE k_claim ('sha256:e2', '{}', 8, '30000000-0000-0000-0000-000000000005', 60);
-EXECUTE k_release ('30000000-0000-0000-0000-000000000005', ARRAY[:'m51'::uuid], 2);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_release ('30000000-0000-0000-0000-000000000007', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51');
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 
 \echo '--- soma: a version''s history is one join (expect the rated row 43 for alice v1; the cancelled row 46 is not listed)'
@@ -264,11 +296,11 @@ EXECUTE p_insert (2, 'ants', 60, 'default',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
-EXECUTE k_claim ('sha256:e2', '{}', 1, '30000000-0000-0000-0000-000000000007', 60);
-EXECUTE k_start ('30000000-0000-0000-0000-000000000007');
-EXECUTE k_finish ('30000000-0000-0000-0000-000000000007', :'m60',
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60');
+EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
-  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json');
+  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001');
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;

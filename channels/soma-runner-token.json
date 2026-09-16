@@ -1,0 +1,15 @@
+{
+  "channel_id": "soma-runner-token",
+  "name": "soma-runner-token",
+  "tags": ["pkg:soma"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/runner/token",
+  "workflow_id": "soma-runner-token",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "requests_per_second": 5, "burst": 10 }
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "workflow_id": "soma-runner-claim",
+  "name": "Claim one match",
+  "description": "THE ONLY COORDINATOR THERE IS. No scheduler, no assignment table, no registry consulted at pairing time, and no runner knows another one exists: FOR UPDATE SKIP LOCKED with LIMIT 1 means two runners racing do not queue behind each other -- the second skips the locked row and takes the next -- and Postgres is the arbiter whether the callers are four cron lanes in one process or forty across ten machines. The lease is what recovers a row from a runner that vanished, and it cannot tell that case from a slow one, which is the point: pull-plus-lease is self-healing where an assigning coordinator would need a liveness model and a rebalancer.\n\nTHREE ADDITIONS TO THE STATEMENT KALAM SHIPPED, all about the runner rather than the match. The live_runners EXISTS is the demotion check, inside the statement rather than in a guard task. The in-flight count is the ceiling that stops a wedged machine sitting on rows until their leases lapse -- uncorrelated, so it is an InitPlan evaluated once per claim and not per candidate row. And played_by is written here, at the one moment the answer is known, because without it 'which machine played this' and 'which machine is wedged' are both unanswerable.\n\n204 AND NOT AN EMPTY LIST. An idle runner polling four lanes every five seconds is 0.8 requests a second whatever the ladder is doing, so the idle answer is the one to make cheap: one indexed probe and no body.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": { "and": [{ "var": "data.req.engine_digest" }, { "var": "data.req.seat_count" }] }
+        },
+        "status": 400,
+        "body": { "error": "engine_digest_and_seat_count_required" },
+        "name": "A claim states what it can play",
+        "description": "Both are properties of the caller, not of the queue: the digest partitions the queue so a mixed-engine rollout works at all, and seat_count is how many seats this runner's task list has. A 6-seat preset claimed by a 4-lane runner would be a match played short a seat, which is worse than one nobody claimed."
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the claim token",
+      "description": "MINTED HERE, not by the runner. Off-site that matters: a runner that picks its own token could collide with another's, and a uuid is free to generate at either end. Every later route takes it back in the body and passes it as the fence, so a stale attempt writes nothing and learns so from rows_affected.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.token", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "claim",
+      "name": "Claim one row",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH pick AS MATERIALIZED (SELECT m.id FROM matches m WHERE m.status = 'pending' AND m.engine_digest = ($1)::text AND m.seat_count <= ($4)::int AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($5)::uuid AND (SELECT count(*) FROM matches h WHERE h.played_by = ($5)::uuid AND h.status IN ('claimed', 'running')) < lr.max_in_flight) ORDER BY (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE matches m SET status = 'claimed', claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval '1 second', played_by = ($5)::uuid FROM pick WHERE m.id = pick.id",
+          "params": [
+            { "var": "data.req.engine_digest" },
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "data.req.seat_count" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.claimed"
+        }
+      }
+    },
+    {
+      "id": "row",
+      "name": "Read the claimed row",
+      "description": "Conditioned on the token AND status='claimed', so a runner that lost its claim between the two statements reads nothing rather than playing anyway. `row` is byte-identical to what a replica reads over kalam-db today -- the exit criterion of the whole move -- so the lease and the digest ride beside it as their own columns rather than being folded in.",
+      "condition": { ">": [{ "var": "temp_data.claimed.rows_affected" }, 0] },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count, 'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling, 'seats', (SELECT json_agg(json_build_object('m', 0, 'seat', s.seat, 'version_id', s.version_id, 'model', ($2)::text || s.version_id::text, 'strike_ceiling', m.strike_ceiling, 'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id)) AS row, m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at FROM matches m WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'",
+          "params": [{ "var": "temp_data.token" }, { "var": "metadata.vars.model_prefix" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "idle",
+      "name": "Nothing to play",
+      "description": "204 with no body at all, which is why this is a hand-written terminal rather than the refuse fragment: that fragment declares a body_path, and a 204 carrying a body is not a response anyone should have to reason about. An empty queue is the common case, not an error.",
+      "condition": { "!": { "var": "temp_data.rows.0.row" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "description": "THE CONTRACT RIDES THE ROW. turn_ms, max_turns and the rest used to be [vars] on each replica that devops/scripts/check/configs.sh asserted equal by reading the other repositories -- which cannot read a machine on somebody's desk. Sending them from the one place that owns them deletes that whole class of failure. engine_digest comes off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "match": { "var": "temp_data.rows.0.row" },
+                "contract": {
+                  "turn_ms": { "var": "metadata.vars.turn_ms" },
+                  "max_turns": { "var": "metadata.vars.max_turns" },
+                  "model_prefix": { "var": "metadata.vars.model_prefix" },
+                  "engine_digest": { "var": "temp_data.rows.0.engine_digest" },
+                  "replay_prefix": { "var": "metadata.vars.replay_prefix" },
+                  "renew_every_n_turns": { "var": "metadata.vars.renew_every_n_turns" },
+                  "lease_seconds": { "var": "metadata.vars.lease_seconds" },
+                  "refusal_ceiling": { "var": "metadata.vars.refusal_ceiling" }
+                },
+                "claim": {
+                  "token": { "var": "temp_data.token" },
+                  "lease_expires_at": { "var": "temp_data.rows.0.lease_expires_at" }
+                }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

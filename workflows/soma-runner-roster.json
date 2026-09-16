@@ -1,0 +1,73 @@
+{
+  "workflow_id": "soma-runner-roster",
+  "name": "The roster this runner should carry",
+  "description": "Every version this node should be able to play, with the manifest it was admitted under and where its bytes are. `verified` as well as `active`, because a verified version's trial is a real match paired before promotion, and a runner that waited for `active` could never play the trial that produces it.\n\nTHE MANIFEST IS REBUILT FIELD BY FIELD, and that is a safety property rather than tidiness. A competitor's manifest can name a `reference` -- the one field that could point outside their own version -- and rebuilding the document key by key leaves it nowhere to survive. `name` becomes the platform's model id for the same reason: Orion takes a model's id from the manifest and a competitor's name is not the platform's. This rebuild MUST stay at the centre; moving it to the edge would put a competitor's bytes back on the path to a node's registration.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "alive",
+      "name": "Is this runner still live",
+      "description": "A separate task rather than a predicate inside the roster query, and soma-models-list is the precedent: json_agg with no GROUP BY answers a row whatever it is fed, so a guard folded into the aggregate would turn a dead runner into an empty roster -- which reads as 'register nothing' and is indistinguishable from a quiet ladder.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT lr.id AS runner_ok FROM live_runners lr WHERE lr.id = ($1)::uuid",
+          "params": [{ "var": "metadata.auth.claims.sub" }],
+          "output": "temp_data.who"
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.who.0.runner_ok" } },
+        "status": 401,
+        "body": { "error": "runner_revoked" },
+        "name": "No live runner",
+        "description": "A revoked key, a revoked runner or a demoted owner. 401 rather than 403 because the runner's correct response is to exchange its key again, and that is what a 401 tells it to do."
+      }
+    },
+    {
+      "id": "seen",
+      "name": "Stamp the runner as seen",
+      "description": "The roster tick is the runner's heartbeat -- it is the one call it makes whether or not there is anything to play -- so last_seen_at is stamped here rather than on the claim, where an idle 204 would be doing the same work 0.8 times a second.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE runners SET last_seen_at = now() WHERE id = ($1)::uuid AND last_seen_at < now() - interval '30 seconds'",
+          "params": [{ "var": "metadata.auth.claims.sub" }],
+          "output": "temp_data.seen"
+        }
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('n', count(*), 'items', coalesce(json_agg(json_build_object('model', ($1)::text || v.id::text, 'version_id', v.id, 'digest', v.weights_hash, 'key', v.artifact_key, 'manifest', jsonb_build_object('abi', v.manifest::jsonb -> 'abi', 'name', to_jsonb(($1)::text || v.id::text), 'version', coalesce(v.manifest::jsonb -> 'version', '\"1\"'::jsonb), 'format', coalesce(v.manifest::jsonb -> 'format', '\"onnx\"'::jsonb), 'description', coalesce(v.manifest::jsonb -> 'description', '\"\"'::jsonb), 'inputs', v.manifest::jsonb -> 'inputs', 'outputs', v.manifest::jsonb -> 'outputs', 'probe_dims', coalesce(v.manifest::jsonb -> 'probe_dims', '{}'::jsonb)), 'status', v.status) ORDER BY v.created_at), '[]'::json)) AS body FROM model_versions v WHERE v.status IN ('verified', 'active') AND v.manifest IS NOT NULL AND v.artifact_key IS NOT NULL AND v.weights_hash IS NOT NULL AND EXISTS (SELECT 1 FROM match_seats s WHERE s.version_id = v.id)",
+          "params": [{ "var": "metadata.vars.model_prefix" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

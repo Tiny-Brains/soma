@@ -39,7 +39,11 @@
       "description": "204, and deliberately no body. `auth_request` discards a subrequest body anyway, and a probe that answered with the user's identity would be an unauthenticated way to read it back from anywhere the cookie reaches.",
       "function": {
         "name": "map",
-        "input": { "mappings": [{ "path": "data._orion.response", "logic": { "status": 204 } }] }
+        "input": {
+          "mappings": [
+            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+          ]
+        }
       }
     }
   ]

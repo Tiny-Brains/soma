@@ -7,10 +7,30 @@ between packages, and the constants that must stay equal across them. This file 
 
 ## What this repo ships
 
-No server code. Soma is an Orion **1.8.1** package — 26 channel definitions, 26 workflows, 5
+No server code. Soma is an Orion **1.8.1** package — 40 channel definitions, 40 workflows, 6
 connectors — plus `migrations/`, the Postgres schema **every** TinyBrains package shares. DevOps
 owns the orion-server that hosts it. Behaviour lives in declarative JSON and inline SQL, so lint
 plus the SQL checks are this repo's compiler; there is no test framework and nothing to build.
+
+**Two APIs share the hostname, and the second one is newer than most of this file.** Twenty-six
+routes are the site's, cookie-authed. Thirteen more, plus one clock, are **the runner gate**:
+`/v1/runner/*`, which a Kalam replica calls instead of holding a Postgres role, plus the admin
+routes over `runner_keys` and `runners`. **The eight match statements live here now** — claim,
+start, release, renew, finish, the roster read and the reap — moved out of
+`kalam/scripts/gen-kalam.py` unchanged. Three things about them are not like the rest of the
+package:
+
+- they verify a **bearer JWT with `aud: "runner"`** (`constants.runner_auth`), not the session
+  cookie, and have their own rate constants because `per_user_write_rate` is 1 rps and a claim loop
+  is 0.8;
+- `soma-runner-reap` is the package's **only cron channel**, and it is singular only because Soma's
+  Orion is in cluster mode — the opposite of the rule for a Kalam replica;
+- they run over **`soma-db`, the owner connector**, so the `kalam` role's column grant is not what
+  confines them. That is a deliberate trade, argued on the grant block in `0001_init.sql` and in
+  `README.md`'s What must stay true. A runner statement that wants a new grant on the `kalam` role
+  is a statement on the wrong connector.
+
+`docs/schema.md` §4 and §4a are the statements and the routes; §3.8a is `runner_keys`/`runners`.
 
 `README.md` is the route table, the deployment settings, and the invariants. `docs/schema.md` is
 the schema design **and every statement all three packages run against it** — including Jodi's and
@@ -105,8 +125,11 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
 ## The schema is the interface
 
 - **`migrations/0001_init.sql` is rewritten in place**, not extended with ALTERs — nothing is
-  released. A schema change must pass *every* consumer's `check-sql.sh` (soma, jodi, kalam) before
-  it lands, and `verify/run.sh` walks Jodi's and Kalam's statements too.
+  released. `runner_keys`, `runners`, `live_runners` and `matches.played_by` went in that way rather
+  than as an `0003_`, and `check-sql.sh:29` / `verify/run.sh` hardcode `cat 0001 0002`, so a third
+  file would be invisible to all three. A schema change must pass *every* consumer's
+  `check-sql.sh` (soma, jodi, kalam) before it lands, and `verify/run.sh` walks Jodi's and Kalam's
+  statements too.
 - **A shape many routes return is defined once, in the migration**: `season_json()`,
   `season_state()`, `current_season()`, `model_phase()`, `model_ratings()`, `match_seat_rows()`,
   and the two `season_admits*()` predicates. Six routes return a season; three print a rank; the
@@ -122,6 +145,11 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
 
 ## What breaks if you forget it
 
+- **Never hand-transcribe a statement into `scripts/verify/`.** Both this repo's copies of Kalam's
+  SQL — `docs/schema.md` §4 and `verify/statements.sql` — carried the pre-R7 two-CTE wave claim for
+  months after a one-row claim shipped, so every fence race the harness "proved" was proving a
+  statement that did not exist. `run.sh` now compares `statements.sql` against the shipped workflows
+  and refuses to run on a difference. Regenerate rather than retype.
 - `load-package.sh` retires **by tag** (`pkg:soma`) anything the compiled artifact does not carry,
   so a deleted channel releases its route. Never drop the `"tags": ["pkg:soma"]` from a definition —
   an untagged object survives every reload and holds its route forever.

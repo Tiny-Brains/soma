@@ -100,6 +100,19 @@ check 401 "GET  /v1/me/matches"                  "$BASE/v1/me/matches"
 check 401 "GET  /v1/sessions"                    "$BASE/v1/sessions"
 check 401 "GET  /v1/games/$GAME/submission"      "$BASE/v1/games/$GAME/submission"
 check 401 "POST /v1/submissions"                 -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/submissions"
+check 401 "GET  /v1/runner-keys"                  "$BASE/v1/runner-keys"
+check 401 "GET  /v1/runners"                     "$BASE/v1/runners"
+
+echo "==> the runner routes refuse an anonymous caller and a session cookie alike"
+# The runner family verifies a BEARER token with aud 'runner', signed with a different secret, so a
+# browser session is not a runner -- which is the whole reason the audience is there. Both answer
+# 401 rather than 403: the caller's move in each case is to present a runner token.
+check 401 "POST /v1/runner/claim (anonymous)"    -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/claim"
+check 401 "POST /v1/runner/claim (session)"      -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/claim"
+check 401 "GET  /v1/runner/roster (session)"     "${C[@]}" "$BASE/v1/runner/roster"
+check 400 "POST /v1/runner/token (no key)"       -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/token"
+check 401 "POST /v1/runner/token (bad key)"      -X POST -H 'content-type: application/json' \
+          -d '{"key":"tbr_nope_nope","label":"smoke"}' "$BASE/v1/runner/token"
 
 echo "==> session routes"
 check 200 "GET  /v1/me"                          "${C[@]}" "$BASE/v1/me"
@@ -121,8 +134,15 @@ if [ "$ROLE" = "admin" ]; then
   check 404 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
   check 409 "POST /v1/games/../seasons"          -X POST "${C[@]}" -H 'content-type: application/json' \
             -d '{"submissions_open_at":"2030-01-01T00:00:00Z","submissions_close_at":"2030-03-01T00:00:00Z"}' "$BASE/v1/games/$GAME/seasons"
+  check 200 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
+  check 200 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
+  check 400 "POST /v1/runner-keys (no label)"    -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner-keys"
+  check 404 "DELETE /v1/runner-keys/{unknown}"   -X DELETE "${C[@]}" "$BASE/v1/runner-keys/00000000-0000-0000-0000-000000000000"
+  check 404 "DELETE /v1/runners/{unknown}"       -X DELETE "${C[@]}" "$BASE/v1/runners/00000000-0000-0000-0000-000000000000"
 else
   check 403 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
+  check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
+  check 403 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
 fi
 
 echo

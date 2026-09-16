@@ -3,29 +3,50 @@
 -- a season touches are taken from jodi/scripts/gen-jodi.py's text, so this harness walks what ships.
 -- Parameter types are the casts those documents use.
 
+-- THE EIGHT MATCH STATEMENTS ARE COPIED, VERBATIM, FROM soma/workflows/soma-runner-*.json,
+-- which is where they ship from since the gate moved into this package. They were transcribed
+-- by hand once and went stale without anyone noticing -- this file still carried the pre-R7
+-- two-CTE wave claim, with resident-weights affinity, months after a one-row claim shipped --
+-- so run.sh now asserts the copies are identical rather than trusting that they are.
+
+-- 4.1 reap -- the cron channel's only task, once a second in one place.
+-- workflows/soma-runner-reap.json / reap
 PREPARE k_reap AS
 UPDATE matches SET status = CASE WHEN lapses + 1 >= 3 THEN 'failed' ELSE 'pending' END::match_status, lapses = lapses + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN lapses + 1 >= 3 THEN 'LEASE_LAPSED' END, closed_at = CASE WHEN lapses + 1 >= 3 THEN now() END WHERE status IN ('claimed', 'running') AND lease_expires_at < now();
 
+-- 4.2 claim. $1 engine digest, $2 token, $3 lease seconds, $4 seats the caller can play,
+-- $5 the runner. The last is what the move off-site added: the live_runners EXISTS is the
+-- demotion check and the in-flight count is the ceiling on a wedged machine.
+-- workflows/soma-runner-claim.json / claim
 PREPARE k_claim AS
-WITH first AS MATERIALIZED ( SELECT m.id, m.preset FROM matches m WHERE m.status = 'pending' AND m.engine_digest = ($1)::text ORDER BY (m.trial_version_id IS NOT NULL) DESC, EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.weights_hash = ANY (($2)::text[])) DESC, m.created_at, m.id LIMIT 1 FOR UPDATE SKIP LOCKED ), wave AS MATERIALIZED ( SELECT m.id FROM matches m, first f WHERE m.status = 'pending' AND m.engine_digest = ($1)::text AND m.preset = f.preset AND (m.id = f.id OR EXISTS (SELECT 1 FROM match_seats a JOIN match_seats b ON b.weights_hash = a.weights_hash WHERE a.match_id = f.id AND b.match_id = m.id)) ORDER BY (m.id = f.id) DESC, (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id LIMIT ($3)::int FOR UPDATE OF m SKIP LOCKED ) UPDATE matches m SET status = 'claimed', claim_token = ($4)::uuid, lease_expires_at = now() + ($5)::int * interval '1 second' FROM wave WHERE m.id = wave.id;
+WITH pick AS MATERIALIZED (SELECT m.id FROM matches m WHERE m.status = 'pending' AND m.engine_digest = ($1)::text AND m.seat_count <= ($4)::int AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($5)::uuid AND (SELECT count(*) FROM matches h WHERE h.played_by = ($5)::uuid AND h.status IN ('claimed', 'running')) < lr.max_in_flight) ORDER BY (m.trial_version_id IS NOT NULL) DESC, m.created_at, m.id LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE matches m SET status = 'claimed', claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval '1 second', played_by = ($5)::uuid FROM pick WHERE m.id = pick.id;
 
-PREPARE k_read AS
-WITH w AS ( SELECT m.id, m.seed, m.preset, m.seat_count, m.trial_version_id, m.strike_ceiling, (row_number() OVER (ORDER BY m.id) - 1)::int AS m FROM matches m WHERE m.claim_token = ($1)::uuid AND m.status = 'running' ) SELECT json_build_object( 'm', w.m, 'id', w.id, 'seed', w.seed, 'preset', w.preset, 'seat_count', w.seat_count, 'trial_model_id', w.trial_version_id, 'strike_ceiling', w.strike_ceiling, 'seats', (SELECT json_agg(json_build_object( 'm', w.m, 'seat', s.seat, 'model_id', s.version_id, 'strike_ceiling', w.strike_ceiling, 'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = w.id) ) AS row FROM w ORDER BY w.m;
+-- 4.3 read the claimed row and its seats. $1 claim token, $2 model prefix.
+-- workflows/soma-runner-claim.json / row
+PREPARE k_row AS
+SELECT json_build_object('id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count, 'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling, 'seats', (SELECT json_agg(json_build_object('m', 0, 'seat', s.seat, 'version_id', s.version_id, 'model', ($2)::text || s.version_id::text, 'strike_ceiling', m.strike_ceiling, 'weights_hash', s.weights_hash, 'manifest_hash', s.manifest_hash) ORDER BY s.seat) FROM match_seats s WHERE s.match_id = m.id)) AS row, m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at FROM matches m WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed';
 
+-- 4.4 start. $1 token, $2 runner, $3 match.
+-- workflows/soma-runner-start.json / start
 PREPARE k_start AS
-UPDATE matches SET status = 'running' WHERE claim_token = ($1)::uuid AND status = 'claimed';
+UPDATE matches SET status = 'running' WHERE id = ($3)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND played_by = ($2)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($2)::uuid);
 
+-- 4.4 release -- not a fault and not a lapse. $1 token, $2 the refusal flag, $3 ceiling,
+-- $4 runner, $5 match.
+-- workflows/soma-runner-release.json / release
 PREPARE k_release AS
-UPDATE matches SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'UNLOADABLE' END, closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END WHERE claim_token = ($1)::uuid AND status = 'claimed' AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = matches.id AND s.weights_hash = ANY (($2)::text[]));
+UPDATE matches SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'MODEL_UNAVAILABLE' END, closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END WHERE id = ($5)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND ($2)::boolean AND played_by = ($4)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid);
 
-PREPARE k_fail AS
-UPDATE matches m SET status = 'failed', fault_reason = x.reason, fault_seat = x.seat, closed_at = now(), lease_expires_at = NULL FROM (SELECT DISTINCT ON (s.match_id) s.match_id, s.seat, v.reason FROM jsonb_to_recordset(($2)::jsonb) AS v (weights_hash text, reason text) JOIN match_seats s ON s.weights_hash = v.weights_hash ORDER BY s.match_id, s.seat) AS x WHERE m.id = x.match_id AND m.claim_token = ($1)::uuid AND m.status = 'claimed';
-
+-- 4.5 renew, on the DATABASE's clock. $1 token, $2 lease seconds, $3 runner, $4 match.
+-- workflows/soma-runner-renew.json / renew
 PREPARE k_renew AS
-UPDATE matches SET lease_expires_at = now() + ($2)::int * interval '1 second' WHERE claim_token = ($1)::uuid AND status = 'running';
+UPDATE matches SET lease_expires_at = now() + ($2)::int * interval '1 second' WHERE id = ($4)::uuid AND claim_token = ($1)::uuid AND status = 'running' AND played_by = ($3)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($3)::uuid);
 
+-- 4.6 finish -- the row and all its seats, or neither. $1 token, $2 match, $3 the result,
+-- $4 reason, $5 turns, $6 opened at, $7 engine digest, $8 orion version, $9 key, $10 runner.
+-- workflows/soma-runner-finish.json / finish
 PREPARE k_finish AS
-WITH m AS ( UPDATE matches SET status = 'finished', reason = ($4)::text, turns = ($5)::int, played_ms = GREATEST(0, (EXTRACT(EPOCH FROM (now() - ($6)::timestamptz)) * 1000)::int), engine_digest_played = ($7)::text, orion_version = ($8)::text, replay_key = ($9)::text, played_at = now(), lease_expires_at = NULL WHERE id = ($2)::uuid AND claim_token = ($1)::uuid AND status = 'running' AND (SELECT count(DISTINCT v.seat) FROM jsonb_to_recordset(($3)::jsonb) AS v (seat smallint) WHERE v.seat BETWEEN 0 AND seat_count - 1) = seat_count RETURNING id ) UPDATE match_seats s SET rank = v.rank, score = v.score, strikes = v.strikes, infer_us_total = v.infer_us_total, infer_us_max = v.infer_us_max, infer_turns = v.infer_turns FROM m, jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int, strikes smallint, infer_us_total bigint, infer_us_max int, infer_turns int) WHERE s.match_id = m.id AND s.seat = v.seat;
+WITH m AS (UPDATE matches SET status = 'finished', reason = ($4)::text, turns = ($5)::int, played_ms = GREATEST(0, (EXTRACT(EPOCH FROM (now() - ($6)::timestamptz)) * 1000)::int), engine_digest_played = ($7)::text, orion_version = ($8)::text, replay_key = ($9)::text, played_at = now(), lease_expires_at = NULL WHERE id = ($2)::uuid AND claim_token = ($1)::uuid AND status = 'running' AND played_by = ($10)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($10)::uuid) AND (SELECT count(DISTINCT v.seat) FROM jsonb_to_recordset(($3)::jsonb) AS v (seat smallint) WHERE v.seat BETWEEN 0 AND seat_count - 1) = seat_count RETURNING id) UPDATE match_seats s SET rank = v.rank, score = v.score, strikes = v.strikes, infer_us_total = v.infer_us_total, infer_us_max = v.infer_us_max, infer_turns = v.infer_turns FROM m, jsonb_to_recordset(($3)::jsonb) AS v (seat smallint, rank smallint, score int, strikes smallint, infer_us_total bigint, infer_us_max int, infer_turns int) WHERE s.match_id = m.id AND s.seat = v.seat;
 
 PREPARE c_fence AS
 UPDATE clocks SET scheduled_for = ($1)::timestamptz, attempt = ($2)::int, updated_at = now() WHERE key = 'count' AND (scheduled_for, attempt) < (($1)::timestamptz, ($2)::int);

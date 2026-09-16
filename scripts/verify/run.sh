@@ -33,6 +33,34 @@ fi
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 
+# The eight match statements in statements.sql are copies of what workflows/soma-runner-*.json ship,
+# and a copy nobody compares is a copy that drifts: this file carried the pre-R7 two-CTE wave claim
+# for months after a one-row claim shipped, so every race it "proved" was proving a statement that
+# did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
+echo "===== the statements under test are the statements that ship ====="
+python3 - <<'PY'
+import json, re, sys, pathlib
+PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim", "claim"),
+         ("k_row", "soma-runner-claim", "row"), ("k_start", "soma-runner-start", "start"),
+         ("k_release", "soma-runner-release", "release"), ("k_renew", "soma-runner-renew", "renew"),
+         ("k_finish", "soma-runner-finish", "finish")]
+prepared = pathlib.Path("statements.sql").read_text()
+flat = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(";")
+bad = []
+for name, wf, task in PAIRS:
+    doc = json.load(open(f"../../workflows/{wf}.json"))
+    shipped = next(t["function"]["input"]["query"] for t in doc["tasks"] if t["id"] == task)
+    m = re.search(rf"^PREPARE {name} AS\n(.*?);$", prepared, re.S | re.M)
+    if not m:
+        bad.append(f"{name}: no PREPARE in statements.sql")
+    elif flat(m.group(1)) != flat(shipped):
+        bad.append(f"{name}: statements.sql differs from workflows/{wf}.json / {task}")
+for b in bad:
+    print(f"  DRIFT {b}")
+print("  " + ("the harness walks what ships: OK" if not bad else "FAILED"))
+sys.exit(1 if bad else 0)
+PY
+
 psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $SCRATCH" -c "CREATE DATABASE $SCRATCH"
 cat "$MIGRATIONS/0001_init.sql" "$MIGRATIONS/0002_sessions.sql" \
   | psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1

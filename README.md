@@ -82,6 +82,27 @@ request handling and response construction, with matching soma-prefixed filename
 | DELETE | /v1/session | Session | Revoke the current session and clear the cookie |
 | GET | /v1/admin-check | Session | **204 / 401 / 403 and no body.** An authorization probe for a reverse proxy, not a page |
 | POST | /v1/submissions | Session | Record a release and declared asset hashes as a testing version |
+| POST | /v1/runner-keys | Admin session | Mint a runner key; **the one response that carries it** |
+| GET | /v1/runner-keys | Admin session | The caller's own keys, by prefix, with how many runners hold each |
+| DELETE | /v1/runner-keys/{id} | Admin session | Revoke a key, and with it every machine started from it |
+| GET | /v1/runners | Admin session | The fleet: last seen, engine digest, arch, in flight |
+| DELETE | /v1/runners/{id} | Admin session | Stop one machine without touching its key |
+| POST | /v1/runner/token | Public, IP-limited | Exchange a runner key for a ten-minute `aud: runner` token |
+| POST | /v1/runner/claim | Runner token | One match and the contract to play it under, or **204** |
+| POST | /v1/runner/matches/{id}/start | Runner token | claimed → running, on the claim token |
+| POST | /v1/runner/matches/{id}/release | Runner token | Give the row back, spending a refusal |
+| POST | /v1/runner/matches/{id}/renew | Runner token | Extend the lease on the **database's** clock |
+| POST | /v1/runner/matches/{id}/replay-url | Runner token | A presigned PUT for this attempt's replay |
+| POST | /v1/runner/matches/{id}/finish | Runner token | The row and all its seats, idempotently |
+| GET | /v1/runner/roster | Runner token | Every version this machine should be able to play |
+
+**The runner family is a second API on one hostname.** It verifies a bearer JWT with
+`aud: "runner"` signed with `RUNNER_TOKEN_SECRET`, where browser sessions are cookie-borne and
+signed with `SOMA_SESSION_SECRET` and carry no audience at all — so a stolen cookie is not a runner
+and a stolen runner token is not a sign-in. It also needs its own rate limits:
+`per_user_write_rate` is 1 rps and would strangle a claim loop on the first machine. There is one
+cron channel, `soma-runner-reap`, which is this package's first; it is singular because Soma's Orion
+runs in cluster mode. `docs/schema.md` §4 and §4a are the statements and the routes.
 
 Read routes are public unless they can return something private. The split is a property of the
 channel, never of a parameter: `GET /v1/matches` omits queued, cancelled and trial rows for
@@ -227,13 +248,52 @@ LICENSE                      repository licence
 - **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
 - **Revocation remains effective before JWT expiry.** Session workflows consult live_sessions rather than trusting a signed token alone.
-- **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password.
+- **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password. **The runner routes do not run under it.** They are in this package, over `soma-db`, so they execute as the database owner and the column grant is not what stops one of them writing a rating — review is. That is the price of one package instead of two, it is written down on the grant block itself, and undoing it is a `soma-runner-db` connector on `env://KALAM_DB_URL` plus a one-word swap in eight workflows. A runner statement that needs a grant added to the `kalam` role is a statement on the wrong connector.
+- **A runner holds no credential, and revocation is a JOIN.** It has no database URL and no write key: it gets a ten-minute token and presigned PUTs. Every match statement JOINs `live_runners`, *inside the statement and never as a guard task* — a JSONLogic guard fails open if it is ever wrong, and a JOIN cannot be forgotten — so a revoked key, a revoked runner or a demoted admin ends the next call rather than the next token.
+- **The eight match statements have one home, and it is now this repository.** A route is a skin over a statement; a second copy of the claim's SQL anywhere is the bug the move was meant to prevent. `scripts/verify/run.sh` compares the harness's copies against the shipped workflows and refuses to run if they differ, because both this repo's copies were silently stale for months before it did.
+- **`finish` is idempotent under a duplicate delivery and fenced against a stale one**, and the two are distinguishable in the response. A route that conflates them fails a healthy runner mid-match.
 - **Package reloads respect ownership tags.** load-package.sh replaces pkg:soma objects without sweeping Jodi's definitions.
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
 - **Only a caller-invariant route may declare `cache`.** The response-cache key covers the method, the path params and the query — so two ids cannot collide — and covers *nothing about the caller*: no cookie, no claim. Caching an authenticated channel would serve one session's body to the next. The nine that cache are the nine anonymous reads; `soma-status` is anonymous too and stays uncached, because freshness is the whole answer it gives.
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**16 September 2026 — Soma serves the runner gate; a replica gives up its database credential.**
+Thirteen routes and one cron channel: `/v1/runner/*` for machines and `/v1/runner-keys` +
+`/v1/runners` for the admins who start them. The eight match statements move here from
+`kalam/scripts/gen-kalam.py` unchanged, with one route in front of each, so a Kalam replica can run
+on hardware outside the deployment holding nothing but an API key.
+
+**Three predicates were added to the SQL and nothing else was touched.** A `live_runners` EXISTS in
+every statement, so revoking a key or demoting its owner ends the next call; an in-flight ceiling in
+the claim, so a wedged machine cannot sit on rows until their leases lapse; and `matches.played_by`,
+written at claim, because without it "which machine is wedged" has no answer. The claim now returns
+the **execution contract** — `turn_ms`, `max_turns`, `lease_seconds` and the rest — from the one
+place that owns them, deleting the class of failure `devops/scripts/check/configs.sh` exists to
+catch and cannot catch on a machine it cannot read.
+
+**Two shapes are new rather than moved.** `finish` reads the row back under the same token, so a
+duplicate delivery is a `200 {applied: false}` and only a genuinely lost claim is a 409 — over a WAN
+both were `rows_affected = 0`, and a runner that finished correctly and lost the response would have
+reported a fault. And the reap left the claim path for `soma-runner-reap`, this package's first cron
+channel, singular because Soma's Orion runs in cluster mode: as every caller's first task it was
+0.8N reaps a second scanning an index proportional to N.
+
+**Runner keys are hashed, not stored.** `runner_keys` holds sha256 of the key and a display prefix,
+and `POST /v1/runner-keys` is the only response that ever carries the key material — so reading the
+table does not let anyone start a runner. The design asked for a readable key; this is the variant
+it named as better hygiene, and it costs one column.
+
+**One boundary is weaker and it is deliberate.** These routes run over `soma-db`, the owner, rather
+than the column-limited `kalam` role, because they are in this package rather than a second one. See
+**What must stay true**; the trade and the way back are written on the grant block in the migration.
+
+`docs/schema.md` §3.8a, §4 and §4a were rewritten with it — §4 still described the pre-R7 wave claim,
+as did `scripts/verify/statements.sql`, which had been proving races against a statement that does
+not ship. `run.sh` now asserts the copies match. **Still to land, in devops:**
+`RUNNER_TOKEN_SECRET` on the soma container and seven `[vars]` in `soma.toml.tmpl`; until then the
+runner routes load and answer 500.
 
 **16 September 2026 — GitHub leaves the submission path; an entry is a name.** No repository per
 entry and no release per version. `models` loses `repo`, `owner_github_id`, `owner_login`,
