@@ -88,7 +88,7 @@ request handling and response construction, with matching soma-prefixed filename
 | GET | /v1/runners | Admin session | The fleet: last seen, engine digest, arch, in flight |
 | DELETE | /v1/runners/{id} | Admin session | Stop one machine without touching its key |
 | POST | /v1/runner/token | Public, IP-limited | Exchange a runner key for a ten-minute `aud: runner` token |
-| POST | /v1/runner/claim | Runner token | One match and the contract to play it under, or **204** |
+| POST | /v1/runner/claim | Runner token | One match and the contract to play it under, or `200 {"idle": true}` |
 | POST | /v1/runner/matches/{id}/start | Runner token | claimed → running, on the claim token |
 | POST | /v1/runner/matches/{id}/release | Runner token | Give the row back, spending a refusal |
 | POST | /v1/runner/matches/{id}/renew | Runner token | Extend the lease on the **database's** clock |
@@ -292,8 +292,8 @@ to a live admin, and the role must read neither — so `live_runner_keys` does t
 `live_runners` already does, owned by the schema owner and running with its privileges. Three
 statements moved onto it.
 
-**The finish gained the three misconfiguration gates** (§7), and one of them is not what the design
-said. "Ranks a permutation of `0..seat_count-1`" is wrong about this engine: Ants ranks **from 1**
+**The finish gained the three misconfiguration gates** (`devops/docs/decisions.md` §4b), and one of
+them is not what the proposal said. "Ranks a permutation of `0..seat_count-1`" is wrong about this engine: Ants ranks **from 1**
 and **allows ties**, so a draw is `{1,1}` and is the commonest two-seat result. The bound that is
 actually true is `1 <= rank <= 2*seat_count`. Checked against `match_seats` before shipping, and the
 harness now carries a draw among its fixtures so it cannot regress.

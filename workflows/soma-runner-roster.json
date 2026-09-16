@@ -32,7 +32,7 @@
     {
       "id": "seen",
       "name": "Stamp the runner as seen",
-      "description": "The roster tick is the runner's heartbeat -- it is the one call it makes whether or not there is anything to play -- so last_seen_at is stamped here rather than on the claim, where an idle 204 would be doing the same work 0.8 times a second.",
+      "description": "The roster tick is the runner's heartbeat -- it is the one call it makes whether or not there is anything to play -- so last_seen_at is stamped here rather than on the claim, where an idle poll would be doing the same work 0.8 times a second.",
       "function": {
         "name": "db_write",
         "input": {

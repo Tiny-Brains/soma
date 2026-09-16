@@ -144,8 +144,7 @@ if [ "$ROLE" = "admin" ]; then
   # package: mint a key, exchange it, claim with the token. Every check above answers 401 or 404
   # from the channel's auth or its router, which a node with no RUNNER_TOKEN_SECRET and none of the
   # gate's [vars] passes just as happily -- the routes load, and then every real call is a 500. So
-  # this is what says the wiring is done. A 204 is the right answer on an idle queue and a 200 on a
-  # busy one, and both mean the same thing here.
+  # this is what says the wiring is done.
   KEY=$(curl -sS -X POST "${C[@]}" -H 'content-type: application/json' \
              -d '{"label":"smoke"}' "$BASE/v1/runner-keys" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("key",""))' 2>/dev/null || true)
   if [ -n "$KEY" ]; then

@@ -150,6 +150,15 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   months after a one-row claim shipped, so every fence race the harness "proved" was proving a
   statement that did not exist. `run.sh` now compares `statements.sql` against the shipped workflows
   and refuses to run on a difference. Regenerate rather than retype.
+- **`verify/run.sh` exits 0 through a scenario error — read the log, not the exit code.** The
+  statements and `scenario.sql` are piped into `psql` without `ON_ERROR_STOP` (line 70), so a call
+  site left behind by a changed statement fails in the output and the run still passes. It happened
+  when the claim's read-back gained six parameters.
+- **A negative fixture must reach the predicate it names.** The finish's three gate fixtures all
+  answered `UPDATE 0` before their row was ever `running`, so they were refused by `status` and would
+  have passed with the gates deleted. Stage the row into the state the statement requires first, and
+  keep a positive case beside them — the draw that answers `UPDATE 2` is what shows the gates are not
+  simply refusing everything.
 - **`auth.source.scheme` is a literal prefix and the trailing space belongs to it.**
   `runner_auth` declares `"scheme": "Bearer "`. Orion strips exactly that string, so `"Bearer"`
   leaves a leading space on the token and refuses **every** caller with a bare `401` — the same code
