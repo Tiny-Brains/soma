@@ -322,7 +322,7 @@ ceiling" through `{"<": [x, null]}`, which is falsy: every submission would pass
 silence.
 
 **The budget comes from the game's manifest, not from `[vars]`.** `adapter_ops_max` is the
-cartridge's declaration ([ants/docs/cartridge.md](https://github.com/Tiny-Brains/ants/blob/main/docs/cartridge.md) §3) and it is per game by construction —
+cartridge's declaration ([*Adding a game*](https://github.com/Tiny-Brains/web/blob/main/docs/src/platform/adding-a-game.md), the registration manifest) and it is per game by construction —
 a 128×128 Ants board and a card game have nothing in common. Putting it in the clocks' config would make
 a second cartridge a config change; putting it in the game row makes it content. §8 says how it
 gets there.
@@ -597,7 +597,7 @@ tell a competitor whose adapter is merely expensive to go and re-read the operat
 ## 8. The game's registration: the manifest and the reference set
 
 `games` today is `slug`, `name` and `active_engine_digest`. The cartridge's declaration —
-[ants/docs/cartridge.md](https://github.com/Tiny-Brains/ants/blob/main/docs/cartridge.md) §3's seven keys — lives nowhere, and admission needs two of them.
+its registration manifest ([*Adding a game*](https://github.com/Tiny-Brains/web/blob/main/docs/src/platform/adding-a-game.md)) — lives nowhere, and admission needs two of them.
 
 **`games` gains two `jsonb` columns**, and both are the *game's*, published by whoever wrote the
 cartridge:
@@ -610,7 +610,7 @@ cartridge:
 This is the shape a second cartridge takes without a schema change, which is the point: a new game
 is a plugin in Kalam's package plus a row here, and its admission gate is content rather than code.
 
-**What Ants owes, and now ships.** `ants/` generates `cartridge.json` from `src/bin/manifest.rs`
+**What Ants owes, and now ships.** `ants/` generates `cartridge.json` from `engine/src/bin/manifest.rs`
 rather than writing it — that is the `manifest` column — and it generates
 `reference/observations.json` the same way: run the engine on the largest preset to a busy turn with
 a committed seed, dump every live seat's view. Ten observations, deterministic, the game's own
