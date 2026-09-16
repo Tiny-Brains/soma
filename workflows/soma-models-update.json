@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-models-update",
   "name": "Rename or retire a model",
-  "description": "The two things about a model a competitor may change, and the one they may not. THE REPOSITORY IS IMMUTABLE because it is the key: a model that could move to another repository would be a different entry wearing this one's ratings and its whole match history. A name is a label and may be edited; `retired` is how a competitor puts a model down and is reversible, because it withdraws nothing that has already been played -- every version keeps its ratings and its seats, and the entry keeps its repository so retiring is not a way to restart a version series. A retired model takes no new releases and frees its slot under entries.max_per_user. Each field is coalesced against the stored value, which is what PATCH means. Ownership is in the statement, not beside it: the UPDATE names the caller's own row, so someone else's model is simply not found.",
+  "description": "The two things about a model a competitor may change. A name is a label and may be edited; `retired` is how a competitor puts a model down and is reversible, because it withdraws nothing that has already been played -- every version keeps its ratings and its seats, so retiring is not a way to restart a version series. A retired model takes no new submissions and frees its slot under entries.max_per_user. THE ENTRY'S ID IS THE KEY AND IS NOT A FIELD, which is what makes the name safe to edit: it used to be the GitHub repository, immutable precisely because a model that could move repositories would be a different entry wearing this one's ratings. Addressing by id removes that problem rather than guarding it. Each field is coalesced against the stored value, which is what PATCH means. Ownership is in the statement, not beside it: the UPDATE names the caller's own row, so someone else's model is simply not found.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -10,34 +10,15 @@
       "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
-      "id": "repo",
-      "name": "The repository, as one path",
-      "description": "`{owner}/{repo}` is how the URL spells it and `owner/name` is how the column stores it. Joined here, once, rather than in each statement's WHERE -- and compared case-insensitively, because GitHub's namespace is.",
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            {
-              "path": "temp_data.repo",
-              "logic": {
-                "cat": [{ "var": "metadata.params.owner" }, "/", { "var": "metadata.params.repo" }]
-              }
-            }
-          ]
-        }
-      }
-    },
-    {
       "id": "edit",
       "name": "Rename, retire or revive",
       "function": {
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE models e SET name = coalesce(btrim(($5)::text), e.name), retired_at = CASE WHEN ($6)::bool IS NULL THEN e.retired_at WHEN ($6)::bool THEN coalesce(e.retired_at, now()) ELSE NULL END FROM games g, live_sessions ls WHERE g.id = e.game_id AND g.slug = ($1)::text AND ls.sid = ($4)::uuid AND ls.user_id = ($3)::uuid AND e.owner_id = ($3)::uuid AND lower(e.repo) = lower(($2)::text) AND (($5)::text IS NULL OR (btrim(($5)::text) <> '' AND length(btrim(($5)::text)) <= 64 AND NOT EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($5)::text)))))",
+          "query": "UPDATE models e SET name = coalesce(btrim(($4)::text), e.name), retired_at = CASE WHEN ($5)::bool IS NULL THEN e.retired_at WHEN ($5)::bool THEN coalesce(e.retired_at, now()) ELSE NULL END FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($2)::uuid AND e.owner_id = ($2)::uuid AND e.id = ($1)::uuid AND (($4)::text IS NULL OR (btrim(($4)::text) <> '' AND length(btrim(($4)::text)) <= 64 AND NOT EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($4)::text)))))",
           "params": [
-            { "var": "metadata.params.game" },
-            { "var": "temp_data.repo" },
+            { "var": "metadata.params.id" },
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },
             { "var": "data.req.name" },
@@ -55,10 +36,9 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'name_taken', ($3)::text IS NOT NULL AND EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($3)::text)))) AS body FROM models e JOIN games g ON g.id = e.game_id WHERE g.slug = ($1)::text AND lower(e.repo) = lower(($2)::text) AND e.owner_id = ($4)::uuid",
+          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'name_taken', ($2)::text IS NOT NULL AND EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($2)::text)))) AS body FROM models e WHERE e.id = ($1)::uuid AND e.owner_id = ($3)::uuid",
           "params": [
-            { "var": "metadata.params.game" },
-            { "var": "temp_data.repo" },
+            { "var": "metadata.params.id" },
             { "var": "data.req.name" },
             { "var": "metadata.auth.claims.sub" }
           ],
@@ -107,12 +87,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'retired', e.retired_at IS NOT NULL, 'retired_at', e.retired_at) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id WHERE g.slug = ($1)::text AND lower(e.repo) = lower(($2)::text) AND e.owner_id = ($3)::uuid",
-          "params": [
-            { "var": "metadata.params.game" },
-            { "var": "temp_data.repo" },
-            { "var": "metadata.auth.claims.sub" }
-          ],
+          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'retired', e.retired_at IS NOT NULL, 'retired_at', e.retired_at) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id WHERE e.id = ($1)::uuid AND e.owner_id = ($2)::uuid",
+          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.auth.claims.sub" }],
           "output": "temp_data.rows"
         }
       }

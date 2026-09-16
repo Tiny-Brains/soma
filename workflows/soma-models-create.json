@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-models-create",
   "name": "Create a model",
-  "description": "A competitor naming a model and the GitHub repository it will be published from. THE REPOSITORY IS THE KEY -- one entry per repository -- and it is normalised by repo_path() before anything else looks at it, so a pasted browser URL, an ssh remote and a bare `owner/name` are one value in the column and a stored URL can never be pasted back into a release URL. OWNERSHIP IS ASKED OF GITHUB, ONCE, AND COMPARED BY ACCOUNT ID: `GET /repos/{owner}/{name}` says which account owns the repository, and that id must be the caller's `users.github_id` -- or an organisation the season allows, to someone the season named. It used to compare the first path segment against users.handle, which is a cache of a mutable remote value refreshed only at sign-in, so an account that renamed away from `alice` went on owning `alice/*`. The answer is recorded on the row, so this is asked once and never again. IT FAILS CLOSED: when GitHub does not answer, the entry is refused with a 503 rather than falling back to the login comparison, because that fallback is the hole and anyone could open it by exhausting the rate limit. Write, then diagnose: the insert carries every rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was -- through the same functions, with the same GitHub answer. A model is created empty; POST /v1/submissions is what puts a release under it.",
+  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, and addressed by its id ever after. It used to be a GitHub repository, normalised by repo_path() and confirmed against `GET /repos/{owner}/{name}` before the insert -- and that requirement limited nothing. Every ceiling on a competitor is a season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights) and not one of them mentioned a repository, while the check cost a SQL normaliser, a season predicate, two unique indexes and an outbound call on the create path THAT FAILED CLOSED -- so a rate-limited GitHub meant nobody could create an entry at all. GitHub is now the sign-in identity and nothing else, and this route reaches no host outside the deployment. Write, then diagnose: the insert carries every remaining rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was, through the same functions. A model is created empty; POST /v1/submissions is what puts a version under it.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -13,26 +13,26 @@
       "id": "declared",
       "use": "refuse",
       "with": {
-        "when": { "or": [{ "!": { "var": "data.req.name" } }, { "!": { "var": "data.req.url" } }] },
+        "when": { "!": { "var": "data.req.name" } },
         "status": 400,
         "body": {
-          "error": "name_and_url_required",
-          "detail": "name is what you call this model; url is the GitHub repository it is published from, as a URL or as owner/name."
+          "error": "name_required",
+          "detail": "name is what you call this model. It has to be unique among your own entries for this game."
         },
-        "name": "A name and a repository, declared"
+        "name": "A name, declared"
       }
     },
     {
-      "id": "normalise",
-      "name": "Normalise the repository, and find the game",
-      "description": "BEFORE the call to GitHub, because a path is what the call is made with and a game that does not exist should not cost a request against the rate limit. repo_path() is SQL and not JSONLogic because Orion's dialect has no regex.",
+      "id": "game",
+      "name": "Find the game",
+      "description": "A game that does not exist is a 404 before any rule is asked. It used to also normalise the repository here, ahead of the call to GitHub; there is no call and no repository now, so the read is the game alone.",
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT repo_path(($2)::text) AS repo, g.id::text AS game_id FROM games g WHERE g.slug = ($1)::text",
-          "params": [{ "var": "metadata.params.game" }, { "var": "data.req.url" }],
-          "output": "temp_data.path"
+          "query": "SELECT g.id::text AS game_id FROM games g WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }],
+          "output": "temp_data.game"
         }
       }
     },
@@ -40,85 +40,10 @@
       "id": "unknown",
       "use": "refuse",
       "with": {
-        "when": { "!": { "var": "temp_data.path.0.game_id" } },
+        "when": { "!": { "var": "temp_data.game.0.game_id" } },
         "status": 404,
         "body": { "error": "unknown_game" },
         "name": "No such game"
-      }
-    },
-    {
-      "id": "malformed",
-      "use": "refuse",
-      "with": {
-        "when": { "!": { "var": "temp_data.path.0.repo" } },
-        "status": 400,
-        "body": {
-          "error": "repo_invalid",
-          "detail": "url must name one GitHub repository: https://github.com/you/your-model, or you/your-model. A releases or tree URL names a page inside one, not the repository itself."
-        },
-        "name": "That is not a repository",
-        "description": "repo_path() answers NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word -- so this is a 400 about what was typed and never a 409 about a rule."
-      }
-    },
-    {
-      "id": "resolve_auth",
-      "name": "Ask GitHub who owns it, as the platform",
-      "description": "TWO TASKS FOR ONE CALL, and the pair is the price of an optional token. A header cannot be conditionally omitted, and an unset token would send `authorization: Bearer ` -- which makes GitHub answer 401 to everything on this connector, sign-in included. Authenticated is 5,000 requests an hour; unauthenticated is 60 PER IP, and the IP is this server's, so it is 60 model creations an hour for everyone together. A deployment sets GITHUB_TOKEN; check/configs.sh says so out loud when it is missing.",
-      "condition": { "!!": { "var": "metadata.vars.github_token" } },
-      "function": {
-        "name": "http_call",
-        "input": {
-          "connector": "github-api",
-          "method": "GET",
-          "path": { "cat": ["/repos/", { "var": "temp_data.path.0.repo" }] },
-          "headers": {
-            "authorization": { "cat": ["Bearer ", { "var": "metadata.vars.github_token" }] }
-          },
-          "output": "temp_data.gh"
-        }
-      }
-    },
-    {
-      "id": "resolve_anon",
-      "name": "Ask GitHub who owns it, anonymously",
-      "description": "The same call without the token. See resolve_auth for why it is a second task and not a conditional header.",
-      "condition": { "!": { "var": "metadata.vars.github_token" } },
-      "function": {
-        "name": "http_call",
-        "input": {
-          "connector": "github-api",
-          "method": "GET",
-          "path": { "cat": ["/repos/", { "var": "temp_data.path.0.repo" }] },
-          "output": "temp_data.gh"
-        }
-      }
-    },
-    {
-      "id": "unverified",
-      "use": "refuse",
-      "with": {
-        "when": { "!": { "var": "temp_data.gh.owner.id" } },
-        "status": 503,
-        "body": {
-          "error": "repo_unverified",
-          "detail": "GitHub did not confirm who owns this repository. Either it does not exist under that name, or it is private, or we are briefly over our rate limit with GitHub. Check the name; if it is right, try again shortly."
-        },
-        "name": "GitHub did not answer for this repository",
-        "description": "Orion's http_call continues on a 4xx and writes no output, and does not surface the status, so a repository that does not exist and a rate limit arrive identically. Both refuse, and the refusal is TEMPORARY AND FAILS CLOSED -- it must never fall back to comparing logins, because that fallback is what this route stopped doing and anyone could reach it on demand by burning 60 requests."
-      }
-    },
-    {
-      "id": "private",
-      "use": "refuse",
-      "with": {
-        "when": { "!!": { "var": "temp_data.gh.private" } },
-        "status": 409,
-        "body": {
-          "error": "repo_private",
-          "detail": "Admission fetches your release assets anonymously, so the repository has to be public. Make it public, or publish the model from one that is."
-        },
-        "name": "A private repository can never be admitted",
-        "description": "Refused HERE rather than discovered at the first submission, where it arrives as a loader ASSET_MISSING against a URL that looks fine."
       }
     },
     {
@@ -128,16 +53,12 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login) SELECT ($1)::uuid, g.id, btrim(($3)::text), ($4)::text, ($6)::bigint, ($8)::text FROM games g JOIN live_sessions ls ON ls.sid = ($5)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($2)::text AND ($4)::text = repo_path(($4)::text) AND ($6)::bigint IS NOT NULL AND btrim(($3)::text) <> '' AND length(btrim(($3)::text)) <= 64 AND (s.id IS NULL OR season_admits(s, ($1)::uuid)) AND season_admits_repo(s, ($1)::uuid, ($6)::bigint, ($7)::text, ($8)::text) AND (s.id IS NULL OR season_admits_entry(s, ($1)::uuid)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.game_id = g.id AND lower(e.repo) = lower(($4)::text)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($1)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))",
+          "query": "INSERT INTO models (owner_id, game_id, name) SELECT ($1)::uuid, g.id, btrim(($3)::text) FROM games g JOIN live_sessions ls ON ls.sid = ($4)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($2)::text AND btrim(($3)::text) <> '' AND length(btrim(($3)::text)) <= 64 AND (s.id IS NULL OR season_admits(s, ($1)::uuid)) AND (s.id IS NULL OR season_admits_entry(s, ($1)::uuid)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($1)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))",
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.params.game" },
             { "var": "data.req.name" },
-            { "var": "temp_data.path.0.repo" },
-            { "var": "metadata.auth.claims.sid" },
-            { "var": "temp_data.gh.owner.id" },
-            { "var": "temp_data.gh.owner.type" },
-            { "var": "temp_data.gh.owner.login" }
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.written"
         }
@@ -151,15 +72,11 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'repo', ($3)::text, 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'owned', season_admits_repo(s, ($2)::uuid, ($5)::bigint, ($6)::text, ($7)::text), 'room', s.id IS NULL OR season_admits_entry(s, ($2)::uuid), 'entries_max', (s.rules -> 'entries' ->> 'max_per_user')::int, 'entries_used', (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL), 'repo_owner', ($7)::text, 'repo_taken', EXISTS (SELECT 1 FROM models e WHERE e.game_id = g.id AND lower(e.repo) = lower(($3)::text)), 'repo_taken_by_you', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.repo) = lower(($3)::text)), 'name_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($4)::text)))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": "SELECT json_build_object( 'name', btrim(($3)::text), 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'room', s.id IS NULL OR season_admits_entry(s, ($2)::uuid), 'entries_max', (s.rules -> 'entries' ->> 'max_per_user')::int, 'entries_used', (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL), 'name_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "temp_data.path.0.repo" },
-            { "var": "data.req.name" },
-            { "var": "temp_data.gh.owner.id" },
-            { "var": "temp_data.gh.owner.type" },
-            { "var": "temp_data.gh.owner.login" }
+            { "var": "data.req.name" }
           ],
           "output": "temp_data.why"
         }
@@ -175,8 +92,6 @@
             {
               "or": [
                 { "!": { "var": "temp_data.why.0.body.participant" } },
-                { "!": { "var": "temp_data.why.0.body.owned" } },
-                { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
                 { "!!": { "var": "temp_data.why.0.body.name_taken" } },
                 { "!": { "var": "temp_data.why.0.body.room" } }
               ]
@@ -189,10 +104,6 @@
             "if": [
               { "!": { "var": "temp_data.why.0.body.participant" } },
               "not_a_participant",
-              { "!": { "var": "temp_data.why.0.body.owned" } },
-              "repo_not_owned",
-              { "!!": { "var": "temp_data.why.0.body.repo_taken" } },
-              "repo_taken",
               { "!!": { "var": "temp_data.why.0.body.name_taken" } },
               "model_name_taken",
               "entries_max"
@@ -206,15 +117,16 @@
     {
       "id": "fetch",
       "name": "Read the entry back",
+      "description": "Keyed on the name, which models_owner_game_name_uniq makes a key: db_write answers only rows_affected, so the created row is read back, and the read-back needs a unique predicate. It used to be the repository.",
       "function": {
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'repo', e.repo, 'game', g.slug, 'owner', u.handle, 'repo_owner', e.owner_login, 'created_at', e.created_at, 'versions', '[]'::json) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND lower(e.repo) = lower(($3)::text)",
+          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'versions', '[]'::json) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND lower(e.name) = lower(btrim(($3)::text))",
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.params.game" },
-            { "var": "temp_data.path.0.repo" },
+            { "var": "data.req.name" },
             { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.rows"

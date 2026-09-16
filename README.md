@@ -93,10 +93,9 @@ Jodi performs admission and the trial before promotion. The callback is served b
 channel, so twenty-seven routes are implemented by twenty-six channels.
 
 > **This table is four rows short, and they are not new.** `channels/` carries
-> `/v1/games/{game}/models` (POST), `/v1/games/{game}/models/{owner}/{repo}` (GET and PATCH) and
-> `/v1/versions/{id}`, none of which appear above — and the row reading `/v1/models/{id}` is the
-> old spelling of that last one, from before the rebuild separated a model from its versions. Fix
-> them against the channels rather than against this note; `ls channels/` is the inventory.
+> `/v1/games/{game}/models` (POST), `/v1/models/{id}` (GET and PATCH) and `/v1/versions/{id}`,
+> none of which appear above. Fix them against the channels rather than against this note;
+> `ls channels/` is the inventory.
 
 `/v1/admin-check` is the odd one and worth saying why it exists. It answers **204** for a signed-in
 admin, **401** for no or a revoked session, **403** for a signed-in non-admin, and never a body —
@@ -192,8 +191,7 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | cookie_secure | Boolean Orion var for cookie transport | Must match HTTP development or HTTPS deployment |
 | prior_mu, prior_sigma, settled_sigma | Orion vars for leaderboard priors and provisional status | Must match Jodi's rating policy |
 | season_gap_days | Orion var for the minimum gap between seasons | Missing or incorrect policy changes season-opening eligibility |
-| github_token | Orion var the entry create asks GitHub who owns a repository with | Empty works and is 60 requests/hour for the whole server, shared; model creation refuses when it runs out |
-| GITHUB_API_BASE | Load-script substitution for the github-api connector's base | Defaults to api.github.com; a stand-in is the only way to exercise the ownership check end to end |
+| GITHUB_API_BASE | Load-script substitution for the github-api connector's base | Defaults to api.github.com; the connector serves sign-in and nothing else |
 | ORION_ADMIN, ORION_ADMIN_API_KEY | Load-script destination and optional secret bearer token | Defaults target local admin; protected APIs require the token |
 | SOMA_ALLOW_PRIVATE_DB | Loader flag, 1 for a private database address | Orion blocks a private database connection |
 
@@ -236,6 +234,37 @@ LICENSE                      repository licence
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**16 September 2026 — GitHub leaves the submission path; an entry is a name.** No repository per
+entry and no release per version. `models` loses `repo`, `owner_github_id`, `owner_login`,
+`models_repo_canonical`, `models_repo_uniq` and `models_owner_game_repo_uniq`; `model_versions`
+loses `release_tag` and `commit_sha` with `model_versions_release_uniq`; `repo_path()`,
+`season_admits_repo()` and the `repo` block of the season rules are deleted, and with the last of
+them **every rules block now defaults off** — `repo` was the lone default-true one, guarding a field
+that limited nothing. Every ceiling on a competitor was already a season rule and none of them
+mentioned a repository.
+
+`soma-models-create` loses both `github-api` tasks, the `503 repo_unverified` terminal and the
+`409 repo_private` one: **creating an entry no longer depends on GitHub being up**, and this package
+now reaches no host outside the deployment except at sign-in. `connectors/github-api.json` stays for
+exactly that one user, `soma-auth-github`.
+
+**Two route changes.** `/v1/games/{game}/models/{owner}/{repo}` becomes **`/v1/models/{id}`** for
+GET and PATCH — the shape `/v1/matches/{id}` and `/v1/versions/{id}` already use — and
+`POST /v1/submissions` drops `release_tag`, taking the entry as an id and letting `version` be the
+counter the insert assigns. `models_owner_game_name_uniq` is the entry's only key and is per owner,
+so two competitors may hold one name; `name` therefore keeps its free-text CHECK, because it never
+has to survive a URL. The seeded baselines lose the partial-index carve-out that let three of them
+share one repository.
+
+**A bug fixed on the way.** The submission response has always promised "ask again … to get fresh
+[upload URLs]", and `refused` answered `409 version_in_flight` instead — so a competitor who lost
+their 30-minute presigns had a version they could neither upload to nor replace. Re-POSTing the same
+two hashes now falls through to the read-back and re-signs.
+
+Breaking changes to `POST /v1/models`, `POST /v1/submissions` and both model routes, which is free
+pre-release. **`web/` has not followed yet** and its model pages, entry creation and submit form are
+broken against this API until it does.
 
 **15 September 2026 — the set says each thing once, and the loader compiles it.** `shared/soma.json`
 holds the constants and two fragments the 26 channels and 26 workflows now reference: the JWT-from-

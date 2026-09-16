@@ -9,7 +9,7 @@
 -- one-live-trial. The partial unique indexes and the exclusion constraint are.
 --
 -- AN ENTRY AND A VERSION ARE TWO TABLES. `models` is the entry -- a competitor's named model, keyed
--- by the GitHub repository it is published from -- and `model_versions` is one submission of it.
+-- by that name under its owner -- and `model_versions` is one submission of it.
 -- Everything a rating, a seat or a match points at is a VERSION; everything a rename, a retirement
 -- or a quota is about is an ENTRY. Before the split the two were one row and `(owner_id, game_id)`
 -- was the entry's only name, which is why a competitor could hold exactly one.
@@ -92,9 +92,11 @@ $$;
 -- down can read `rules` with a plain `->>` and a cast without a defensive coalesce around the
 -- shape. A document that reached the column is a document of this shape.
 --
--- Ten blocks, each with its own `enabled`, so a rule is turned on or off per season without a
+-- Nine blocks, each with its own `enabled`, so a rule is turned on or off per season without a
 -- schema change -- and so one season can be a nano-only cohort and the next an open field with no
--- code between them.
+-- code between them. EVERY block now defaults OFF: a season silent about a rule does not play it.
+-- The tenth was `repo`, the lone default-true block, and it was the anti-impersonation guard for a
+-- field that limited nothing -- so removing the field removed the exception with it.
 --
 -- A VALUES list and not a table: a CHECK constraint that reads a table is a constraint whose truth
 -- depends on rows a restore may not have loaded yet. This list IS the documentation of the rules
@@ -113,13 +115,6 @@ LANGUAGE sql IMMUTABLE AS $$
       ('entries', 'versions_max_per_model', 'int',      1,   10000, NULL),
       ('entries', 'versions_max_per_user',  'int',      1,   10000, NULL),
       ('entries', 'cooldown_s',             'int',      0, 2592000, NULL),
-    -- ---- repo: whose repository a competitor may enter. THE ONE BLOCK WHOSE `enabled` DEFAULTS
-    --      TRUE -- see repo_owned(). Every other block is competition policy and a season silent
-    --      about it does not play it; this one is the anti-impersonation rule, and a season created
-    --      with no document must not be a season in which anyone may enter anyone's repository.
-      ('repo', 'enabled',       'bool', NULL, NULL, NULL),
-      ('repo', 'must_be_owned', 'bool', NULL, NULL, NULL),
-      ('repo', 'allow_orgs',    'strs', NULL, NULL, NULL),
     -- ---- unique_weights: no two entries stand on one set of weights, within the scope.
       ('unique_weights', 'enabled', 'bool', NULL, NULL, NULL),
       ('unique_weights', 'scope',   'enum', NULL, NULL, ARRAY['game', 'season', 'user']),
@@ -270,14 +265,9 @@ CREATE FUNCTION season_rules_ok(r jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE 
                                                 AND (e ->> 'players')::numeric
                                                     = trunc((e ->> 'players')::numeric))))))
                   END)
-       -- two cross-key rules. An opset window that is not a window admits nothing --
+       -- one cross-key rule. An opset window that is not a window admits nothing --
        AND coalesce((r -> 'graph' ->> 'opset_min')::int, 0)
-           <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647)
-       -- -- and an organisation allowance without a cohort is an allowance to everyone, which is
-       -- what season 1 shipped. See season_admits_repo().
-       AND (r -> 'repo' -> 'allow_orgs' IS NULL
-            OR jsonb_array_length(r -> 'repo' -> 'allow_orgs') = 0
-            OR coalesce((r -> 'participants' ->> 'enabled')::bool, false));
+           <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647);
 $$;
 
 -- A competition window for one game, created by an admin. A version belongs to exactly one season;
@@ -361,14 +351,14 @@ CREATE TABLE users (
     -- month old. github_id is what a decision about identity belongs on.
     --
     -- Uniqueness is on lower(handle), below, and not here. Every reader compares case-insensitively
-    -- (season_admits, repo_owned, the profile route); a case-sensitive index and case-insensitive
+    -- (season_admits and the profile route); a case-sensitive index and case-insensitive
     -- readers protect different namespaces, which is how `Alice` and `alice` could be two rows that
     -- both answer to one login.
     --
     -- TWO RESERVED PREFIXES, both containing a `.`, which a GitHub login cannot: `baseline.` for
     -- the seeded reference opponents, and `released.` for a login taken back from a row that
-    -- provably no longer holds it -- see soma-auth-github. A login is [A-Za-z0-9-], which
-    -- repo_path()'s own pattern asserts, so neither prefix can be minted against us.
+    -- provably no longer holds it -- see soma-auth-github. A login is [A-Za-z0-9-] and cannot
+    -- contain a dot, so neither prefix can be minted against us.
     handle      text        NOT NULL,
 
     -- Seeded from GitHub ON INSERT ONLY: overwriting it at every sign-in would silently undo the
@@ -393,38 +383,15 @@ CREATE TABLE users (
 -- expression index is only a valid arbiter in the exact form it was declared in.
 CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 
--- --------------------------------------------------------------- repositories
-
--- A GitHub repository as the one form everything downstream can paste: `owner/name`, never a URL.
--- Admission builds `release_base || repo || '/releases/download/...'` and the commit read builds
--- `/repos/' || repo || '/commits/...', so a stored `https://github.com/alice/ants` would build
--- `https://github.com/https://github.com/alice/ants` -- a 404 the competitor is told is their fault.
---
--- SQL and not JSONLogic because Orion's dialect has NO REGEX: a normaliser written in a workflow
--- would be a chain of substr and if that is wrong on the case nobody tried.
---
--- NULL for anything that is not exactly one repository -- a releases URL, a tree URL, a bare word --
--- so every caller fails closed and the CHECK on models.repo cannot be satisfied by a near miss.
--- Extra path segments are refused deliberately: someone pasting the releases page should be told to
--- paste the repository, not silently truncated to it.
-CREATE FUNCTION repo_path(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE WHEN t.m[2] IN ('.', '..') THEN NULL ELSE t.m[1] || '/' || t.m[2] END
-      FROM regexp_match(
-               btrim(coalesce(p, '')),
-               '^(?:(?:https?://)?(?:[A-Za-z0-9._~-]+@)?(?:www\.)?github\.com[/:])?' ||
-               '([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)' ||   -- a login: 1-39, no edge hyphen
-               '/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?$'               -- lazy, so `ants.git` is `ants`
-           ) AS t (m);
-$$;
-
 -- --------------------------------------------------------------------- models
 
--- ONE ROW PER ENTRY, and AN ENTRY IS A REPOSITORY. A competitor makes one by naming it and giving a
--- GitHub URL; from then on every release they cut is a version OF this row. This id -- not a
--- version's -- is what a rename, a retirement and a quota are about.
+-- ONE ROW PER ENTRY, and AN ENTRY IS A NAME. A competitor makes one by naming it; from then on
+-- every version they submit is a version OF this row. This id -- not a version's -- is what a
+-- rename, a retirement and a quota are about, and it is also how the entry is ADDRESSED:
+-- `GET /v1/models/{id}`, the same shape `/v1/matches/{id}` already uses.
 --
--- The entry holds what does not change between releases, and nothing a release decides: `repo` is
--- here and `release_tag` is on the version, and that division IS the split. Nothing is ever
+-- The entry holds what does not change between submissions, and nothing a submission decides: the
+-- name is here and `version` is on the version, and that division IS the split. Nothing is ever
 -- deleted -- ratings, matches and the audit trail all reach this row through its versions -- so
 -- `retired_at` is how a competitor puts one down.
 CREATE TABLE models (
@@ -433,69 +400,35 @@ CREATE TABLE models (
     game_id     uuid        NOT NULL REFERENCES games (id),
 
     -- The competitor's own word for it, and what the site prints beside the handle when one
-    -- competitor holds several. Not derived from the repo, which is a path and not a name, and
-    -- which the three baselines share.
+    -- competitor holds several. Unique per owner per game (below), and DISPLAY ONLY: an entry is
+    -- addressed by its id, so this never has to survive a URL and keeps its free-text shape.
     name        text        NOT NULL,
-
-    -- THE CANONICAL `owner/name` AND NOTHING ELSE. repo_path() is the one normaliser and the CHECK
-    -- is what makes "this column is a path" a fact rather than a hope.
-    repo        text        NOT NULL,
-
-    -- WHO GITHUB SAID OWNS `repo`, asked once, at the moment this entry was created. The ACCOUNT
-    -- ID and not the login, because a login is a label GitHub recycles and an account id is neither
-    -- renamed nor reissued -- which is the whole of why this column exists.
-    --
-    -- NULL means the row did not come through the route: the seeded baselines, and nothing else,
-    -- because soma-models-create refuses when GitHub does not answer. That makes this one column do
-    -- three jobs -- it is the proof, it is what a later transfer is noticed against, and it is the
-    -- predicate of models_repo_uniq -- so the one exception in this table is named once.
-    owner_github_id bigint,
-
-    -- GitHub's own spelling of that account at creation. Display and diagnosis only: a repository
-    -- whose owner_login no longer matches GitHub has been transferred or renamed, and no decision
-    -- is ever taken on this column.
-    owner_login text,
 
     created_at  timestamptz NOT NULL DEFAULT now(),
 
-    -- "No more releases here." Not a delete: every version keeps its ratings and its place in every
-    -- match it played. A retired entry frees its slot under entries.max_per_user and KEEPS its repo
-    -- path -- retirement is not how a version history is restarted.
+    -- "No more versions here." Not a delete: every version keeps its ratings and its place in
+    -- every match it played. A retired entry frees its slot under entries.max_per_user --
+    -- retirement is not how a version history is restarted.
     retired_at  timestamptz,
 
-    CONSTRAINT models_name_shape     CHECK (btrim(name) <> '' AND length(name) <= 64),
-    CONSTRAINT models_repo_canonical CHECK (repo = repo_path(repo)),
+    CONSTRAINT models_name_shape CHECK (btrim(name) <> '' AND length(name) <= 64),
 
     -- Not a second key: the composite target model_versions pins its game to.
     UNIQUE (id, game_id)
 );
 
--- ONE ENTRY PER REPOSITORY, case-insensitively -- GitHub's namespace is case-insensitive and
--- `Alice/Ants` is `alice/ants`.
+-- ONE ENTRY PER NAME PER OWNER, and since the repository left the submission path this is the ONLY
+-- key an entry has -- which it already effectively was. It keeps the caller's own list readable and
+-- stops a rename producing two rows a page has no way to tell apart.
 --
--- This was argued rather than enforced, and the argument was wrong. It said the cross-competitor
--- half followed from the ownership check, because a repository's first path segment had to be the
--- competitor's own login -- but that check compared login STRINGS, and two rows holding one login
--- in different cases both passed it for one repository. Ownership now compares GitHub account ids,
--- so exactly one account can pass for a given repository and the claim is finally true. An index is
--- how a true claim is kept true.
+-- THERE IS DELIBERATELY NO CROSS-COMPETITOR UNIQUENESS. Two competitors may both call an entry
+-- `ants`: a name is not an identity, and nothing is decided on one. Who a competitor is, is
+-- `users.github_id` -- sign-in, which is the whole of what GitHub does here now. The repository
+-- that used to be the global key limited nothing (every ceiling is a season rule and none of them
+-- mentioned it) and cost a normaliser, a season predicate, two indexes and an ownership call that
+-- failed closed, so a rate-limited GitHub stopped anyone creating an entry at all.
 --
--- PARTIAL ON owner_github_id: a row without one did not come through the route and GitHub vouched
--- for nothing, which is the seeded baselines and is why three of them can share one repository.
--- Everything else is a row GitHub confirmed, and those are unique per game.
---
--- NOT partial on retired_at: retiring an entry must not be how its version numbers restart, nor how
--- a release tag is entered twice in one season.
-CREATE UNIQUE INDEX models_repo_uniq
-    ON models (game_id, lower(repo)) WHERE owner_github_id IS NOT NULL;
-
--- and the per-owner key, which still does work the global one cannot: it covers the rows outside
--- that predicate, so one baseline user cannot hold the shared repository twice.
-CREATE UNIQUE INDEX models_owner_game_repo_uniq
-    ON models (owner_id, game_id, lower(repo));
-
--- and one entry per NAME per owner, so the caller's own list is readable and a rename cannot
--- produce two rows a page has no way to tell apart
+-- NOT partial on retired_at: retiring an entry must not be how its version numbers restart.
 CREATE UNIQUE INDEX models_owner_game_name_uniq
     ON models (owner_id, game_id, lower(name));
 
@@ -505,9 +438,9 @@ CREATE INDEX models_owner_idx ON models (owner_id, game_id);
 -- ------------------------------------------------------------- model_versions
 
 -- ONE ROW PER SUBMISSION: what `models` held before the entry was split out of it. Everything from
--- commit_sha down is null at insert -- a submission names a GitHub release and cannot state its own
--- size, class or hashes. Admission fills them and moves the row 'testing' -> 'verified'; promotion
--- to 'active' is count's, after the trial match.
+-- `status` down is null at insert -- a submission is two hashes and two uploads, and cannot state
+-- its own size, class or timings. Admission fills them and moves the row 'testing' -> 'verified';
+-- promotion to 'active' is count's, after the trial match.
 --
 -- EVERY RULE THAT WAS SCOPED (owner_id, game_id) IS SCOPED model_id HERE, and that is the change:
 -- version numbers restart per entry, one submission is in flight per entry, one version is active
@@ -525,14 +458,14 @@ CREATE TABLE model_versions (
 
     -- Stamped from the game's open season at submission, or by the season create for a carried
     -- baseline; never changed. A closed season's `active` versions are its final standing, which
-    -- is why the one-active and release-uniqueness rules below are per season.
+    -- is why the one-active rule below is per season.
     season_id       uuid         NOT NULL,
-    version         int          NOT NULL,
 
-    -- The release under THE ENTRY'S repository. The repo is the entry's: one repository is one
-    -- entry, and a version free to name its own would be a second entry wearing this one's ratings.
-    release_tag     text         NOT NULL,
-    commit_sha      text,
+    -- THE ONLY LABEL A SUBMISSION HAS, and it is the platform's, not the competitor's: 1, 2, 3...
+    -- per entry, assigned by the insert as `max(version) + 1`. It replaced `release_tag`, a string
+    -- that named a GitHub release nothing ever verified -- so the label a competitor typed and the
+    -- release it claimed to name could disagree with nobody noticing. A counter cannot.
+    version         int          NOT NULL,
 
     status          model_status NOT NULL DEFAULT 'testing',
 
@@ -855,11 +788,6 @@ CREATE UNIQUE INDEX model_versions_model_version_uniq
 CREATE UNIQUE INDEX model_versions_one_in_flight_uniq
     ON model_versions (model_id) WHERE status IN ('testing', 'verified');
 
--- the same release cannot be entered twice IN ONE SEASON; it may be entered again in the next. The
--- entry decides the repository, so the `repo` term the old index carried is implied by model_id.
-CREATE UNIQUE INDEX model_versions_release_uniq
-    ON model_versions (model_id, season_id, release_tag);
-
 -- The admission claim: testing rows, oldest first. Deliberately WITHOUT admit_started_at -- a
 -- claim rewrites that column on every row it takes, and keeping it out leaves those updates
 -- heap-only.
@@ -1066,45 +994,6 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
                         WHEN 'season' THEN e.owner_id <> p_user AND v.season_id = s.id
                         WHEN 'user'   THEN e.id IS DISTINCT FROM p_model
                       END);
-$$;
-
--- repo.must_be_owned and .allow_orgs. Asked by the ENTRY create and by nothing else: the repository
--- is the entry's, so this is never a submission-time question.
---
--- IT COMPARES ACCOUNT IDS. The three GitHub values come from `GET /repos/{owner}/{name}`, made by
--- the route before the insert, and are passed in rather than derived here because they are not in
--- this database. Comparing the login instead -- which is what this did -- decided ownership on
--- users.handle, a cache of a mutable remote value refreshed only at sign-in: an account that
--- renamed away from `alice` went on owning `alice/*` until it next signed in.
---
--- `enabled` DEFAULTS TRUE here, alone in the document, and the inconsistency is deliberate. The
--- other nine blocks are competition policy and a season silent about one does not play it; this is
--- the anti-impersonation rule, and a season created with no rules must not be a season in which
--- anyone may enter anyone's repository.
---
--- A NULL season row answers the same way, which is why the route asks this unconditionally rather
--- than under `s.id IS NULL OR`: `s.rules` is then null, both defaults hold, allow_orgs is empty and
--- the org branch is dead. Between seasons an entry can still only be made on your own repository --
--- and it had better be, because the entry it creates holds that repository in models_repo_uniq.
---
--- THE ORG BRANCH REQUIRES A COHORT. `allow_orgs` widens the rule to repositories nobody has proved
--- they own, and on its own it widened it to EVERYONE: season 1 named `Tiny-Brains`, which let any
--- signed-in competitor enter `Tiny-Brains/ants-baselines` and submit the platform's own baseline
--- release as their own model. An organisation allowance is a cohort feature -- a lab publishing
--- from a shared org -- so it is only honoured for people the season already named, and
--- season_rules_ok() refuses the key without `participants`.
-CREATE FUNCTION season_admits_repo(s seasons, p_user uuid, p_owner_github_id bigint,
-                                   p_owner_type text, p_owner_login text)
-RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT p_owner_github_id IS NOT NULL
-       AND (NOT coalesce((s.rules -> 'repo' ->> 'enabled')::bool, true)
-         OR NOT coalesce((s.rules -> 'repo' ->> 'must_be_owned')::bool, true)
-         OR p_owner_github_id = (SELECT u.github_id FROM users u WHERE u.id = p_user)
-         OR (lower(coalesce(p_owner_type, '')) = 'organization'
-             AND season_admits(s, p_user)
-             AND lower(coalesce(p_owner_login, '')) IN (
-                     SELECT lower(o) FROM jsonb_array_elements_text(
-                         coalesce(s.rules -> 'repo' -> 'allow_orgs', '[]'::jsonb)) AS o)));
 $$;
 
 -- entries.max_per_user -- asked by the ENTRY create. A retired entry frees its slot.
@@ -1339,8 +1228,8 @@ GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
 -- rather than at 3am.
 --
 -- Three absences are the point of the exercise: no DELETE anywhere, nothing on `sessions` -- that
--- is Soma's auth surface -- and NO UPDATE ON `models`. An entry's name, its repository and its
--- retirement are the competitor's and Soma's; Jodi has no business rewriting any of them. Before
+-- is Soma's auth surface -- and NO UPDATE ON `models`. An entry's name and its retirement are the
+-- competitor's and Soma's; Jodi has no business rewriting either. Before
 -- the split that boundary could not be drawn, because the entry and the version were one row.
 -- rating_events is INSERT-only because Jodi appends the audit trail and never reads it back.
 DO $$ BEGIN

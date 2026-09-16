@@ -17,21 +17,21 @@ INSERT INTO users (id, github_id, handle, role) VALUES
 -- Two ENTRIES -- one baseline's, one alice's -- and three versions between them. Alice's two
 -- versions are the same entry, which is what makes the promotion below a supersede rather than two
 -- unrelated models both standing active.
-INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
+INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000b1',
-   '00000000-0000-0000-0000-00000000000a', 'random', 'tb/baselines'),
+   '00000000-0000-0000-0000-00000000000a', 'random'),
   ('e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', 'ants brain', 'alice/ants');
-INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+   '00000000-0000-0000-0000-00000000000a', 'ants brain');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('10000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000b1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'random-v1', 'active', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano',
    'sha256:wb1', 'sha256:mb1', '1.8.1'),
   ('20000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano',
    'sha256:wa1', 'sha256:ma1', '1.8.1'),
   ('20000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'v2', 'verified', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'verified', 'nano',
    'sha256:wa2', 'sha256:ma2', '1.8.1');
 INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
   ('10000000-0000-0000-0000-000000000001', 'nano', 25, 8.333),
@@ -149,10 +149,10 @@ EXECUTE w_sweep;
 UPDATE seasons SET closed_at = NULL;
 
 \echo '--- reject path: v3 verified; its trial fails with a fault on seat 0; verdict read; reject (expect UPDATE 1, epoch 2)'
-INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'v3', 'verified', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'verified', 'nano',
    'sha256:wa3', 'sha256:ma3', '1.8.1');
 EXECUTE p_insert (1, 'ants', 50, 'default',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
@@ -201,21 +201,21 @@ RESET ROLE;
 \echo '--- the entry split: two models of one competitor stand together; two versions of ONE model do not'
 -- What the change is FOR. Alice takes a second entry and both are active in the same season, which
 -- the (owner, game, season) exclusion constraint this replaced would have refused outright.
-INSERT INTO models (id, owner_id, game_id, name, repo) VALUES
+INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', 'second try', 'alice/ants-two');
-INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+   '00000000-0000-0000-0000-00000000000a', 'second try');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-000000000009', 'e0000000-0000-0000-0000-0000000000a2',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'v1', 'active', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano',
    'sha256:wa9', 'sha256:ma9', '1.8.1');
 SELECT e.name, v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' AND v.status = 'active' ORDER BY e.name;
 \echo '    ... and a second active version of one entry in one season is still refused (expect exclusion violation)'
-INSERT INTO model_versions (model_id, game_id, season_id, version, release_tag, status,
+INSERT INTO model_versions (model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version)
 VALUES ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000000a',
-        '50000000-0000-0000-0000-000000000001', 2, 'v2', 'active', 'nano',
+        '50000000-0000-0000-0000-000000000001', 2, 'active', 'nano',
         'sha256:wax', 'sha256:aax', '1.8.1');
 
 \echo '--- the predecessor read is single-row across seasons: the bug the entry scope fixes'
@@ -226,10 +226,10 @@ VALUES ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000
 INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, submissions_close_at, closed_at)
 VALUES ('50000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-00000000000a', 2, 'sha256:e0',
         now() - interval '2 days', now() - interval '1 day', now() - interval '1 day');
-INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-00000000000f', 'e0000000-0000-0000-0000-0000000000a2',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000000', 9, 'v0', 'active', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000000', 9, 'active', 'nano',
    'sha256:waf', 'sha256:aaf', '1.8.1');
 \echo '    owner-scoped (what count used to do) vs entry-and-season-scoped (what it does now):'
 SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_id
@@ -244,10 +244,10 @@ SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_
 SELECT seed, preset, status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
 
 \echo '--- the manifest copy: stored as the exact text, accepted when it hashes to manifest_hash (expect INSERT 0 1); one byte changed (expect check violation)'
-INSERT INTO model_versions (id, model_id, game_id, season_id, version, release_tag, status,
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version, manifest) VALUES
   ('20000000-0000-0000-0000-000000000004', 'e0000000-0000-0000-0000-0000000000a1',
-   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 4, 'v4', 'verified', 'nano',
+   '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 4, 'verified', 'nano',
    'sha256:wa4', 'sha256:' || encode(sha256(convert_to('{"in": ["scatter"]}', 'UTF8')), 'hex'),
    '1.8.1', '{"in": ["scatter"]}');
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
@@ -298,7 +298,7 @@ INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline-legacy', 'ba
 
 \echo '--- `Alice` and `alice` are one name (expect duplicate key on users_handle_uniq)'
 -- Case-sensitive uniqueness with case-insensitive readers is how two rows came to answer to one
--- login, and how both of them passed repo_owned() for the same repository.
+-- login: every reader compares case-insensitively, so two rows both answered to one.
 INSERT INTO users (github_id, handle) VALUES (77, 'Alice');
 
 \echo '--- sign-in takes a freed login off the row that provably no longer holds it:'
@@ -319,38 +319,32 @@ INSERT INTO users (github_id, handle, display_name) VALUES (101, 'bob', NULL)
 ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
 SELECT github_id, handle FROM users WHERE github_id IN (100, 101) ORDER BY github_id;
 
-\echo '===== ownership: an account id, asked of GitHub once, and recorded ====='
+\echo '===== an entry is a name: unique per owner, and deliberately NOT unique across them ====='
 
-\echo '--- a stale handle grants nothing. github_id 1 renamed away from `alice`; 99 holds it now.'
-\echo '    Who may enter github.com/alice/brain, which GitHub says account 99 owns? (expect f, t)'
--- Under the login comparison BOTH answered t: users.handle is a cache refreshed only at sign-in,
--- so the account that renamed away went on owning the repositories of the name it left behind.
-SELECT u.github_id, u.handle, season_admits_repo(s, u.id, 99::bigint, 'User', 'alice') AS may_enter
-  FROM users u, seasons s
- WHERE u.github_id IN (1, 99) AND s.number = 1 ORDER BY u.github_id;
+\echo '--- one entry per name per owner, case-insensitively (expect INSERT 0 1, then duplicate key on models_owner_game_name_uniq)'
+INSERT INTO models (owner_id, game_id, name)
+VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a', 'brain');
+INSERT INTO models (owner_id, game_id, name)
+VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a', 'BRAIN');
 
-\echo '--- one entry per repository, across owners (expect INSERT 0 1, then duplicate key on models_repo_uniq)'
-INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login)
-VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a',
-        'brain', 'alice/brain', 99, 'alice');
-INSERT INTO models (owner_id, game_id, name, repo, owner_github_id, owner_login)
-VALUES ((SELECT id FROM users WHERE github_id = 101), '00000000-0000-0000-0000-00000000000a',
-        'not yours', 'alice/brain', 101, 'bob');
+\echo '--- and TWO COMPETITORS MAY HOLD ONE NAME (expect INSERT 0 1)'
+-- The repository was a GLOBAL key, so `alice/brain` could be entered once platform-wide and a
+-- second competitor naming the same repository was refused. A name is not an identity and nothing
+-- is decided on one, so there is no cross-owner index here and this insert must SUCCEED. Who a
+-- competitor is, is users.github_id -- which is sign-in, and the whole of what GitHub does now.
+INSERT INTO models (owner_id, game_id, name)
+VALUES ((SELECT id FROM users WHERE github_id = 101), '00000000-0000-0000-0000-00000000000a', 'brain');
 
-\echo '--- and rows nothing vouched for still share one, which is how three baselines do (expect INSERT 0 1)'
--- models_repo_uniq is partial on owner_github_id, and a null one means the row never went through
--- the route that asks GitHub. That is the only exception, and it is this column.
+\echo '--- the baselines need no carve-out any more (expect INSERT 0 1)'
+-- Three of them shared one repository, which was legal only because models_repo_uniq was PARTIAL
+-- on owner_github_id. With no repository there is no shared value and no exception to explain.
 INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline.two', 'baseline');
-INSERT INTO models (owner_id, game_id, name, repo)
+INSERT INTO models (owner_id, game_id, name)
 VALUES ((SELECT id FROM users WHERE handle = 'baseline.two'),
-        '00000000-0000-0000-0000-00000000000a', 'two', 'tb/baselines');
+        '00000000-0000-0000-0000-00000000000a', 'two');
 
-\echo '--- an organisation allowance with no cohort is an allowance to everyone (expect check violation)'
+\echo '--- and the season rules document no longer has a `repo` block (expect check violation)'
+-- It was the one block whose `enabled` defaulted true, because it was the anti-impersonation rule
+-- for a field that limited nothing. Removing the field removed the exception with it.
 UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"]}}'::jsonb
  WHERE number = 1;
-
-\echo '--- with a cohort it is accepted, and admits the cohort only (expect UPDATE 1, then f for alice, t for bob)'
-UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"]}, "participants": {"enabled": true, "handles": ["bob"]}}'::jsonb
- WHERE number = 1;
-SELECT u.handle, season_admits_repo(s, u.id, 424242::bigint, 'Organization', 'acme-lab') AS may_enter
-  FROM users u, seasons s WHERE u.github_id IN (99, 101) AND s.number = 1 ORDER BY u.handle;

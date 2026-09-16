@@ -106,8 +106,8 @@ pending ──claim──▶ claimed ──start──▶ running ──finish�
 ### 3.2 `games`, `models` and `model_versions`
 
 **An entry and a version are two tables** (decision 51). `models` is the ENTRY — a competitor's
-named lineage, keyed by the GitHub repository it publishes from — and `model_versions` is one
-submission of it. Everything a rating, a seat or a match points at is a VERSION; a rename, a
+named lineage, keyed by that name under its owner and addressed by its id — and `model_versions` is
+one submission of it. Everything a rating, a seat or a match points at is a VERSION; a rename, a
 retirement and a quota are about the ENTRY.
 
 Before the split there was one table, and "the entry" was spelled `(owner_id, game_id)` inside
@@ -118,32 +118,32 @@ to live but a pair of foreign keys, so every rule that should have been per line
 CREATE TABLE models (              -- the entry
     id, owner_id, game_id,
     name,                          -- the competitor's own word for it, theirs to edit
-    repo,                          -- CANONICAL owner/name, CHECK (repo = repo_path(repo))
     created_at,
-    retired_at                     -- "no more releases here"; not a delete, and reversible
+    retired_at                     -- "no more versions here"; not a delete, and reversible
 );
-CREATE UNIQUE INDEX models_repo_uniq
-    ON models (game_id, lower(repo)) WHERE owner_github_id IS NOT NULL;
-CREATE UNIQUE INDEX models_owner_game_repo_uniq ON models (owner_id, game_id, lower(repo));
 CREATE UNIQUE INDEX models_owner_game_name_uniq ON models (owner_id, game_id, lower(name));
 ```
 
-**One entry per repository, and it is an index rather than an argument.** It used to be the
-argument: the index was keyed on the owner, and the cross-competitor half was said to follow from
-`repo_owned()`, because a repository's first path segment had to be the competitor's own GitHub
-login. That was wrong. The check compared login *strings* against `users.handle`, which is
-case-insensitively compared but was case-sensitively unique, so `Alice` and `alice` were two rows
-that both passed it for one repository — demonstrated in `scripts/verify/scenario.sql`. Ownership
-now compares GitHub **account ids**, so exactly one account can pass for a given repository, and
-the index is how a true claim is kept true.
+**An entry is a name, and that name is the only key it has.** It used to be a GitHub
+repository — `models.repo`, normalised by `repo_path()`, confirmed against `GET /repos/{owner}/{name}`
+at creation, and unique per game platform-wide. All of that is gone, because **the requirement
+limited nothing**: every ceiling on a competitor is a season rule (§3.11) and not one of them
+mentioned a repository, while the check cost a SQL normaliser written around Orion's lack of regex,
+a season predicate, two unique indexes, and an outbound call on the create path **that failed
+closed** — so a rate-limited GitHub meant nobody could create an entry at all. GitHub is the
+sign-in identity now and nothing else.
 
-`models_repo_uniq` is **partial on `owner_github_id`**. A row without one did not come through
-`soma-models-create` and GitHub vouched for nothing — which is the seeded baselines, and is how
-three of them share `Tiny-Brains/ants-baselines`. `models_owner_game_repo_uniq` stays because it
-covers exactly those rows, so one baseline user still cannot hold the shared repository twice.
+`models_owner_game_name_uniq` is deliberately **per owner** and not global. Two competitors may
+both call an entry `ants`: a name is not an identity and nothing is decided on one, which is also
+what lets `name` stay free text under `models_name_shape` — an entry is addressed by its id
+(`GET /v1/models/{id}`), so the name never has to survive a URL.
 
 It is **not** partial on `retired_at`, because retiring must not become a way to restart a version
-series or re-enter a release tag.
+series.
+
+The seeded baselines **lose their special case** with it. Three of them shared
+`Tiny-Brains/ants-baselines`, which was legal only because `models_repo_uniq` was partial on
+`owner_github_id`; with no repository there is no shared value and no exception to explain.
 
 `model_versions` carries what `models` used to, plus `model_id`, plus a denormalised `game_id` that
 is **proved** rather than trusted: with `FOREIGN KEY (model_id, game_id) → models (id, game_id)` and
@@ -155,7 +155,6 @@ Every rule that was scoped `(owner_id, game_id)` is scoped `model_id`:
 ```sql
 model_versions_model_version_uniq    (model_id, version)          -- numbers restart per entry
 model_versions_one_in_flight_uniq    (model_id) WHERE status IN ('testing', 'verified')
-model_versions_release_uniq          (model_id, season_id, release_tag)
 model_versions_one_active_excl       EXCLUDE (model_id =, season_id =) WHERE status = 'active'
                                        DEFERRABLE INITIALLY DEFERRED
 ```
@@ -471,12 +470,10 @@ itself by one row is the bug nobody reports and nobody can reproduce.
 | `model_ratings(version, settled_sigma)` | a version's ladders, each with rank and field, in the leaderboard's order | the version page, the profile, the caller's list |
 | `ladder_field(season, ladder)` | **who is on one ladder**, with `standings.ranked_per_user_max` applied | the leaderboard AND `model_ratings` — see below |
 | `match_seat_rows(match)` | a match's seats resolved, with `outcome` | the three match routes, which each shape their own keys from these rows |
-| `repo_path(text)` | a GitHub URL, ssh remote or bare `owner/name` normalised to one canonical path; NULL for anything that is not exactly one repository | the `models.repo` CHECK, the entry create, the submission |
-| `season_admits_repo(season, user, owner_github_id, owner_type, owner_login)` | whether a repository is the competitor's to enter, by **account id** and never by login; the three GitHub values come from the route's `GET /repos/{owner}/{name}` | the entry create, and nothing else |
 | `season_rule_spec()` | **what a season's rules document may say**: one row per key, with its kind and range | `season_rules_ok` |
 | `season_rules_ok(jsonb)` | the rules document's shape, refusing an unknown key at both levels | the `seasons.rules` CHECK |
 | `season_rules_public(jsonb)` | the rules a season may show the world | `season_json` |
-| `season_admits*` ×7 | one predicate per rule: participants, weights, repository, entries, in-flight, versions, class | the writes that must not happen, and the reads that say why |
+| `season_admits*` ×6 | one predicate per rule: participants, weights, entries, in-flight, versions, class | the writes that must not happen, and the reads that say why |
 | `season_cooldown_until(season, model)` | when a model may submit again | the submission `why` read |
 | `weight_classes_ok(jsonb)` | what a weight-class table must be: named classes, positive whole caps, strictly ascending | the `seasons.weight_classes` CHECK |
 
