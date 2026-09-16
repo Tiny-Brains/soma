@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-The parent `tinybrains/CLAUDE.md` covers the platform: the nine repos, the ownership boundaries
+The parent `tinybrains/CLAUDE.md` covers the platform: the eight repos, the ownership boundaries
 between packages, and the constants that must stay equal across them. This file covers Soma only.
 
 ## What this repo ships

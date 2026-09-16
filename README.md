@@ -419,6 +419,6 @@ needs a configured OAuth App rather than a minted cookie.
 
 - Local references: [migrations](migrations/), [channel contracts](channels/), and [workflow response mappings](workflows/).
 - Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the three packages run against it.
-- [The competitor guide](https://github.com/Tiny-Brains/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
+- [The competitor guide](https://github.com/Tiny-Brains/web/tree/main/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
 - Related repositories: [Web](https://github.com/Tiny-Brains/web), [Jodi](https://github.com/Tiny-Brains/jodi), [Kalam](https://github.com/Tiny-Brains/kalam), [DevOps](https://github.com/Tiny-Brains/devops).
 - Apache-2.0: see [LICENSE](LICENSE).
