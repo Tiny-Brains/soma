@@ -1,0 +1,305 @@
+# Orion config for the SOMA unit: the REST surface, the runner gate and the four clocks, in cluster mode.
+# Requires 1.8.1. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
+# kalam's docker/runner.toml.tmpl.
+#
+# ${NAME:-default} is substituted by orion-server from the container's environment before the file
+# is parsed, so one image serves every environment and nothing is written to disk. Credentials are
+# env:// references the server resolves itself, after parsing.
+#
+# Values that must agree with kalam's runner.toml.tmpl (model_prefix, orion_version) are asserted by
+# devops' scripts/check/configs.sh.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+data_mounts = ["/v1"]
+shutdown_drain_secs         = ${ORION_SHUTDOWN_DRAIN_SECS:-30}
+shutdown_force_timeout_secs = ${ORION_SHUTDOWN_FORCE_SECS:-30}
+
+# WHO THE CALLER IS, and nothing else. `enabled` stays false -- this section is here for
+# `trusted_proxies` alone, which is NOT gated on it (orion-server's own
+# `trusted_proxies_parse_with_the_platform_limiter_disabled` pins that): the per-channel
+# `rate_limit` blocks Soma declares key on the same client identity and apply with the platform
+# limiter off.
+#
+# WITHOUT THIS EVERY PUBLIC ROUTE SHARES ONE BUCKET. Orion reads `X-Forwarded-For` / `X-Real-IP`
+# only when the DIRECT PEER is in this list; otherwise the peer IP is the identity. The peer is
+# the `web` container's nginx, which sets both headers -- so with an empty list every browser in
+# the world rate-limits as one address, and the first burst locks everybody out. Untrusted callers
+# still cannot spoof a fresh bucket per request: the header is read only behind a trusted peer, and
+# the hops are resolved right to left.
+#
+# The default is the RFC1918 space, which covers a Docker bridge network and a pod network alike.
+# A REAL DEPLOYMENT SHOULD NARROW IT to the reverse proxy it actually runs -- trusting a range
+# wider than the proxy lets anything inside that range claim to be anyone.
+[rate_limit]
+trusted_proxies = ${SOMA_TRUSTED_PROXIES:-["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}
+
+# Required, not optional: an Orion singleton is a row in the state database, so "cluster-wide"
+# means "state-database-wide". Two servers over two state databases are two tb-count clocks folding
+# the same matches -- which the fence makes safe, but not once.
+[cluster]
+enabled                = ${ORION_CLUSTER_ENABLED:-true}
+redis_url              = "env://REDIS_URL"
+epoch_poll_interval_ms = 2000
+instance_id            = "${ORION_INSTANCE_ID:-}"
+
+[storage]
+url = "env://ORION_STATE_DB_URL"
+# A cluster may not migrate at boot: cluster.enabled with auto_migrate is refused at startup.
+# entrypoint.sh runs `orion-server migrate` first, which is the deploy step this asks for.
+auto_migrate = false
+
+[vars]
+# ------------------------------------------------------------------------------- SOMA
+app_url            = "${APP_URL:-http://localhost:5173/}"
+# Exactly as registered with GitHub. https only, except on a loopback host.
+oauth_redirect_uri = "${OAUTH_REDIRECT_URI:-http://localhost:5173/v1/auth/github/callback}"
+# WHERE SIGN-IN MAY SEND YOU BACK TO. `soma-auth-github` carries a `?next=` through the GitHub
+# round-trip -- Orion seals it into the signed state, so it cannot be tampered with in flight --
+# and these two are the whole allow list. The match is origin + path boundary, never a string
+# prefix, which is what stops `http://localhost:5173.evil.test/steal` being admitted.
+#
+# The console is here because it is a SEPARATE ORIGIN that shares this sign-in: without it, a
+# visitor sent from :8081 to GitHub lands back on the site and has to find their own way to the
+# console. Adding a third origin means adding it here and nowhere else.
+app_return_url     = "${APP_URL:-http://localhost:5173/}"
+console_return_url = "${CONSOLE_URL:-http://localhost:8081}"
+# Must substitute to a bare TOML boolean; entrypoint.sh normalises SOMA_COOKIE_SECURE. Browsers
+# will not store a Secure cookie from an http:// origin, so a plain-http stack sets false.
+cookie_secure      = ${SOMA_COOKIE_SECURE:-true}
+# How soon after a season closes the next may open.
+season_gap_days    = ${SEASON_GAP_DAYS:-1}
+
+# ------------------------------------------------------------------------------- CLOCKS
+# Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here
+# rather than in the definitions because a definition is versioned and content-hashed, and changing
+# a pairing rate should not be a new workflow version.
+game = "ants"
+
+# A preset names a pool of boards and how many seats play them -- THE PRESET DECIDES THE SEAT COUNT.
+# Every preset Ants ships, two seats to eight: the runs of one L16 orthogonal array over seats,
+# terrain, board size, hills and food (ants/mapgen/recipes/, each recipe's header names its run).
+# Pairing only ever picks a preset the roster can seat -- the plugin filters by distinct owners and
+# the trial query by the season's baselines -- so the wide maps wait for a roster that fills them
+# rather than starving everyone else. A replica claims up to eight seats (kalam MAX_SEATS).
+presets = [
+  { name = "open-2", players = 2 },
+  { name = "maze-2", players = 2 },
+  { name = "rooms-2", players = 2 },
+  { name = "cave-2", players = 2 },
+  { name = "maze-3", players = 3 },
+  { name = "cave-3", players = 3 },
+  { name = "open-4", players = 4 },
+  { name = "rooms-4", players = 4 },
+  { name = "open-5", players = 5 },
+  { name = "cave-5", players = 5 },
+  { name = "maze-6", players = 6 },
+  { name = "rooms-6", players = 6 },
+  { name = "rooms-7", players = 7 },
+  { name = "cave-7", players = 7 },
+  { name = "open-8", players = 8 },
+  { name = "maze-8", players = 8 },
+]
+
+# pair_depth_target is a staleness cap, never the signal -- demand is the signal. It is also why
+# the autoscaler must never read queue depth: this caps the queue, so depth would cap the fleet at
+# pair_depth_target/wave_k and look correct doing it.
+count_batch       = 50
+pair_depth_target = 64
+
+# In-flight policy: `burst` matches at once for a new version, `steady_cap` once placed, none of
+# its own once sigma is at or below `settled_sigma`.
+burst         = 8
+steady_cap    = 2
+settled_sigma = 3.0
+
+cross_class_fraction = 0.20
+repair_cap = 3
+
+# MUST EQUAL Kalam's strike_ceiling, or count judges a trial by a rule the wave did not play by.
+forfeit_strikes = 5
+
+# The rating prior. web's compose/seed.sql gives the baselines these same numbers, because a
+# baseline's first fold reads these as its own.
+prior_mu        = 25.0
+prior_sigma     = 8.333333333333334
+sigma_inflation = 2.0
+
+ts_beta             = 4.166666666666667
+ts_tau              = 0.08333333333333333
+ts_draw_probability = 0.10
+
+# The INTERNAL models endpoint, and it is the clocks' rather than the routes': the admit clock signs a
+# GET through `soma-models-internal` and then trims this prefix off it to get a path for
+# `soma-models-http`.
+# NOT ${R2_ENDPOINT}, which on this node is the PUBLIC address a browser fetches a replay from --
+# a presigned URL signed for one host and trimmed by the other leaves a path that 404s.
+models_endpoint = "${MODELS_ENDPOINT:-http://minio:9000}"
+
+# An Orion model id is `[a-z][a-z0-9-]*` joined by `.`, so a bare uuid beginning with a digit is
+# refused: this is the prefix that makes a version id a model id (decision R9). It MUST equal the
+# `model_prefix` every Kalam replica is configured with, or a replica registers models under names
+# no match row names.
+model_prefix = "tb.v"
+
+# What ran the adapters, recorded on every verdict and every finished match. A change in it is what
+# makes a re-validation sweep necessary (decision R10), so it is pinned here beside the binary
+# rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
+# a different thing that moves for different reasons.
+orion_version = "${ORION_VERSION:-1.8.1}"
+admit_batch        = 4
+admit_timeout_s    = 180
+admit_attempts_max = 3
+admit_deadline_ms = 5000
+revalidate_batch = 4
+
+# The ONNX surface a submission may use.
+opset_min = 13
+opset_max = 19
+op_allowlist = [
+  "Abs", "Add", "And", "ArgMax", "ArgMin", "AveragePool", "BatchNormalization", "Cast", "Ceil",
+  "Clip", "Concat", "Constant", "ConstantOfShape", "Conv", "Div", "Elu", "Equal", "Erf", "Exp",
+  "Expand", "Flatten", "Floor", "Gather", "GatherElements", "Gemm", "GlobalAveragePool",
+  "GlobalMaxPool", "Greater", "HardSigmoid", "Identity", "InstanceNormalization", "LayerNormalization",
+  "LeakyRelu", "Less", "Log", "LogSoftmax", "MatMul", "Max", "MaxPool", "Mean", "Min", "Mul", "Neg",
+  "Not", "Or", "Pad", "Pow", "PRelu", "Range", "Reciprocal", "ReduceMax", "ReduceMean", "ReduceMin",
+  "ReduceSum", "Relu", "Reshape", "Resize", "Selu", "Shape", "Sigmoid", "Sign", "Slice", "Softmax",
+  "Softplus", "Split", "Sqrt", "Squeeze", "Sub", "Sum", "Tanh", "Tile", "Transpose", "Unsqueeze",
+  "Where",
+]
+
+# ------------------------------------------------------------------------------- RUNNER GATE
+# What `/v1/runner/*` serves a match on. These are read by the eight runner workflows and by
+# nothing else; a Kalam replica used to hold its own copy of each in kalam.toml.tmpl, asserted
+# equal across the two files by scripts/check/configs.sh -- WHICH CANNOT READ A MACHINE ON
+# SOMEBODY'S DESK. The claim response carries them instead, from the one place that owns them.
+
+# THE BOTTOM OF A THREE-LEVEL COALESCE, and a real deployment never reaches them. A claim reads
+# `seasons.rules -> 'execution'` first (N18 -- a season owns the terms a model competes under), then
+# `games.manifest -> 'limits'`, which `soma bootstrap` writes from the cartridge's own cartridge.json and
+# is where these two numbers have always really lived. These are the last resort.
+#
+# That is exactly what makes a disagreement invisible, so check/configs.sh 1d asserts they equal the
+# cartridge's, and 1c asserts they equal kalam.toml.tmpl's for as long as a db-mode replica reads
+# its own copy. The second of those goes with the runner conversion; the first stays.
+turn_ms   = 1000
+max_turns = 1000
+
+# How often a row may be refused because a node cannot serve a seat's model before it fails as
+# MODEL_UNAVAILABLE. Counted apart from lease lapses, because they mean different things: a lapse
+# is a crash, a refusal is a roster that has not caught up. A season may override it
+# (`execution.refusal_ceiling`), and the cartridge has no opinion about how often a NODE may refuse
+# a row, so unlike turn_ms and max_turns this falls straight from the season to here.
+refusal_ceiling = 5
+
+# THE LEASE IS A DEPLOYMENT FACT AND NOT A SEASON'S, because it is about the network between the
+# fleet and this node rather than about the terms a model competes under. Off-site a lapse means a
+# host slept or a home link dropped, so this is the number that gets tuned by where the runners
+# are, not by what the season is testing.
+lease_seconds = 300
+
+# A TARGET, AND THE CLAIM MAY SEND LESS. What it puts on the contract is
+#     min(this, floor(lease_seconds * 1000 / ((seat_count + 1) * turn_ms)))
+# A season may move `turn_ms`, and a fixed interval would then let the lease expire before the
+# renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads
+# as a wedged runner. Clamping keeps `renew_every_n_turns * turn_ms * (seat_count + 1) <= lease_seconds`
+# true by arithmetic instead of by a range check in a file that cannot see this one, and the row's
+# seat count is the multiplier because a turn costs every seat's deadline plus the step.
+renew_every_n_turns = 30
+
+# Where a replay goes, and THE ADDRESS A RUNNER REACHES THE OBJECT STORE ON -- which is a third
+# address for one bucket, and not either of the two already named above.
+#
+#   MODELS_ENDPOINT        what a node dials for model bytes          minio:9000
+#   R2_ENDPOINT            what a BROWSER fetches a replay from       127.0.0.1:9000
+#   RUNNER_BLOB_ENDPOINT   what a RUNNER PUTs a replay to             minio:9000 in compose,
+#                                                                     the public one off-site
+#
+# SigV4 signs the host, so the gate must sign for the host the runner will actually dial. Signing
+# with R2_ENDPOINT because "that is the replay bucket's address" produces a URL the runner rewrites
+# onto its own endpoint, and MinIO answers `SignatureDoesNotMatch` -- a 403 that names a signature
+# problem and not the two variables behind it. Found the first time a runner finished a match.
+#
+# `http_call` prefixes its connector's base URL onto `path`, so the runner subtracts this value
+# from the signed URL and re-prefixes with `kalam-blobs-put`'s own. THOSE TWO MUST BE THE SAME
+# ADDRESS, which is why the gate sends it rather than the runner holding a private copy.
+replay_prefix = "replays"
+#
+# NO NESTED DEFAULT: `${A:-${B}}` leaves a literal `}` on the value here, which is how a runner came
+# to be registered as `kalam-2}` an hour before this line was written. Compose supplies the value.
+blob_endpoint = "${RUNNER_BLOB_ENDPOINT:-http://minio:9000}"
+
+# An entry is the key or `sha256:<64 hex>` of it, so a deployment keeps the digest in config and
+# the key in its secret store. The list exists for zero-downtime rotation.
+[admin_auth]
+enabled = true
+api_keys = ["${ORION_ADMIN_KEY}"]
+
+# ONNX AS A GOVERNED ENTITY (decision R1), and on this node it is an ADMISSION instrument only.
+# The admit clock registers a submission here, runs admission synchronously, activates it long
+# enough to play it over the game's reference observations, and archives it again -- so the active
+# set is normally empty and a generation build recompiles no competitor's adapter. The replicas
+# are where models are served, and their roster clocks put them there.
+[models]
+enabled = true
+
+cache_dir = "/var/lib/orion/models"
+max_cache_bytes  = 4294967296
+max_loaded_bytes = 2147483648
+
+# Nothing is warmed here: an admission node touches each model once.
+preload = "none"
+
+# The largest artifact any weight class admits is `large` at 64 MiB.
+max_artifact_bytes = 67108864
+max_input_elements  = 1048576
+max_output_elements = 1048576
+
+# The probe's ceiling, and the ONLY compute gate at admission -- five zero-filled inferences at the
+# manifest's `probe_dims`, median inside this. A season may set graph.infer_us_max on top; none
+# that the platform ships does (decision 46).
+max_probe_ms = 250
+
+# The adapter's own deadline when the probe channel plays a reference observation.
+max_timeout_ms = 5000
+
+# NO `[models.trust]`, and that is the decision. A plugin is the platform's own code and is signed
+# by whoever holds the trust key; a model is a competitor's, and the platform has no key to sign it
+# with. What guards a model is the digest the submission declared, which the node re-hashes the
+# fetched object against before it will run it.
+
+[plugins]
+enabled = true
+
+# Non-empty on BOTH units on purpose: a half-configured trust posture is worse than none, because
+# the unchecked node is the one nobody remembers. Minted by scripts/setup/trust-keygen.sh, applied
+# by scripts/setup/sign-plugins.sh.
+[plugins.trust]
+public_keys = ["${TB_TRUST_PUBLIC_KEY}"]
+
+[cron]
+# An INNER deadline under server.shutdown_force_timeout_secs, so it can only make the wait shorter.
+shutdown_timeout_secs = ${ORION_CRON_SHUTDOWN_SECS:-60}
+
+# Soma reaches Postgres through raw db_read, so these bind no endpoint today; set so a dialect task
+# added later inherits sane numbers.
+[query]
+default_limit = 50
+max_limit     = 200
+
+# The clocks carry `errors_only: true` per channel, so a clean run writes no trace and a broken
+# one is kept in full -- which is what makes `sync` affordable.
+# PROMETHEUS, ON THE MAIN LISTENER. With this off, `/metrics` is not registered at all and 404s
+# like any unknown route -- which is what left the Orion console's Operations dashboard (request
+# rate, error rate, latency percentiles) permanently blank even once its auth was fixed.
+#
+# `bind_addr` is deliberately UNSET, so `/metrics` stays on the main listener where `admin_auth`
+# guards it. A dedicated listener would be unauthenticated by design, and this node's admin plane
+# is not something to publish a second, keyless door into. The console reaches it through the same
+# gate as everything else on 8081; a scraper uses the admin key.
+[metrics]
+enabled = true
+
+[trace_storage]
+mode = "sync"

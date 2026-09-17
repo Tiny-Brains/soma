@@ -1,0 +1,112 @@
+# A RELEASE IS A TAG: push `v<major>.<minor>.<patch>` from main and this publishes the Soma node image,
+# for linux/amd64 and linux/arm64, as ghcr.io/tiny-brains/soma:<version>, :<major>.<minor> and :latest.
+#
+#   gh workflow run release.yml          # REHEARSAL: both platforms built and checked, nothing pushed
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# THE ANTS RELEASE IS CHOSEN ONCE, HERE. The image registers that release's cartridge and declares its
+# engine, and a runner built from a different release claims nothing -- so the workflow resolves the
+# latest release (or the repository variable ANTS_RELEASE, to pin one), passes it to the build, and
+# records it on the image as a label.
+#
+# THE BUILD RUNS ON ARM64 AND BUILDS THE PLUGINS THERE, ONCE. Every stage that compiles or fetches is
+# pinned to the build platform, so both images carry the same tb.rating and tb.pairing bytes and one
+# signature verifies on both; only the runtime stage's apt-get runs per platform (amd64 under QEMU).
+# rustc's host moves a component's bytes, and arm64 is what every local build of this image has been.
+#
+# A TAG IS NEVER RE-CUT: a deployment pins the version, and a moved tag is a different Soma under it.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A version the tag names, from a commit main holds -- or the image would publish a Soma nobody
+      # can find in the history it claims.
+      - name: A version tag on main
+        if: github.ref_type == 'tag'
+        run: |
+          echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::$GITHUB_REF_NAME is not v<major>.<minor>.<patch>"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+
+      - name: The ants release this image registers
+        id: ants
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIN: ${{ vars.ANTS_RELEASE }}
+        run: |
+          tag="${PIN:-$(gh release view --repo Tiny-Brains/ants --json tagName --jq .tagName)}"
+          echo "release=$tag" >> "$GITHUB_OUTPUT"
+          echo "ants $tag"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Both platforms, exported rather than pushed, so what is about to be published can be read.
+      - name: Build both platforms
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg ANTS_RELEASE=${{ steps.ants.outputs.release }} \
+            --output "type=local,dest=$RUNNER_TEMP/out" .
+
+      # The package, the plugins and the cartridge are built once, on the build platform; if the two
+      # images differ there, a signature made for one does not verify on the other.
+      - name: Both platforms carry the same package
+        run: |
+          cd "$RUNNER_TEMP/out"
+          diff -r linux_amd64/pkg linux_arm64/pkg
+          {
+            echo "### soma ${GITHUB_REF_NAME}"
+            echo
+            echo "ants \`$(cat linux_arm64/pkg/cartridge/release)\`, engine \`$(cat linux_arm64/pkg/cartridge/engine-digest)\`"
+            echo
+            echo '```'
+            (cd linux_arm64/pkg/soma/plugins && sha256sum */*.wasm)
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/tiny-brains/soma
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/login-action@v3
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # The same build, from the builder's cache, pushed only for a tag.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: ANTS_RELEASE=${{ steps.ants.outputs.release }}
+          push: ${{ github.ref_type == 'tag' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            dev.tinybrains.ants.release=${{ steps.ants.outputs.release }}
