@@ -237,6 +237,77 @@ EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
+\echo '===== notifications: what the clocks tell a competitor ====='
+\echo '--- the result of rated row 43, where alice lost with a strike: notable under the default level (expect INSERT 0 1 -- alice only, the baseline is told nothing); again (expect INSERT 0 0); the trial row 42 (expect INSERT 0 0)'
+EXECUTE n_results (:'m43');
+EXECUTE n_results (:'m43');
+EXECUTE n_results (:'m42');
+\echo '--- the ranks of row 43: alice stayed first on both ladders, so nothing moved (expect INSERT 0 0)'
+EXECUTE n_ranks (:'m43', 5.0);
+\echo '--- a fold that FLIPS the open ladder, rolled back: alice v2 from 2nd to 1st. Unsettled (settled_sigma 1.0) says nothing (expect INSERT 0 0); settled, alice is told and the baseline is not (expect INSERT 0 1); again (expect INSERT 0 0)'
+BEGIN;
+INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, preset, seat_count, ladders,
+                     claim_token, replay_key, engine_digest_played, orion_version, played_at, rated_at, rated_seq)
+VALUES ('60000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000000a',
+        '50000000-0000-0000-0000-000000000001', 'rated', 'sha256:e2', 900, 'default', 2, '{open}',
+        gen_random_uuid(), 'replays/flip', 'sha256:e2', '1.8.1', now(), now(), nextval('rating_seq'));
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
+  ('60000000-0000-0000-0000-0000000000f1', 0, '20000000-0000-0000-0000-000000000002', 'sha256:wa2', 'sha256:ma2', 1, 9, 0),
+  ('60000000-0000-0000-0000-0000000000f1', 1, '10000000-0000-0000-0000-000000000001', 'sha256:wb1', 'sha256:mb1', 2, 1, 0);
+INSERT INTO rating_events (version_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after) VALUES
+  ('20000000-0000-0000-0000-000000000002', 'open', 900, '60000000-0000-0000-0000-0000000000f1', 0, 20, 2, 40, 2),
+  ('10000000-0000-0000-0000-000000000001', 'open', 900, '60000000-0000-0000-0000-0000000000f1', 1, 35, 2, 30, 2);
+UPDATE ratings SET mu = 40, sigma = 2 WHERE version_id = '20000000-0000-0000-0000-000000000002' AND ladder = 'open';
+UPDATE ratings SET mu = 30, sigma = 2 WHERE version_id = '10000000-0000-0000-0000-000000000001' AND ladder = 'open';
+EXECUTE n_ranks ('60000000-0000-0000-0000-0000000000f1', 1.0);
+EXECUTE n_ranks ('60000000-0000-0000-0000-0000000000f1', 3.0);
+EXECUTE n_ranks ('60000000-0000-0000-0000-0000000000f1', 3.0);
+SELECT tone, subject, description, link, data FROM notifications WHERE category = 'ratings';
+ROLLBACK;
+\echo '--- the verdicts: alice v2 passed its trial (expect INSERT 0 1), twice (expect INSERT 0 0); v3 failed it (expect INSERT 0 1); v1 is superseded, which nobody is told (expect INSERT 0 0)'
+EXECUTE n_version ('20000000-0000-0000-0000-000000000002');
+EXECUTE n_version ('20000000-0000-0000-0000-000000000002');
+EXECUTE n_version ('20000000-0000-0000-0000-000000000003');
+EXECUTE n_version ('20000000-0000-0000-0000-000000000001');
+SELECT category, kind, tone, subject, description, link, actor, data, dedupe_key, read_at IS NULL AS unread
+  FROM notifications ORDER BY dedupe_key;
+\echo '--- the settings decide inside the insert: matches off, and a locked category (expect f, t, f, f, then check violations on a locked category turned off and a level where none exists)'
+INSERT INTO notification_settings (user_id, category, app, push, level)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'matches', true, false, 'off');
+SELECT notification_wanted('00000000-0000-0000-0000-0000000000a1', 'matches', true)  AS matches_off,
+       notification_wanted('00000000-0000-0000-0000-0000000000a1', 'submissions')    AS submissions,
+       notification_wanted('00000000-0000-0000-0000-0000000000a1', 'admin')          AS admin_for_a_competitor,
+       notification_wanted('00000000-0000-0000-0000-0000000000b1', 'submissions')    AS a_baseline;
+INSERT INTO notification_settings (user_id, category, app, push, level)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'submissions', false, false, NULL);
+INSERT INTO notification_settings (user_id, category, app, push, level)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'ratings', true, false, 'all');
+DELETE FROM notification_settings;
+\echo '--- the settings object: five categories for a competitor, six for an admin, none for a baseline (expect 5, 6, 0)'
+SELECT json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000a1')) AS competitor,
+       json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000ad')) AS admin,
+       json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000b1')) AS baseline;
+\echo '--- a link is an application path (expect check violation on //host)'
+INSERT INTO notifications (user_id, category, kind, subject, link, dedupe_key)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'account', 'account', 'x', '//evil.example/x', 'harness:link');
+\echo '--- the expiry: a row the admit run stamped with its token is told once (expect INSERT 0 1, then INSERT 0 0), inside a rolled-back transaction'
+BEGIN;
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, reject_reason, admit_token)
+VALUES ('20000000-0000-0000-0000-0000000000e1', 'e0000000-0000-0000-0000-0000000000a1',
+        '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 90, 'rejected',
+        'TIMED_OUT', '40000000-0000-0000-0000-0000000000e1');
+EXECUTE n_expired ('40000000-0000-0000-0000-0000000000e1');
+EXECUTE n_expired ('40000000-0000-0000-0000-0000000000e1');
+SELECT subject, tone, data ->> 'reason_code' AS reason_code FROM notifications WHERE version_id = '20000000-0000-0000-0000-0000000000e1';
+ROLLBACK;
+\echo '--- the close: everyone who entered is told once, with where they finished on open; the baseline is not (expect INSERT 0 1, then INSERT 0 0), rolled back'
+BEGIN;
+UPDATE seasons SET closed_at = now() WHERE id = '50000000-0000-0000-0000-000000000001';
+EXECUTE n_season ('00000000-0000-0000-0000-00000000000a');
+EXECUTE n_season ('00000000-0000-0000-0000-00000000000a');
+SELECT subject, description, link, season, data FROM notifications WHERE category = 'season';
+ROLLBACK;
+
 \echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed MODEL_UNAVAILABLE)'
 EXECUTE p_insert (2, 'ants', 51, 'default',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);

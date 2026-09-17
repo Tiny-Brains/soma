@@ -1,7 +1,7 @@
 {
   "workflow_id": "tb-count-run",
   "name": "Clock: count",
-  "description": "The only writer of a ladder. Claims its run fence at the first task and halts if it lost, then walks one document of work: every unmarked finished match in finish order, followed by every trial that has reached a terminal state. A fold is one plugin call and one fenced statement; a verdict is promotion (two statements) or rejection or nothing at all. Folds come first so a trial is decided after every result that arrived before it. A fold that affects zero rows halts the run -- the fence moved, or the row was already counted -- and the next occurrence starts from a clean read. A pass that affects zero rows does not halt: a concurrent run decided the candidate, and the withdraw after it is idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. soma/docs/schema.md §5, docs/design.md §5.",
+  "description": "The only writer of a ladder. Claims its run fence at the first task and halts if it lost, then walks one document of work: every unmarked finished match in finish order, followed by every trial that has reached a terminal state. A fold is one plugin call and one fenced statement; a verdict is promotion (two statements) or rejection or nothing at all. Folds come first so a trial is decided after every result that arrived before it. A fold that affects zero rows halts the run -- the fence moved, or the row was already counted -- and the next occurrence starts from a clean read. A pass that affects zero rows does not halt: a concurrent run decided the candidate, and the withdraw after it is idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. Each fold, pass and rejection is followed by its notification -- a separate, keyed, continue_on_error statement that reads the decision off the row, so a notification can be lost to a crash between the two but never costs a fold or a verdict. soma/docs/schema.md §5 and §3.11, docs/clocks.md §5.",
   "tags": ["pkg:soma"],
   "condition": true,
   "loop": { "counter": "i", "max": 400 },
@@ -147,6 +147,34 @@
               "on_reject": "halt"
             }
           }
+        },
+        {
+          "id": "notify_result",
+          "name": "Tell each seat's owner how it went",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH m AS ( SELECT mt.id, mt.seat_count, mt.preset, g.slug AS game, se.number AS season FROM matches mt JOIN games g ON g.id = mt.game_id JOIN seasons se ON se.id = mt.season_id WHERE mt.id = ($1)::uuid AND mt.status = 'rated' AND mt.trial_version_id IS NULL ), seats AS MATERIALIZED ( SELECT r.* FROM m CROSS JOIN LATERAL match_seat_rows(m.id) r ) INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, match_id, actor, data, dedupe_key) SELECT s.owner_id, 'matches', 'result', CASE WHEN s.outcome = 'dq' THEN 'bad' WHEN s.strikes > 0 THEN 'warn' WHEN s.outcome = 'win' THEN 'ok' ELSE 'info' END, s.model_name || ' v' || s.version || CASE WHEN s.outcome = 'dq' THEN ' was disqualified' WHEN m.seat_count = 2 AND s.outcome = 'win' THEN ' won' WHEN m.seat_count = 2 AND s.outcome = 'draw' THEN ' drew' WHEN m.seat_count = 2 THEN ' lost' ELSE ' placed ' || (s.rank)::text || CASE WHEN (s.rank) % 100 IN (11, 12, 13) THEN 'th' WHEN (s.rank) % 10 = 1 THEN 'st' WHEN (s.rank) % 10 = 2 THEN 'nd' WHEN (s.rank) % 10 = 3 THEN 'rd' ELSE 'th' END || ' of ' || m.seat_count END, 'Scored ' || s.score || ' on ' || m.preset || CASE WHEN s.strikes = 1 THEN ', with 1 strike' WHEN s.strikes > 1 THEN ', with ' || s.strikes || ' strikes' ELSE '' END || '.', '/matches/' || m.id, m.game, m.season, s.model_id, s.version_id, m.id, (SELECT o.owner FROM seats o WHERE o.seat <> s.seat ORDER BY o.rank NULLS LAST, o.seat LIMIT 1), jsonb_strip_nulls(jsonb_build_object( 'place', s.rank, 'of', m.seat_count, 'score', s.score, 'strikes', s.strikes, 'outcome', s.outcome, 'class', s.class, 'preset', m.preset, 'delta', (SELECT round(((ev.mu_after - 3 * ev.sigma_after) - (ev.mu_before - 3 * ev.sigma_before))::numeric, 2) FROM rating_events ev WHERE ev.match_id = m.id AND ev.seat = s.seat AND ev.ladder = 'open'), 'rating', (SELECT round((ev.mu_after - 3 * ev.sigma_after)::numeric, 2) FROM rating_events ev WHERE ev.match_id = m.id AND ev.seat = s.seat AND ev.ladder = 'open'))), 'result:' || m.id || ':' || s.seat FROM m CROSS JOIN seats s WHERE s.owner_id IS NOT NULL AND s.rank IS NOT NULL AND notification_wanted(s.owner_id, 'matches', s.rank = 1 OR s.strikes > 0) ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [{ "var": "temp_data.it.id" }],
+              "output": "temp_data.notified_result"
+            }
+          }
+        },
+        {
+          "id": "notify_rank",
+          "name": "Tell each seat's owner a settled rank that moved",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH m AS ( SELECT mt.id, mt.season_id, se.number AS season, se.rules, g.slug AS game FROM matches mt JOIN seasons se ON se.id = mt.season_id JOIN games g ON g.id = mt.game_id WHERE mt.id = ($1)::uuid AND mt.status = 'rated' AND mt.trial_version_id IS NULL ), ev AS ( SELECT e.version_id, e.ladder, e.sigma_after, e.mu_before - 3 * e.sigma_before AS before, e.mu_after - 3 * e.sigma_after AS after FROM rating_events e JOIN m ON e.match_id = m.id ), field AS MATERIALIZED ( SELECT l.ladder, f.version_id, coalesce(ev.before, f.conservative) AS before, f.conservative AS after FROM m CROSS JOIN (SELECT DISTINCT ladder FROM ev) l CROSS JOIN LATERAL ladder_field(m.season_id, l.ladder) f LEFT JOIN ev ON ev.version_id = f.version_id AND ev.ladder = l.ladder ), moved AS ( SELECT ev.version_id, ev.ladder, ev.sigma_after, ev.after, (SELECT count(*) + 1 FROM field x WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id AND (x.before > ev.before OR (x.before = ev.before AND x.version_id < ev.version_id))) AS prev_rank, (SELECT count(*) + 1 FROM field x WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id AND (x.after > ev.after OR (x.after = ev.after AND x.version_id < ev.version_id))) AS rank, (SELECT count(*) FROM field x WHERE x.ladder = ev.ladder) AS field FROM ev WHERE EXISTS (SELECT 1 FROM field x WHERE x.ladder = ev.ladder AND x.version_id = ev.version_id) ) INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, match_id, data, dedupe_key) SELECT e.owner_id, 'ratings', 'rank', CASE WHEN mv.rank < mv.prev_rank THEN 'ok' ELSE 'info' END, e.name || ' v' || v.version || CASE WHEN mv.rank < mv.prev_rank THEN ' rose to ' ELSE ' fell to ' END || (mv.rank)::text || CASE WHEN (mv.rank) % 100 IN (11, 12, 13) THEN 'th' WHEN (mv.rank) % 10 = 1 THEN 'st' WHEN (mv.rank) % 10 = 2 THEN 'nd' WHEN (mv.rank) % 10 = 3 THEN 'rd' ELSE 'th' END || ' on the ' || mv.ladder || ' ladder', CASE WHEN mv.rank < mv.prev_rank THEN 'Up from ' ELSE 'Down from ' END || (mv.prev_rank)::text || CASE WHEN (mv.prev_rank) % 100 IN (11, 12, 13) THEN 'th' WHEN (mv.prev_rank) % 10 = 1 THEN 'st' WHEN (mv.prev_rank) % 10 = 2 THEN 'nd' WHEN (mv.prev_rank) % 10 = 3 THEN 'rd' ELSE 'th' END || ' of ' || mv.field || '.', '/leaderboard?season=' || m.season || CASE WHEN mv.ladder = 'open' THEN '' ELSE '&ladder=' || mv.ladder END, m.game, m.season, e.id, v.id, m.id, jsonb_build_object('ladder', mv.ladder, 'rank', mv.rank, 'prev_rank', mv.prev_rank, 'of', mv.field, 'class', v.weight_class, 'rating', round(mv.after::numeric, 2)), 'rank:' || m.id || ':' || v.id || ':' || mv.ladder FROM m CROSS JOIN moved mv JOIN model_versions v ON v.id = mv.version_id JOIN models e ON e.id = v.model_id WHERE mv.rank <> mv.prev_rank AND mv.sigma_after <= coalesce((m.rules -> 'rating' ->> 'settled_sigma')::float8, ($2)::float8) AND notification_wanted(e.owner_id, 'ratings') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [{ "var": "temp_data.it.id" }, { "var": "metadata.vars.settled_sigma" }],
+              "output": "temp_data.notified_rank"
+            }
+          }
         }
       ]
     },
@@ -190,28 +218,61 @@
               "output": "temp_data.withdrawn"
             }
           }
+        },
+        {
+          "id": "notify_promoted",
+          "name": "Tell the owner it is on the ladder",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, data, dedupe_key) SELECT e.owner_id, 'submissions', CASE v.status WHEN 'rejected' THEN 'alert' ELSE 'progress' END, CASE v.status WHEN 'verified' THEN 'info' WHEN 'active' THEN 'ok' ELSE 'bad' END, e.name || ' v' || v.version || CASE WHEN v.status = 'verified' THEN ' was admitted' WHEN v.status = 'active' THEN ' passed its trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed' WHEN v.weight_class IS NULL THEN ' was rejected' ELSE ' failed its trial' END, CASE WHEN v.status = 'verified' THEN 'Admitted as ' || v.weight_class || ' at ' || to_char(v.size_bytes, 'FM999,999,999,990') || ' bytes. Its trial match is next.' WHEN v.status = 'active' THEN 'It is on the ' || v.weight_class || ' and open ladders.' ELSE v.reject_reason END, '/models/' || e.id || '/v' || v.version, g.slug, se.number, e.id, v.id, jsonb_strip_nulls(jsonb_build_object( 'model', e.name, 'version', v.version, 'status', v.status, 'stage', CASE WHEN v.status = 'verified' THEN 'admission' WHEN v.status = 'active' THEN 'trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN 'season' WHEN v.weight_class IS NULL THEN 'admission' ELSE 'trial' END, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'params', v.param_count, 'infer_us', v.infer_us, 'reason_code', v.reject_reason)), 'version:' || v.id || ':' || v.status FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.id = ($1)::uuid AND v.status IN ('verified', 'active', 'rejected') AND notification_wanted(e.owner_id, 'submissions') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [{ "var": "temp_data.it.model_id" }],
+              "output": "temp_data.notified_promoted"
+            }
+          }
         }
       ]
     },
     {
-      "id": "reject",
-      "name": "Reject, with the reason a competitor reads",
+      "id": "when_reject",
       "condition": { "==": [{ "var": "temp_data.it.decision" }, "reject"] },
-      "function": {
-        "name": "db_write",
-        "input": {
-          "connector": "soma-db",
-          "query": "WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence WHERE m.id = ($3)::uuid AND m.status = 'finished' RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM fence WHERE c.key = 'roster' AND (SELECT count(*) FROM mark) >= 0 RETURNING c.epoch ) UPDATE model_versions v SET status = 'rejected', reject_reason = ($5)::text FROM bump WHERE v.id = ($4)::uuid AND v.status = 'verified'",
-          "params": [
-            { "var": "metadata.trigger.scheduled_for" },
-            { "var": "metadata.trigger.attempt" },
-            { "var": "temp_data.it.trial_id" },
-            { "var": "temp_data.it.model_id" },
-            { "var": "temp_data.it.reason" }
-          ],
-          "output": "temp_data.rejected"
+      "tasks": [
+        {
+          "id": "reject",
+          "name": "Reject, with the reason a competitor reads",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "WITH fence AS ( SELECT key FROM clocks WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int FOR SHARE ), mark AS ( UPDATE matches m SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq') FROM fence WHERE m.id = ($3)::uuid AND m.status = 'finished' RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM fence WHERE c.key = 'roster' AND (SELECT count(*) FROM mark) >= 0 RETURNING c.epoch ) UPDATE model_versions v SET status = 'rejected', reject_reason = ($5)::text FROM bump WHERE v.id = ($4)::uuid AND v.status = 'verified'",
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.trial_id" },
+                { "var": "temp_data.it.model_id" },
+                { "var": "temp_data.it.reason" }
+              ],
+              "output": "temp_data.rejected"
+            }
+          }
+        },
+        {
+          "id": "notify_rejected",
+          "name": "Tell the owner the trial failed",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, data, dedupe_key) SELECT e.owner_id, 'submissions', CASE v.status WHEN 'rejected' THEN 'alert' ELSE 'progress' END, CASE v.status WHEN 'verified' THEN 'info' WHEN 'active' THEN 'ok' ELSE 'bad' END, e.name || ' v' || v.version || CASE WHEN v.status = 'verified' THEN ' was admitted' WHEN v.status = 'active' THEN ' passed its trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed' WHEN v.weight_class IS NULL THEN ' was rejected' ELSE ' failed its trial' END, CASE WHEN v.status = 'verified' THEN 'Admitted as ' || v.weight_class || ' at ' || to_char(v.size_bytes, 'FM999,999,999,990') || ' bytes. Its trial match is next.' WHEN v.status = 'active' THEN 'It is on the ' || v.weight_class || ' and open ladders.' ELSE v.reject_reason END, '/models/' || e.id || '/v' || v.version, g.slug, se.number, e.id, v.id, jsonb_strip_nulls(jsonb_build_object( 'model', e.name, 'version', v.version, 'status', v.status, 'stage', CASE WHEN v.status = 'verified' THEN 'admission' WHEN v.status = 'active' THEN 'trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN 'season' WHEN v.weight_class IS NULL THEN 'admission' ELSE 'trial' END, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'params', v.param_count, 'infer_us', v.infer_us, 'reason_code', v.reject_reason)), 'version:' || v.id || ':' || v.status FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.id = ($1)::uuid AND v.status IN ('verified', 'active', 'rejected') AND notification_wanted(e.owner_id, 'submissions') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [{ "var": "temp_data.it.model_id" }],
+              "output": "temp_data.notified_rejected"
+            }
+          }
         }
-      }
+      ]
     }
   ]
 }

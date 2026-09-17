@@ -1,0 +1,132 @@
+{
+  "workflow_id": "soma-me-notifications-read",
+  "name": "Mark notifications read",
+  "description": "`{\"ids\": [...]}` marks those; `{\"all\": true}` marks everything, and either may carry `category` to stay inside one tab. THE OWNERSHIP CHECK IS THE WHERE CLAUSE, as it is for revoking a session: the UPDATE joins live_sessions and matches only the caller's rows, so an id belonging to somebody else, an id that does not exist and a malformed one all mark nothing and are not told apart. An id that is not a uuid is filtered in SQL rather than cast, so a bad element costs itself and not the request. Marking is idempotent -- a row already read is not rewritten, so its read_at keeps the moment it was first read. The answer is the unread count afterwards, read back under the same session join, because that is the number the bell has to draw next and the one thing the caller cannot compute.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "all",
+      "name": "Only a literal true means all",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "temp_data.all", "logic": { "===": [{ "var": "data.req.all" }, true] } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "nothing",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [{ "!": { "var": "temp_data.all" } }, { "!": { "var": "data.req.ids" } }]
+        },
+        "status": 400,
+        "body": {
+          "error": "nothing_to_mark",
+          "detail": "Send {\"ids\": [...]} to mark those notifications read, or {\"all\": true} to mark every one, optionally with a category."
+        },
+        "name": "Nothing named"
+      }
+    },
+    {
+      "id": "toomany",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.ids" }, []] }
+              ]
+            },
+            500
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "too_many_ids",
+          "detail": "At most 500 ids at once. To mark everything, send {\"all\": true}."
+        },
+        "name": "Too many ids"
+      }
+    },
+    {
+      "id": "mark",
+      "name": "Mark",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE notifications n SET read_at = now() FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid AND n.user_id = ls.user_id AND n.read_at IS NULL AND (($4)::text IS NULL OR n.category = ($4)::text) AND (($3)::boolean OR n.id IN (SELECT x::uuid FROM jsonb_array_elements_text( CASE WHEN jsonb_typeof(($5)::jsonb) = 'array' THEN ($5)::jsonb ELSE '[]'::jsonb END) AS x WHERE x ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.all" },
+            { "var": "data.req.category" },
+            { "var": "data.req.ids" }
+          ],
+          "output": "temp_data.marked"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the unread count back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT ls.sid AS session_ok, (($3)::text IS NULL OR notification_category_ok(($3)::text)) AS category_ok, (SELECT json_agg(sp.category ORDER BY sp.ord) FROM notification_category_spec() sp) AS categories, json_build_object('unread', (SELECT count(*) FROM notifications n WHERE n.user_id = ls.user_id AND n.read_at IS NULL)) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.category" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.category_ok" } },
+        "status": 400,
+        "body": {
+          "error": "unknown_category",
+          "detail": {
+            "category": { "var": "data.req.category" },
+            "known": { "var": "temp_data.rows.0.categories" }
+          }
+        },
+        "name": "No such category"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -255,11 +255,18 @@ attempt is recorded and the rejection names it:
 
 ```sql
 -- Reject what has run out of attempts. Runs once a run, before the claim.
-UPDATE models
-   SET status = 'rejected', reject_reason = 'TIMED_OUT'
+UPDATE model_versions
+   SET status = 'rejected', reject_reason = 'TIMED_OUT',
+       admit_started_at = NULL, admit_token = ($3)::uuid
  WHERE status = 'testing' AND admit_attempts >= ($1)::int
    AND (admit_started_at IS NULL OR admit_started_at < now() - (($2)::int * interval '1 second'))
 ```
+
+**It stamps THIS run's token, not `NULL`** (since 17 September 2026). Nothing reads a token on a
+rejected row — every claim, batch and verdict statement requires `testing` — so the column is free
+to say which run decided the row, and `notify_expired` is the statement that needs to: it tells the
+owners of exactly the rows this run expired, and none of the `TIMED_OUT` rows before them
+([`schema.md`](schema.md) §3.11).
 
 ---
 
@@ -692,6 +699,13 @@ how long it has been pending. A wait a competitor can see is not a bug.
 `soma-models-list` return `status`, `reject_reason`, `weight_class`, `size_bytes`, `param_count`,
 `infer_us` and the trial row if there is one. Both are additive, and both are the web track's
 to consume.
+
+**And the verdict is told, not only shown.** After `verify`, `reject` and `giveback`, the walk's last
+task writes the item's verdict as a `submissions` notification — "was admitted" with its class and
+size, or "was rejected" with the reason word as its description and `data.reason_code` — reading the
+status off the row, keyed `version:<id>:<status>`, and `continue_on_error` so it can never cost the
+verdict it reports. Count tells the trial's outcome the same way. `submissions` is a locked category:
+a competitor cannot turn off being told their model was refused. [`schema.md`](schema.md) §3.11.
 
 ---
 

@@ -1,0 +1,78 @@
+{
+  "workflow_id": "soma-me-notifications",
+  "name": "The caller's notifications",
+  "description": "The feed behind the bell and the notifications page: newest first, optionally one `category`, only `unread=true`, only items created after `since` (what the bell polls with), keyset-paged on (created_at, id) exactly as GET /v1/me/matches is, so a page boundary is total even when one clock statement wrote many rows in one instant. `limit` defaults to 25 and is clamped to 1..100 in the statement. `unread` is the count across EVERY category whatever the filters say, because it is the number on the bell and the bell has no filter. A private route of its own, never a parameter on a public one. Nothing here filters by the settings: a writer never inserts what the settings skip, so the feed shows what was said, and a category turned back on does not surface what was skipped while it was off. An unknown category is a 400 naming the known ones rather than an empty page, because an empty page is also what a real category with nothing in it looks like. soma/docs/schema.md §3.11.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "defaults",
+      "name": "Apply query defaults",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.q.limit",
+              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH me AS ( SELECT ls.user_id FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid ), lim AS ( SELECT least(greatest(($7)::int, 1), 100) AS n ), feed AS NOT MATERIALIZED ( SELECT n.* FROM notifications n JOIN me ON n.user_id = me.user_id WHERE (($3)::text IS NULL OR n.category = ($3)::text) AND (($4)::text IS DISTINCT FROM 'true' OR n.read_at IS NULL) AND (($5)::timestamptz IS NULL OR n.created_at > ($5)::timestamptz) ), page AS ( SELECT * FROM feed WHERE ($6)::text IS NULL OR (created_at, id) < (split_part(($6)::text, '|', 1)::timestamptz, split_part(($6)::text, '|', 2)::uuid) ORDER BY created_at DESC, id DESC LIMIT (SELECT n FROM lim) ) SELECT me.user_id AS session_ok, (($3)::text IS NULL OR notification_category_ok(($3)::text)) AS category_ok, (SELECT json_agg(sp.category ORDER BY sp.ord) FROM notification_category_spec() sp) AS categories, json_build_object( 'notifications', coalesce((SELECT json_agg(json_build_object( 'id', p.id, 'category', p.category, 'kind', p.kind, 'tone', p.tone, 'icon', p.icon, 'subject', p.subject, 'description', p.description, 'link', p.link, 'game', p.game, 'season', p.season, 'model_id', p.model_id, 'version_id', p.version_id, 'match_id', p.match_id, 'actor', p.actor, 'data', p.data, 'created_at', p.created_at, 'read_at', p.read_at) ORDER BY p.created_at DESC, p.id DESC) FROM page p), '[]'::json), 'unread', (SELECT count(*) FROM notifications u WHERE u.user_id = me.user_id AND u.read_at IS NULL), 'next_cursor', CASE WHEN (SELECT count(*) FROM page) = (SELECT n FROM lim) THEN (SELECT (to_json(x.created_at) #>> '{}') || '|' || x.id::text FROM page x ORDER BY x.created_at ASC, x.id ASC LIMIT 1) END ) AS body FROM me",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.category" },
+            { "var": "metadata.query.unread" },
+            { "var": "metadata.query.since" },
+            { "var": "metadata.query.cursor" },
+            { "var": "temp_data.q.limit" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.category_ok" } },
+        "status": 400,
+        "body": {
+          "error": "unknown_category",
+          "detail": {
+            "category": { "var": "metadata.query.category" },
+            "known": { "var": "temp_data.rows.0.categories" }
+          }
+        },
+        "name": "No such category"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

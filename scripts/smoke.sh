@@ -79,6 +79,8 @@ check 200 "GET  /v1/games/$GAME/leaderboard"     "$BASE/v1/games/$GAME/leaderboa
 check 200 "GET  /v1/games/../leaderboard?ladder" "$BASE/v1/games/$GAME/leaderboard?ladder=nano&season=1"
 check 200 "GET  /v1/matches?game="               "$BASE/v1/matches?game=$GAME&limit=3"
 check 200 "GET  /v1/matches (filtered)"          "$BASE/v1/matches?game=$GAME&preset=maze&outcome=drawn&ladder=open&limit=2"
+check 200 "GET  /v1/matches?players_min=&max="    "$BASE/v1/matches?game=$GAME&players_min=2&players_max=2&limit=2"
+check 400 "GET  /v1/matches?players_min=abc"     "$BASE/v1/matches?game=$GAME&players_min=abc"
 check 200 "GET  /v1/matches?model="              "$BASE/v1/matches?model=$MODEL&limit=3"
 check 200 "GET  /v1/matches?owner="              "$BASE/v1/matches?owner=$HANDLE&limit=3"
 check 200 "GET  /v1/matches/{id}"                "$BASE/v1/matches/$MATCH"
@@ -98,6 +100,10 @@ echo "==> anonymous callers are refused the session routes"
 check 401 "GET  /v1/me"                          "$BASE/v1/me"
 check 401 "GET  /v1/me/matches"                  "$BASE/v1/me/matches"
 check 401 "GET  /v1/sessions"                    "$BASE/v1/sessions"
+check 401 "GET  /v1/me/notifications"            "$BASE/v1/me/notifications"
+check 401 "POST /v1/me/notifications/read"       -X POST -H 'content-type: application/json' -d '{"all":true}' "$BASE/v1/me/notifications/read"
+check 401 "GET  /v1/me/notification-settings"    "$BASE/v1/me/notification-settings"
+check 401 "PATCH /v1/me/notification-settings"   -X PATCH -H 'content-type: application/json' -d '{"category":"matches"}' "$BASE/v1/me/notification-settings"
 check 401 "GET  /v1/games/$GAME/submission"      "$BASE/v1/games/$GAME/submission"
 check 401 "POST /v1/submissions"                 -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/submissions"
 check 401 "GET  /v1/runner-keys"                  "$BASE/v1/runner-keys"
@@ -128,6 +134,28 @@ check 400 "POST /v1/submissions (no hashes)"     -X POST "${C[@]}" -H 'content-t
           -d "{\"game\":\"$GAME\",\"model\":\"00000000-0000-0000-0000-000000000000\"}" "$BASE/v1/submissions"
 check 404 "DELETE /v1/sessions/{unknown}"        -X DELETE "${C[@]}" "$BASE/v1/sessions/00000000-0000-0000-0000-000000000000"
 
+echo "==> notifications"
+# NOTHING HERE MAY LEAVE A MARK on the borrowed account: the read marks an id nobody holds, and the
+# settings PATCH that answers 200 names a category and nothing to change, which writes no row. The
+# refusals are all refused before or instead of a write.
+check 200 "GET  /v1/me/notifications"            "${C[@]}" "$BASE/v1/me/notifications?limit=3"
+check 200 "GET  /v1/me/notifications (filtered)" "${C[@]}" "$BASE/v1/me/notifications?category=matches&unread=true&since=2026-01-01T00:00:00Z"
+check 400 "GET  /v1/me/notifications?category=?" "${C[@]}" "$BASE/v1/me/notifications?category=no-such-category"
+check 200 "POST /v1/me/notifications/read"       -X POST "${C[@]}" -H 'content-type: application/json' \
+          -d '{"ids":["00000000-0000-0000-0000-000000000000"]}' "$BASE/v1/me/notifications/read"
+check 400 "POST /v1/me/notifications/read (none)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/me/notifications/read"
+check 200 "GET  /v1/me/notification-settings"    "${C[@]}" "$BASE/v1/me/notification-settings"
+check 200 "PATCH /v1/me/notification-settings"   -X PATCH "${C[@]}" -H 'content-type: application/json' \
+          -d '{"category":"matches"}' "$BASE/v1/me/notification-settings"
+check 409 "PATCH ../notification-settings (locked)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+          -d '{"category":"account","app":false}' "$BASE/v1/me/notification-settings"
+check 400 "PATCH ../notification-settings (unknown)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+          -d '{"category":"no-such-category","app":true}' "$BASE/v1/me/notification-settings"
+check 400 "PATCH ../notification-settings (level)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+          -d '{"category":"ratings","level":"all"}' "$BASE/v1/me/notification-settings"
+check 400 "PATCH ../notification-settings (type)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+          -d '{"category":"matches","app":"yes"}' "$BASE/v1/me/notification-settings"
+
 echo "==> admin routes reach their own checks"
 ROLE=$(psql -c "SELECT role FROM users WHERE handle='$HANDLE';")
 if [ "$ROLE" = "admin" ]; then
@@ -136,6 +164,8 @@ if [ "$ROLE" = "admin" ]; then
             -d '{"submissions_open_at":"2030-01-01T00:00:00Z","submissions_close_at":"2030-03-01T00:00:00Z"}' "$BASE/v1/games/$GAME/seasons"
   check 200 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 200 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
+  check 200 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+            -d '{"category":"admin"}' "$BASE/v1/me/notification-settings"
   check 400 "POST /v1/runner-keys (no label)"    -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner-keys"
   check 404 "DELETE /v1/runner-keys/{unknown}"   -X DELETE "${C[@]}" "$BASE/v1/runner-keys/00000000-0000-0000-0000-000000000000"
   check 404 "DELETE /v1/runners/{unknown}"       -X DELETE "${C[@]}" "$BASE/v1/runners/00000000-0000-0000-0000-000000000000"
@@ -177,6 +207,8 @@ else
   check 403 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
   check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 403 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
+  check 403 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
+            -d '{"category":"admin"}' "$BASE/v1/me/notification-settings"
 fi
 
 echo

@@ -7,7 +7,7 @@ between packages, and the constants that must stay equal across them. This file 
 
 ## What this repo ships
 
-No server code. Soma is an Orion **1.8.1** package — 45 channel definitions, 45 workflows, 10
+No server code. Soma is an Orion **1.8.1** package — 49 channel definitions, 49 workflows, 10
 connectors and two wasm plugins — plus `migrations/`, the Postgres schema **every** TinyBrains
 package shares. DevOps owns the orion-server that hosts it. Behaviour lives in declarative JSON and
 inline SQL, so lint plus the SQL checks are this repo's compiler; the only test framework is the
@@ -15,7 +15,7 @@ plugins' `cargo test`, and the only thing built is the two plugin components.
 
 **Three things share the package, and two are newer than most of this file.**
 
-- **The site's routes**: twenty-six, cookie-authed, `channels/soma-*.json` + `workflows/soma-*.json`.
+- **The site's routes**: thirty, cookie-authed, `channels/soma-*.json` + `workflows/soma-*.json`.
 - **The runner gate**: `/v1/runner/*`, which a Kalam replica calls instead of holding a Postgres
   role, plus the admin routes over `runner_keys` and `runners`. **The eight match statements live
   here** — claim, start, release, renew, finish, the roster read and the reap — moved out of
@@ -53,7 +53,7 @@ is not a package that works.
 ```sh
 ./scripts/check-defs.sh            # generator drift + lint + clippy + fmt, all --deny-warnings; no stack
 ./scripts/load-package.sh          # compile the set, sign the plugins, apply; ORION_ADMIN picks the instance
-./scripts/check-sql.sh             # PREPAREs all 91 shipped statements against a scratch schema
+./scripts/check-sql.sh             # PREPAREs all 107 shipped statements against a scratch schema
 ./scripts/smoke.sh                 # every route against a running stack: status codes only
 ./scripts/verify/run.sh            # what the statements MEAN: the walk, both fence races, grants
 
@@ -276,7 +276,8 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   SQL — `docs/schema.md` §4 and `verify/statements.sql` — carried the pre-R7 two-CTE wave claim for
   months after a one-row claim shipped, so every fence race the harness "proved" was proving a
   statement that did not exist. `run.sh` now compares `statements.sql` against the shipped workflows
-  — the eight match statements and thirteen clock statements — and refuses to run on a difference.
+  — the eight match statements, thirteen clock statements and five notification statements — and
+  refuses to run on a difference.
   Regenerate rather than retype.
 - **`verify/run.sh` exits 0 through a scenario error — read the log, not the exit code.** The
   statements and `scenario.sql` are piped into `psql` without `ON_ERROR_STOP`, so a call site left
@@ -340,6 +341,13 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   `activate` 404s on a model this node already archived, so a submission that needs a second attempt
   cannot get one.
 - **Trials feed no ladder.** A loss alone must never reject a candidate.
+- **A notification is never inside the statement that decided the thing.** Each writer is its own
+  `continue_on_error` `db_write` right after the decision, reads the decision off the ROW (never off
+  `temp_data`, which survives a sweep), asks `notification_wanted()` inside its INSERT, and is
+  `ON CONFLICT (user_id, dedupe_key) DO NOTHING` on a key naming the event. As a CTE in count's fold
+  one CHECK violation would halt the ladder for ever. The tables are in `0002_sessions.sql` with no
+  grant: a writer that needs `kalam` or `runner_gate` to reach them is on the wrong connector.
+  `docs/schema.md` §3.11.
 - Update `README.md`'s **Status** section when work lands. Commits go
   straight to `main`; subjects are imperative and describe the behaviour change
   ("Give the gate its own database role"), not the files touched.

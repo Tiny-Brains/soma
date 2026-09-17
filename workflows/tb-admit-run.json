@@ -1,7 +1,7 @@
 {
   "workflow_id": "tb-admit-run",
   "name": "Clock: admit",
-  "description": "What moves a submission off `testing`. Per item it asks GitHub for the release's metadata, reads the manifest the competitor uploaded to the models bucket and checks it against the hash they declared, registers the model on THIS node by reference and digest -- the node fetches the object and re-hashes it, so a row that lies fails admission -- runs admission synchronously, activates it, plays it over the game's reference observations through the probe channel, applies the platform's policy to the stats, and writes one verdict. It never fetches a competitor's bytes over the internet: the bytes are in the bucket because the competitor PUT them there through a presigned URL Soma minted, and Orion's storage connector is what reads them. The weight class is the season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes one row per item and a per-row claim is already the mutual exclusion. The branch that matters is on `fault`: a competitor's mistake rejects the version and OUR failure releases the claim and gives the attempt back. docs/admission.md §4-§7.",
+  "description": "What moves a submission off `testing`. Per item it asks GitHub for the release's metadata, reads the manifest the competitor uploaded to the models bucket and checks it against the hash they declared, registers the model on THIS node by reference and digest -- the node fetches the object and re-hashes it, so a row that lies fails admission -- runs admission synchronously, activates it, plays it over the game's reference observations through the probe channel, applies the platform's policy to the stats, and writes one verdict. It never fetches a competitor's bytes over the internet: the bytes are in the bucket because the competitor PUT them there through a presigned URL Soma minted, and Orion's storage connector is what reads them. The weight class is the season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes one row per item and a per-row claim is already the mutual exclusion. The branch that matters is on `fault`: a competitor's mistake rejects the version and OUR failure releases the claim and gives the attempt back. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk. docs/admission.md §4-§7 and §10.",
   "tags": ["pkg:soma"],
   "condition": true,
   "loop": { "counter": "i", "max": 64 },
@@ -27,10 +27,11 @@
             "name": "db_write",
             "input": {
               "connector": "soma-db",
-              "query": "UPDATE model_versions SET status = 'rejected', reject_reason = 'TIMED_OUT', admit_started_at = NULL, admit_token = NULL WHERE status = 'testing' AND admit_attempts >= ($1)::int AND (admit_started_at IS NULL OR admit_started_at < now() - (($2)::int * interval '1 second'))",
+              "query": "UPDATE model_versions SET status = 'rejected', reject_reason = 'TIMED_OUT', admit_started_at = NULL, admit_token = ($3)::uuid WHERE status = 'testing' AND admit_attempts >= ($1)::int AND (admit_started_at IS NULL OR admit_started_at < now() - (($2)::int * interval '1 second'))",
               "params": [
                 { "var": "metadata.vars.admit_attempts_max" },
-                { "var": "metadata.vars.admit_timeout_s" }
+                { "var": "metadata.vars.admit_timeout_s" },
+                { "var": "temp_data.token" }
               ],
               "output": "temp_data.expired"
             }
@@ -73,6 +74,26 @@
           }
         }
       ]
+    },
+    {
+      "id": "notify_expired",
+      "name": "Tell the owners what just timed out",
+      "condition": {
+        "and": [
+          { "==": [{ "var": "temp_data.i" }, 0] },
+          { ">": [{ "var": "temp_data.expired.rows_affected" }, 0] }
+        ]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, data, dedupe_key) SELECT e.owner_id, 'submissions', CASE v.status WHEN 'rejected' THEN 'alert' ELSE 'progress' END, CASE v.status WHEN 'verified' THEN 'info' WHEN 'active' THEN 'ok' ELSE 'bad' END, e.name || ' v' || v.version || CASE WHEN v.status = 'verified' THEN ' was admitted' WHEN v.status = 'active' THEN ' passed its trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed' WHEN v.weight_class IS NULL THEN ' was rejected' ELSE ' failed its trial' END, CASE WHEN v.status = 'verified' THEN 'Admitted as ' || v.weight_class || ' at ' || to_char(v.size_bytes, 'FM999,999,999,990') || ' bytes. Its trial match is next.' WHEN v.status = 'active' THEN 'It is on the ' || v.weight_class || ' and open ladders.' ELSE v.reject_reason END, '/models/' || e.id || '/v' || v.version, g.slug, se.number, e.id, v.id, jsonb_strip_nulls(jsonb_build_object( 'model', e.name, 'version', v.version, 'status', v.status, 'stage', CASE WHEN v.status = 'verified' THEN 'admission' WHEN v.status = 'active' THEN 'trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN 'season' WHEN v.weight_class IS NULL THEN 'admission' ELSE 'trial' END, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'params', v.param_count, 'infer_us', v.infer_us, 'reason_code', v.reject_reason)), 'version:' || v.id || ':' || v.status FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.admit_token = ($1)::uuid AND v.reject_reason = 'TIMED_OUT' AND v.status IN ('verified', 'active', 'rejected') AND notification_wanted(e.owner_id, 'submissions') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+          "params": [{ "var": "temp_data.token" }],
+          "output": "temp_data.notified_expired"
+        }
+      }
     },
     {
       "id": "more",
@@ -692,6 +713,21 @@
           "query": "UPDATE model_versions SET admit_started_at = NULL, admit_token = NULL, admit_attempts = greatest(admit_attempts - 1, 0) WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($2)::uuid",
           "params": [{ "var": "temp_data.it.model_id" }, { "var": "temp_data.token" }],
           "output": "temp_data.released"
+        }
+      }
+    },
+    {
+      "id": "notify",
+      "name": "Tell the owner the verdict",
+      "condition": { "!": { "var": "temp_data.retry" } },
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, model_id, version_id, data, dedupe_key) SELECT e.owner_id, 'submissions', CASE v.status WHEN 'rejected' THEN 'alert' ELSE 'progress' END, CASE v.status WHEN 'verified' THEN 'info' WHEN 'active' THEN 'ok' ELSE 'bad' END, e.name || ' v' || v.version || CASE WHEN v.status = 'verified' THEN ' was admitted' WHEN v.status = 'active' THEN ' passed its trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed' WHEN v.weight_class IS NULL THEN ' was rejected' ELSE ' failed its trial' END, CASE WHEN v.status = 'verified' THEN 'Admitted as ' || v.weight_class || ' at ' || to_char(v.size_bytes, 'FM999,999,999,990') || ' bytes. Its trial match is next.' WHEN v.status = 'active' THEN 'It is on the ' || v.weight_class || ' and open ladders.' ELSE v.reject_reason END, '/models/' || e.id || '/v' || v.version, g.slug, se.number, e.id, v.id, jsonb_strip_nulls(jsonb_build_object( 'model', e.name, 'version', v.version, 'status', v.status, 'stage', CASE WHEN v.status = 'verified' THEN 'admission' WHEN v.status = 'active' THEN 'trial' WHEN v.reject_reason = 'SEASON_CLOSED' THEN 'season' WHEN v.weight_class IS NULL THEN 'admission' ELSE 'trial' END, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'params', v.param_count, 'infer_us', v.infer_us, 'reason_code', v.reject_reason)), 'version:' || v.id || ':' || v.status FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.id = ($1)::uuid AND v.status IN ('verified', 'active', 'rejected') AND notification_wanted(e.owner_id, 'submissions') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+          "params": [{ "var": "temp_data.it.model_id" }],
+          "output": "temp_data.notified"
         }
       }
     }

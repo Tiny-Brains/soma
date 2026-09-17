@@ -122,6 +122,21 @@
       }
     },
     {
+      "id": "notify_engine",
+      "name": "Tell the key's admin a runner is on the wrong engine",
+      "description": "A runner whose engine_digest no live season pins claims nothing, for ever, and looks healthy doing it: it calls in, mints tokens, and the claim answers idle. So the exchange -- the one call that carries the digest -- tells the admin who holds the key, once per runner per digest (the key), and only while some season is live, because with none live every runner is idle for a reason that is not theirs. A mismatch is not refused: the admin may be rolling the fleet ahead of a season that has not opened. continue_on_error, because a notification must never cost a runner its token.",
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, data, dedupe_key) SELECT k.user_id, 'admin', 'alert', 'warn', 'Runner ' || left(r.label, 64) || ' is on an engine no live season plays', 'It reports ' || left(r.engine_digest, 23) || '..., so it will claim nothing until it runs the engine the live season pins.', '/admin/runners', jsonb_build_object('runner_id', r.id, 'label', r.label, 'engine_digest', r.engine_digest, 'season_engine_digests', (SELECT jsonb_agg(DISTINCT s.engine_digest) FROM seasons s WHERE s.closed_at IS NULL)), 'runner-engine:' || r.id || ':' || r.engine_digest FROM runners r JOIN runner_keys k ON k.id = r.key_id WHERE r.id = ($1)::uuid AND r.engine_digest IS NOT NULL AND EXISTS (SELECT 1 FROM seasons s WHERE s.closed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM seasons s WHERE s.closed_at IS NULL AND s.engine_digest = r.engine_digest) AND notification_wanted(k.user_id, 'admin') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+          "params": [{ "var": "temp_data.rows.0.body.runner_id" }],
+          "output": "temp_data.notified"
+        }
+      }
+    },
+    {
       "id": "token",
       "name": "Mint the runner token",
       "description": "TEN MINUTES, and the audience is what separates the two token families: aud 'runner' signed with RUNNER_TOKEN_SECRET, browser sessions signed with SOMA_SESSION_SECRET and carrying no audience at all, so a stolen cookie is not a runner and a stolen runner token is not a sign-in. The key id travels as a claim rather than as a `kid` header, because the verifying side lists one unnamed key and header routing would look for a key id that is not there. Expiry is not the revocation mechanism -- live_runners is -- it is the bound on how long a leaked token is worth anything.",

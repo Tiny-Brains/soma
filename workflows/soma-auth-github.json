@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-auth-github",
   "name": "Complete GitHub sign-in",
-  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, PKCE, and the code exchange -- and hands this workflow a verified grant at metadata.oauth; Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. display_name is seeded from GitHub ON INSERT ONLY, because a competitor who renames themselves through PATCH /v1/me must not have it undone by their next sign-in. THE LOGIN IS RELEASED BEFORE IT IS CLAIMED: users.handle is unique, GitHub recycles logins, and the upsert alone cannot survive either half of a rename -- see the `release` task. WHERE IT SENDS YOU AFTERWARDS: `metadata.oauth.return_to` when the authorize leg carried a `?next=`, otherwise `app_url`. That value is NOT the caller's to choose freely -- Orion checks it against `oauth2_login.return_to.allow_list` on the authorize leg, seals it into the signed state cookie, and only hands it here once it comes back intact, so this workflow receives a vetted destination and an unlisted or tampered one simply is not there. The list is two origins (`app_return_url`, `console_return_url`) because the Orion console is a separate origin sharing this sign-in: without the return, a visitor sent from the console lands on the site and has to find their own way back.",
+  "description": "Runs on the callback leg only. The channel's oauth2_login block owns everything that is the same for every provider -- the 302 to GitHub, the signed state cookie and its CSRF binding, PKCE, and the code exchange -- and hands this workflow a verified grant at metadata.oauth; Orion retires the spent state cookie itself, so this response sets one cookie, not two. A SIGN-IN WHILE ANOTHER SESSION IS LIVE IS AN `account` NOTIFICATION, written after the session row and allowed to fail without failing the sign-in. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. display_name is seeded from GitHub ON INSERT ONLY, because a competitor who renames themselves through PATCH /v1/me must not have it undone by their next sign-in. THE LOGIN IS RELEASED BEFORE IT IS CLAIMED: users.handle is unique, GitHub recycles logins, and the upsert alone cannot survive either half of a rename -- see the `release` task. WHERE IT SENDS YOU AFTERWARDS: `metadata.oauth.return_to` when the authorize leg carried a `?next=`, otherwise `app_url`. That value is NOT the caller's to choose freely -- Orion checks it against `oauth2_login.return_to.allow_list` on the authorize leg, seals it into the signed state cookie, and only hands it here once it comes back intact, so this workflow receives a vetted destination and an unlisted or tampered one simply is not there. The list is two origins (`app_return_url`, `console_return_url`) because the Orion console is a separate origin sharing this sign-in: without the return, a visitor sent from the console lands on the site and has to find their own way back.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -86,6 +86,25 @@
             { "var": "metadata.headers.user-agent" }
           ],
           "output": "temp_data.session_row"
+        }
+      }
+    },
+    {
+      "id": "notify_signin",
+      "name": "Tell the account's other sessions about this one",
+      "description": "Only when another session was already live: a first sign-in, or one after every other session ended, is not news to anyone. After record_session, so the new row exists and is excluded by sid rather than by time. continue_on_error, because a notification must never be the reason a sign-in fails -- the cookie below is the whole point of this workflow. Keyed on the new sid, which is minted once per sign-in, so a retried request cannot say it twice.",
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, data, dedupe_key) SELECT u.id, 'account', 'account', 'info', 'New sign-in to your account', 'Signed in from ' || coalesce(left(nullif(btrim(($3)::text), ''), 300), 'a browser that did not name itself') || '. If this was not you, end that session.', '/me/account', jsonb_build_object('sid', ($1)::uuid, 'user_agent', left(($3)::text, 300)), 'sign-in:' || ($1)::uuid FROM users u WHERE u.id = ($2)::uuid AND EXISTS (SELECT 1 FROM live_sessions ls WHERE ls.user_id = u.id AND ls.sid <> ($1)::uuid) AND notification_wanted(u.id, 'account') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+          "params": [
+            { "var": "temp_data.sid" },
+            { "var": "temp_data.rows.0.id" },
+            { "var": "metadata.headers.user-agent" }
+          ],
+          "output": "temp_data.notified"
         }
       }
     },

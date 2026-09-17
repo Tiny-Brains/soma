@@ -443,6 +443,12 @@ queue, and leaves in-flight matches to finish and count into the season, where t
 settle a few minutes later. Two runs overlapping cannot both close a season: the second's `UPDATE
 … WHERE closed_at IS NULL` waits on the row lock, re-evaluates, and returns nothing.
 
+**A close that wrote is told.** `notify_closed` follows it in the same run, only when `rows_affected`
+was one: every competitor with a version in the season gets one `season` notification, keyed on the
+season, naming where they finished on the open ladder by `model_ratings()`'s order, and linking
+`/leaderboard?season=N`. It is `continue_on_error` and not part of this statement, so a notification
+can never be the reason a season stays open. [`schema.md`](schema.md) §3.11.
+
 **The admin's request** — Soma, `POST /v1/games/{game}/seasons/current/close`, admin only — is one
 line, and it is an intent the close consumes within the minute rather than a copy of the close:
 

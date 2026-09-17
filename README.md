@@ -32,6 +32,7 @@ and the public access to it; the running API process itself is replaceable.
 - Rating folds, trial decisions, promotion, and predecessor replacement.
 - Withdrawal of obsolete queued matches and completion of season closure.
 - The database fences that protect those writes from stale clock runs.
+- The notifications an account is told, written where each thing is decided, and the account's settings for them.
 
 **It does not**
 
@@ -92,12 +93,16 @@ request handling and response construction, with matching soma-prefixed filename
 | GET | /v1/games/{game}/submission | Session | Whether the caller may submit, why not, and as which version |
 | GET | /v1/models | Session | Caller's versions, with ratings and ranks; optional game filter |
 | GET | /v1/models/{id} | Public | Version status, ladders with rank and field, and trial information |
-| GET | /v1/matches | Public | A season's matches with every seat; or one model's, or one owner's |
+| GET | /v1/matches | Public | A season's matches with every seat; or one model's, or one owner's. `players_min`/`players_max` bound the seat count |
 | GET | /v1/matches/{id} | Public | Match details, seats, the ladders it counted on, and a signed replay URL |
 | GET | /v1/profiles/{username} | Public | A competitor's public page: their versions by game and season |
 | GET | /v1/me | Session | Current user and any candidate in flight; 401 when unauthenticated |
 | PATCH | /v1/me | Session | Edit the display name |
 | GET | /v1/me/matches | Session | The caller's matches in every state, queued and cancelled included |
+| GET | /v1/me/notifications | Session | The caller's notifications, newest first: `category`, `unread`, `since`, `cursor`, `limit`, and the unread count across every category |
+| POST | /v1/me/notifications/read | Session | Mark `ids`, or `all` (optionally one `category`), read; answers the unread count |
+| GET | /v1/me/notification-settings | Session | One entry per category the caller can receive: `app`, `push`, `locked`, and `level` for matches |
+| PATCH | /v1/me/notification-settings | Session | Change one category; answers the whole list. 409 `category_locked` for submissions or account turned off |
 | GET | /v1/sessions | Session | The caller's live sessions |
 | DELETE | /v1/sessions/{sid} | Session | Revoke one session; `others` revokes all but the current |
 | DELETE | /v1/session | Session | Revoke the current session and clear the cookie |
@@ -132,7 +137,7 @@ route that quietly returns more to some callers is the shape a privacy bug arriv
 
 A submission must satisfy the open season's rules. Recording it does not imply acceptance:
 the admit clock performs admission, and count decides the trial before promotion. The callback is served by the sign-in
-channel, so twenty-seven routes are implemented by twenty-six channels.
+channel, so thirty-one routes are implemented by thirty channels.
 
 > **This table is four rows short, and they are not new.** `channels/` carries
 > `/v1/games/{game}/models` (POST), `/v1/models/{id}` (GET and PATCH) and `/v1/versions/{id}`,
@@ -196,6 +201,8 @@ The migrations are also an interface. Apply both [0001_init.sql](migrations/0001
 | ratings | Per-version ladder state | The count clock |
 | rating_events | Auditable before/after rating updates | The count clock |
 | clocks | Run fences and roster epoch | The clocks; deployment bumps roster epoch on engine cutover |
+| notifications | What an account is told, keyed per event so a replayed writer inserts once | The admit, count and withdraw clocks, sign-in, the runner token exchange; `read_at` by POST /v1/me/notifications/read |
+| notification_settings | Only the categories an account changed; the rest are `notification_category_spec()`'s defaults | PATCH /v1/me/notification-settings |
 
 Against the local DevOps instance, check the public route:
 
@@ -314,7 +321,7 @@ plugins/build.sh              component and manifest build, shared by both
 plugins/tb-rating/            TrueSkill source, tests, and manifest
 plugins/tb-pairing/           seeded pairing source, tests, and manifest
 migrations/0001_init.sql      platform tables, constraints, fences, grants, and the shared functions
-migrations/0002_sessions.sql  sessions and live_sessions view
+migrations/0002_sessions.sql  sessions, live_sessions, notifications and notification_settings
 scripts/gen-clocks.py         the clocks' generator and their readable SQL; `--check` catches drift
 scripts/load-package.sh       compile, sign, retire what is no longer shipped, apply
 scripts/check-defs.sh         generator drift, lint, clippy, fmt; no stack
@@ -341,10 +348,11 @@ LICENSE                       repository licence
 - **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
 - **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
+- **A notification never costs a decision.** Every writer is its own `continue_on_error` statement after the thing it reports -- never a CTE in a fenced fold, a verdict or a close -- reads the decision off the row, asks `notification_wanted()` inside its INSERT, and is keyed `ON CONFLICT (user_id, dedupe_key) DO NOTHING`. A run that dies between the two loses that notification; nothing can duplicate or invent one. `docs/schema.md` §3.11.
 - **Revocation remains effective before JWT expiry.** Session workflows consult live_sessions rather than trusting a signed token alone.
 - **Kalam's role stays limited to execution.** The migration enumerates its writable columns and creates no embedded password. **The runner routes do not run under it.** They are in this package, over `soma-db`, so they execute as the database owner and the column grant is not what stops one of them writing a rating — review is. That is the price of one package instead of two, it is written down on the grant block itself, and undoing it is a `soma-runner-db` connector on `env://KALAM_DB_URL` plus a one-word swap in eight workflows. A runner statement that needs a grant added to the `kalam` role is a statement on the wrong connector.
 - **A runner holds no credential, and revocation is a JOIN.** It has no database URL and no write key: it gets a ten-minute token and presigned PUTs. Every match statement JOINs `live_runners`, *inside the statement and never as a guard task* — a JSONLogic guard fails open if it is ever wrong, and a JOIN cannot be forgotten — so a revoked key, a revoked runner or a demoted admin ends the next call rather than the next token.
-- **The eight match statements have one home, and it is now this repository.** A route is a skin over a statement; a second copy of the claim's SQL anywhere is the bug the move was meant to prevent. `scripts/verify/run.sh` compares the harness's copies against the shipped workflows and refuses to run if they differ, because both this repo's copies were silently stale for months before it did. It compares its thirteen copies of the clocks' statements the same way.
+- **The eight match statements have one home, and it is now this repository.** A route is a skin over a statement; a second copy of the claim's SQL anywhere is the bug the move was meant to prevent. `scripts/verify/run.sh` compares the harness's copies against the shipped workflows and refuses to run if they differ, because both this repo's copies were silently stale for months before it did. It compares its thirteen copies of the clocks' statements, and its five of the notification writers, the same way.
 - **`finish` is idempotent under a duplicate delivery and fenced against a stale one**, and the two are distinguishable in the response. A route that conflates them fails a healthy runner mid-match.
 - **Package reloads respect ownership tags.** load-package.sh retires only the pkg:soma objects the compiled artifact no longer carries -- routes, clocks, connectors and plugins alike -- and nothing tagged for Kalam. DevOps' loader sweeps the retired `pkg:jodi` tag off this node, so a deployment from before the merge sheds the old copies.
 - **Cookie behavior remains deployment configuration.** No route should hard-code a callback host or replace the declared Secure policy.
@@ -352,6 +360,44 @@ LICENSE                       repository licence
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**17 September 2026 — notifications.** An account is now told what the platform decided about it.
+`notifications` and `notification_settings` are in `0002_sessions.sql`, beside `sessions`, with no
+grant at all -- `kalam` and `runner_gate` gain nothing, and `verify/run.sh` asserts it by role,
+table and privilege. `notification_category_spec()` is the one definition of the six categories,
+which are locked (submissions, account), which is admin-only, and the defaults; the settings table
+holds only what a competitor changed.
+
+**Four routes**: `GET /v1/me/notifications`, `POST /v1/me/notifications/read`, and GET/PATCH
+`/v1/me/notification-settings`. **Seven writers**, each keyed on its event and each a separate
+`continue_on_error` statement after the decision it reports: a version's decided state (admission's
+verdict in `tb-admit`, a trial's pass or rejection in `tb-count`, one statement), admission's expiry,
+a rated result per seat by the `matches` level, a settled rank that moved (`tb-count`), a season
+closed (`tb-withdraw`), a sign-in while another
+session is live (`soma-auth-github`), and a runner reporting an engine no live season pins
+(`soma-runner-token`, to the key's admin). `GET /v1/matches` gained `players_min`/`players_max`.
+
+**One deciding statement changed:** admission's expiry stamps the run's own `admit_token` on the rows
+it rejects instead of `NULL`, which is how `notify_expired` finds exactly those rows. Nothing reads a
+token on a rejected row.
+
+**Verified.** `check-defs.sh` clean at 49 channels, 49 workflows; `check-sql.sh` prepares 107
+statements and kalam's passes; `verify/run.sh` compares five new statement copies with what ships and
+walks every writer -- a result told once and only to a competitor, a pass and a trial failure told,
+a superseded version not, a settled rank flip told and an unsettled one not, the expiry and the close
+told once each -- with the same output as before otherwise. On the running stack, `smoke.sh` 66/66 as
+an admin and 59/59 as a competitor; a three-competitor submission storm produced every admission,
+rejection, trial and result notification the settings called for and none they did not, the
+runner-token writer told an admin once across two exchanges, and every clock trace stayed clean.
+**Not exercised live**: the sign-in writer through a real GitHub OAuth round trip (its statement was
+run against the live database in a rolled-back transaction), a season close, a real expiry, and a
+rank change on a settled ladder (all three walked in `verify/run.sh`).
+
+**Open.** Retention: nothing prunes `notifications`, and no clock may; the DELETE needs a writer that
+is not a clock. Push is a stored preference that nothing delivers. A match that **fails** tells
+nobody: `failed` is written by the runner gate as `runner_gate`, which must not gain a grant, so that
+writer would be a clock sweep. And a notification is lost if a run dies between a decision and its
+notify -- the trade §3.11 of `docs/schema.md` argues for.
 
 **16 September 2026 (merge) — the clocks are Soma's.** `jodi` is folded into this repository and its
 package into this one: `channels/tb-*.json`, `workflows/tb-*.json`, `scripts/gen-clocks.py` (was

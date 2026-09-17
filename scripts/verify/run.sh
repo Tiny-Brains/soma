@@ -39,7 +39,8 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 # for months after a one-row claim shipped, so every race it "proved" was proving a statement that
 # did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
 #
-# The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json.
+# The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json,
+# and so are the five notification statements -- n_version against all three tasks that ship it.
 # Until the clocks moved into this repository nothing compared them at all, and three of the copies
 # (c_verdicts, c_decide, c_batch) had already outlived the statements they copied. The clock tasks
 # live inside TASK GROUPS, which is why the lookup below descends.
@@ -56,7 +57,14 @@ PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim"
          ("c_withdraw_pred", "tb-count-run", "withdraw"),
          ("p_game", "tb-pair-run", "game"), ("p_epoch", "tb-pair-run", "epoch"),
          ("p_demand_doc", "tb-pair-run", "demand"), ("p_trials", "tb-pair-run", "trials"),
-         ("p_insert", "tb-pair-run", "insert"), ("w_sweep", "tb-withdraw-run", "sweep")]
+         ("p_insert", "tb-pair-run", "insert"), ("w_sweep", "tb-withdraw-run", "sweep"),
+         ("n_version", "tb-count-run", "notify_promoted"),
+         ("n_version", "tb-count-run", "notify_rejected"),
+         ("n_version", "tb-admit-run", "notify"),
+         ("n_expired", "tb-admit-run", "notify_expired"),
+         ("n_results", "tb-count-run", "notify_result"),
+         ("n_ranks", "tb-count-run", "notify_rank"),
+         ("n_season", "tb-withdraw-run", "notify_closed")]
 prepared = pathlib.Path("statements.sql").read_text()
 def tasks(ts):
     for t in ts:
@@ -158,6 +166,15 @@ BEGIN
         AND table_name NOT IN ('matches', 'match_seats');
     ASSERT n = 0, format('kalam can read %s tables it must not', n);
 
+    -- What an account was told and how it wants to be told are Soma's, like its sessions: neither
+    -- role that plays matches may read or write either table, and 0002 grants nothing so they cannot.
+    SELECT count(*) INTO n
+      FROM (VALUES ('kalam'), ('runner_gate')) AS r (role),
+           (VALUES ('notifications'), ('notification_settings')) AS t (tbl),
+           (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS p (priv)
+     WHERE has_table_privilege(r.role, t.tbl, p.priv);
+    ASSERT n = 0, format('kalam or runner_gate holds %s privileges on the notification tables', n);
+
     SELECT count(*) INTO n FROM information_schema.column_privileges
       WHERE grantee = 'kalam' AND privilege_type = 'UPDATE'
         AND (table_name, column_name) NOT IN (
@@ -231,6 +248,10 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN denied := 'users'; END;
     ASSERT denied = 'users', 'kalam must not be able to read users';
 
+    BEGIN  SELECT count(*) INTO denied FROM notifications; denied := NULL;
+    EXCEPTION WHEN insufficient_privilege THEN denied := 'notifications'; END;
+    ASSERT denied = 'notifications', 'kalam must not be able to read notifications';
+
     -- And the column grant, not just the table one: it may write its own columns of `matches` and
     -- no others. Marking a match rated is count's, and the status-shape constraint plus this grant
     -- are together why "Kalam writes no rating" is a fact rather than a promise.
@@ -242,7 +263,7 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN denied := 'matches.withdrawn_reason'; END;
     ASSERT denied = 'matches.withdrawn_reason', 'kalam must not be able to cancel a match';
 
-    RAISE NOTICE 'kalam is refused ratings, models, model_versions, clocks, rating_events, users, and the columns that are not its own: OK';
+    RAISE NOTICE 'kalam is refused ratings, models, model_versions, clocks, rating_events, users, notifications, and the columns that are not its own: OK';
 END $$;
 SQL
 

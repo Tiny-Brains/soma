@@ -513,6 +513,11 @@ itself by one row is the bug nobody reports and nobody can reproduce.
 | `season_admits*` ×6 | one predicate per rule: participants, weights, entries, in-flight, versions, class | the writes that must not happen, and the reads that say why |
 | `season_cooldown_until(season, model)` | when a model may submit again | the submission `why` read |
 | `weight_classes_ok(jsonb)` | what a weight-class table must be: named classes, positive whole caps, strictly ascending | the `seasons.weight_classes` CHECK |
+| `notification_category_spec()` | **what a notification may be about**: the six categories, which are locked, which are admin-only, their defaults and `level` vocabulary | the two CHECKs below, `notification_settings_of`, the settings `why` read, the feed's unknown-category refusal |
+| `notification_category_ok(text)`, `notification_setting_ok(…)` | a known category; a stored setting the spec allows | the `notifications.category` and `notification_settings` CHECKs |
+| `notification_settings_of(user)` | the account's **effective** settings, stored or defaulted, for the categories it can receive | `notification_settings_json`, `notification_wanted`, the settings PATCH |
+| `notification_settings_json(user)` | the settings list both settings routes answer with | GET and PATCH `/v1/me/notification-settings` |
+| `notification_wanted(user, category, notable)` | **whether one notification reaches one account** | every notification writer, inside its INSERT (§3.11) |
 
 **The rule predicates are the load-bearing set**: each is asked twice per attempt, once by the
 write that must not happen and once by the read that says why it did not, and if the two ever
@@ -532,6 +537,78 @@ would print a rank the other page cannot justify.
 ceiling, and it used to be plumbed from the clocks' `[vars]` through every Soma route that called it —
 so Soma's rendering of a forfeit depended on a number in another package's config. It is read off
 `matches.strike_ceiling` now: the rule the wave actually played by, and nothing else.
+
+### 3.11 `notifications` and `notification_settings` — what an account is told
+
+**They live in `0002_sessions.sql`, beside `sessions`, and the reason is the grant.** Both files are
+the owner's, but 0002 is the file of what belongs to one account and nobody else, and it carries
+no `GRANT` at all: `kalam` and `runner_gate` gain nothing, and `scripts/verify/run.sh` asserts it by
+role, table and privilege. 0001's grant block is where a reviewer looks for what a match player may
+reach, and a table no player may reach does not belong beside it.
+
+| | |
+|---|---|
+| `notifications` | one row per thing said to one account. The columns are the page's: `subject`, `description` and `link` are rendered as given, `kind` picks an icon family, `tone` a colour, `data` carries the numbers a richer row draws. `model_id`, `version_id`, `match_id` are `ON DELETE SET NULL` — a message outlives what it was about — and `user_id` cascades |
+| `notification_settings` | **only what a competitor changed**, one row per touched category. Everything else is the spec's default, so a default changed in the migration reaches everyone who never touched that category |
+
+**The constraints are the vocabulary.** `category` must be in `notification_category_spec()`,
+`kind` one of `progress result rank alert season account`, `tone` one of `info ok warn bad`, `data`
+an object, and `link` an application path: it starts with `/` and **not** `//`, because
+`//host/x` is a path to the site's router and a protocol-relative URL to an address bar. A stored
+setting must keep a locked category's `app` on and use its category's own `level` words, or none.
+
+**`dedupe_key` is the idempotence, and `UNIQUE (user_id, dedupe_key)` enforces it.** Every writer is
+`INSERT … ON CONFLICT (user_id, dedupe_key) DO NOTHING`, keyed on the event:
+
+| Writer | Where it runs | Key | Category · kind |
+|---|---|---|---|
+| a version's decided state | `tb-admit-run` `notify` (the item's verdict), `tb-count-run` `notify_promoted` and `notify_rejected` | `version:<id>:<status>` | submissions · progress (`verified`, `active`) or alert (`rejected`) |
+| what this admit run expired | `tb-admit-run` `notify_expired`, when `expire` wrote | same | submissions · alert, `TIMED_OUT` |
+| a rated match, per seat | `tb-count-run` `notify_result`, after `held` | `result:<match>:<seat>` | matches · result, filtered by `level` |
+| a settled rank that moved | `tb-count-run` `notify_rank`, after `notify_result` | `rank:<match>:<version>:<ladder>` | ratings · rank |
+| the season this run closed | `tb-withdraw-run` `notify_closed`, when `close` wrote | `season-closed:<season>` | season · season, to everyone who entered |
+| a sign-in while another session is live | `soma-auth-github` `notify_signin`, after the session row | `sign-in:<sid>` | account · account |
+| a runner on an engine no live season pins | `soma-runner-token` `notify_engine` | `runner-engine:<runner>:<digest>` | admin · alert, to the key's admin |
+
+**Every writer asks `notification_wanted()` inside its INSERT**, so a category that is off writes no
+row and the feed needs no second filter. `matches` alone has a `level`: `all` takes every rated
+match, `notable` — the default — a first place (a draw at rank 1 included), any strike or a
+disqualification, `off` nothing. A baseline has no settings at all, so it is told nothing.
+
+**No writer is inside the statement that decided the thing, and that is deliberate.** Folded into
+count's fenced fold as a data-modifying CTE, a result would have been exactly-once — and a CHECK
+violation in it would have halted the ladder on every occurrence, for ever. So each writer is its
+own `db_write` right after the decision, `continue_on_error`, and **reads the decision off the row**
+rather than off `temp_data` (which survives a sweep, so a slot can hold the previous item's value):
+the result writer requires `status = 'rated'`, the version writer a decided status, the close writer
+the game's latest closed season. The price is a crash window — a run that dies between the decision
+and its notify loses that notification — and it can never duplicate one or invent one. The one
+change this forced on a deciding statement is admission's expiry, which now stamps **the run's own
+token** on the rows it rejects instead of `NULL`, so `notify_expired` finds exactly those rows;
+nothing reads a token on a rejected row.
+
+**A rank change is told only on a settled rating**, and only to the seats of the match that moved it.
+The rank is `model_ratings()`'s order over `ladder_field()`, computed before the fold (the seats at
+their events' `mu_before`/`sigma_before`, everyone else as they stand) and after. A version in
+placement moves on nearly every match, and a feed that says so eight times in its first hour is the
+noise that makes a competitor turn a category off.
+
+**The routes** are four, all cookie-authed with the `live_sessions` join, all private paths of their
+own: `GET /v1/me/notifications` (the feed: `category`, `unread=true`, `since`, keyset `cursor` on
+`(created_at, id)`, `limit` clamped 1..100 in the statement, and `unread` counted across every
+category), `POST /v1/me/notifications/read` (`ids`, or `all` with an optional `category`; ownership
+is the WHERE clause, and an id that is not a uuid is filtered rather than cast), and GET/PATCH
+`/v1/me/notification-settings`. PATCH is write-then-diagnose: one upsert refuses whatever the spec
+refuses and merges a partial body against the stored row, and `why` names the refusal from the spec
+— 400 `unknown_category`, 403 `admin_only`, 409 `category_locked`, 400 `invalid_level` or
+`level_not_applicable` — with 400 `invalid_setting` for a value of the wrong type before anything is
+written.
+
+**Two indexes serve them:** `(user_id, created_at DESC, id DESC)` for the feed and its cursor, and the
+same columns partial on `read_at IS NULL` for the bell's count and the Unread tab.
+
+**Retention is open.** No clock deletes, and none may: `soma-db` sets `operations.delete = false`. A
+read notification past some age is the obvious thing to prune, and the writer for it is not chosen.
 
 ---
 

@@ -245,6 +245,14 @@ occurrence starts clean. A pass that affects zero rows is not a halt — the can
 by a concurrent run — and the withdraw after it is idempotent. `max` is a literal bound above
 `count_batch` plus any plausible number of verdicts; the filter is what ends the loop.
 
+**Each decision is followed by its notification** (not drawn above): `notify_result` and
+`notify_rank` after `held`, `notify_promoted` after `withdraw`, `notify_rejected` after `reject`.
+Each is a separate `db_write`, `continue_on_error`, keyed so a replayed sweep inserts once, and each
+reads the decision off the row — `rated`, `active`, `rejected` — rather than off `temp_data`. None is
+inside a fenced statement: a notification that fails costs itself, never a fold or a verdict, and
+the price is that a run which dies between the two loses that one notification.
+[`schema.md`](schema.md) §3.11.
+
 ### 5.1 The batch — folds, then verdicts, as one document
 
 ```sql
@@ -505,6 +513,10 @@ rejects it as `UNPLAYABLE` (§5.2).
 One task: the schema §7.1, every minute. No fence, no loop, no plugin; `rows_affected` is a metric of how
 often the backstop caught something, which under normal operation should be the odd row that
 lapsed back to `pending` after promotion's own withdraw ran.
+
+The run is four tasks now: the sweep, the game, the season close ([rating-and-seasons.md](rating-and-seasons.md)
+§5.2), and `notify_closed`, which runs only when the close wrote and tells everyone who entered the
+season that it closed and where they finished on open ([`schema.md`](schema.md) §3.11).
 
 **The reason words**, as the sweep and promotion write them and Soma shows them (finding 12.4):
 

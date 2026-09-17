@@ -467,6 +467,249 @@ UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now()
   FROM closed WHERE c.key = 'roster'
 """
 
+# ======================================================================= notifications
+#
+# WHAT A COMPETITOR IS TOLD, written by the clock that decided it and in the statement right after
+# the decision. Four rules every one of these follows, and they are why none of them is inside the
+# fenced statement it reports:
+#
+#   * IT READS THE DECISION OFF THE ROW, never off temp_data. `temp_data` survives a sweep, so a
+#     slot read here could be the previous item's; the row cannot. A notify statement run when
+#     nothing was decided inserts nothing, which is what makes it safe to run unconditionally.
+#   * IT IS KEYED. `ON CONFLICT (user_id, dedupe_key) DO NOTHING` on a key naming the event, so a
+#     replayed sweep, a retried occurrence and a second clock deciding the same row insert once.
+#   * IT ASKS notification_wanted() INSIDE THE INSERT, so a category that is off writes no row.
+#   * ITS TASK IS continue_on_error. A notification is not worth a fold, a verdict or a close: a
+#     statement here that fails must cost the notification and nothing else. Folded into C_FOLD
+#     as a CTE it would have been exactly-once -- and a CHECK violation in it would have halted
+#     the ladder on every occurrence, for ever. The price of the separation is a crash window: a
+#     run that dies between the decision and its notify loses that one notification. It can
+#     never duplicate one, and never invent one.
+
+
+def ordinal(expr: str) -> str:
+    """`expr` as English: 1st, 2nd, 3rd, 11th, 22nd. One spelling for every writer that prints a
+    place, because a feed that says "2nd" in one row and "2th" in the next is two writers."""
+    return (f"({expr})::text || CASE WHEN ({expr}) % 100 IN (11, 12, 13) THEN 'th' "
+            f"WHEN ({expr}) % 10 = 1 THEN 'st' WHEN ({expr}) % 10 = 2 THEN 'nd' "
+            f"WHEN ({expr}) % 10 = 3 THEN 'rd' ELSE 'th' END")
+
+
+def n_versions(where: str) -> str:
+    """A version's decided state, told to its owner. One shape for every place a version is decided:
+    admission's verdict, the expiry, the trial's pass and its rejection. The key names the STATUS,
+    so `verified` and then `active` are two notifications and a second `active` is none."""
+    return f"""
+INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
+                           game, season, model_id, version_id, data, dedupe_key)
+SELECT e.owner_id, 'submissions',
+       CASE v.status WHEN 'rejected' THEN 'alert' ELSE 'progress' END,
+       CASE v.status WHEN 'verified' THEN 'info' WHEN 'active' THEN 'ok' ELSE 'bad' END,
+       e.name || ' v' || v.version ||
+         CASE WHEN v.status = 'verified'             THEN ' was admitted'
+              WHEN v.status = 'active'               THEN ' passed its trial'
+              WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed'
+              WHEN v.weight_class IS NULL            THEN ' was rejected'
+              ELSE                                        ' failed its trial' END,
+       -- The rejection's description IS its reason word, as admission.md §7 spells it; the page
+       -- that explains the words is the book's, and a second explanation here would drift from it.
+       CASE WHEN v.status = 'verified'
+            THEN 'Admitted as ' || v.weight_class || ' at '
+                 || to_char(v.size_bytes, 'FM999,999,999,990') || ' bytes. Its trial match is next.'
+            WHEN v.status = 'active'
+            THEN 'It is on the ' || v.weight_class || ' and open ladders.'
+            ELSE v.reject_reason END,
+       '/models/' || e.id || '/v' || v.version,
+       g.slug, se.number, e.id, v.id,
+       jsonb_strip_nulls(jsonb_build_object(
+           'model', e.name, 'version', v.version, 'status', v.status,
+           'stage', CASE WHEN v.status = 'verified'             THEN 'admission'
+                         WHEN v.status = 'active'               THEN 'trial'
+                         WHEN v.reject_reason = 'SEASON_CLOSED' THEN 'season'
+                         WHEN v.weight_class IS NULL            THEN 'admission'
+                         ELSE                                        'trial' END,
+           'class', v.weight_class, 'size_bytes', v.size_bytes, 'params', v.param_count,
+           'infer_us', v.infer_us, 'reason_code', v.reject_reason)),
+       'version:' || v.id || ':' || v.status
+  FROM model_versions v
+  JOIN models e   ON e.id = v.model_id
+  JOIN games g    ON g.id = v.game_id
+  JOIN seasons se ON se.id = v.season_id
+ WHERE {where}
+   AND v.status IN ('verified', 'active', 'rejected')
+   AND notification_wanted(e.owner_id, 'submissions')
+ON CONFLICT (user_id, dedupe_key) DO NOTHING
+"""
+
+
+# --- one version, by id: admission's verdict on the item in hand, and count's on a trial.
+N_VERSION = n_versions("v.id = ($1)::uuid")
+
+# --- what THIS RUN expired. A_EXPIRE stamps the run's token on the rows it rejects, which is the
+# only thing that tells them from every TIMED_OUT row before them; without it this statement would
+# re-offer the whole history to the conflict check on every expiry.
+N_EXPIRED = n_versions("v.admit_token = ($1)::uuid AND v.reject_reason = 'TIMED_OUT'")
+
+# --- a rated match, told to each seat's owner as their `matches` level allows: `all` hears every
+# one, `notable` a first place, any strike or a disqualification. Keyed per SEAT, because a season
+# that allows self-pairing seats one owner twice and each seat is its own result. `actor` is the
+# best-placed OTHER seat's owner -- the winner when you lost, the runner-up when you won.
+N_RESULTS = f"""
+WITH m AS (
+    SELECT mt.id, mt.seat_count, mt.preset, g.slug AS game, se.number AS season
+      FROM matches mt
+      JOIN games g    ON g.id = mt.game_id
+      JOIN seasons se ON se.id = mt.season_id
+     WHERE mt.id = ($1)::uuid AND mt.status = 'rated' AND mt.trial_version_id IS NULL
+), seats AS MATERIALIZED (
+    SELECT r.* FROM m CROSS JOIN LATERAL match_seat_rows(m.id) r
+)
+INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
+                           game, season, model_id, version_id, match_id, actor, data, dedupe_key)
+SELECT s.owner_id, 'matches', 'result',
+       CASE WHEN s.outcome = 'dq'  THEN 'bad'
+            WHEN s.strikes > 0     THEN 'warn'
+            WHEN s.outcome = 'win' THEN 'ok'
+            ELSE                        'info' END,
+       s.model_name || ' v' || s.version ||
+         CASE WHEN s.outcome = 'dq'                         THEN ' was disqualified'
+              WHEN m.seat_count = 2 AND s.outcome = 'win'   THEN ' won'
+              WHEN m.seat_count = 2 AND s.outcome = 'draw'  THEN ' drew'
+              WHEN m.seat_count = 2                         THEN ' lost'
+              ELSE ' placed ' || {ordinal('s.rank')} || ' of ' || m.seat_count END,
+       'Scored ' || s.score || ' on ' || m.preset ||
+         CASE WHEN s.strikes = 1 THEN ', with 1 strike'
+              WHEN s.strikes > 1 THEN ', with ' || s.strikes || ' strikes'
+              ELSE '' END || '.',
+       '/matches/' || m.id,
+       m.game, m.season, s.model_id, s.version_id, m.id,
+       (SELECT o.owner FROM seats o WHERE o.seat <> s.seat ORDER BY o.rank NULLS LAST, o.seat LIMIT 1),
+       jsonb_strip_nulls(jsonb_build_object(
+           'place', s.rank, 'of', m.seat_count, 'score', s.score, 'strikes', s.strikes,
+           'outcome', s.outcome, 'class', s.class, 'preset', m.preset,
+           -- the change in the CONSERVATIVE rating on open, which is the number a ladder prints
+           'delta', (SELECT round(((ev.mu_after - 3 * ev.sigma_after)
+                                   - (ev.mu_before - 3 * ev.sigma_before))::numeric, 2)
+                       FROM rating_events ev
+                      WHERE ev.match_id = m.id AND ev.seat = s.seat AND ev.ladder = 'open'),
+           'rating', (SELECT round((ev.mu_after - 3 * ev.sigma_after)::numeric, 2)
+                        FROM rating_events ev
+                       WHERE ev.match_id = m.id AND ev.seat = s.seat AND ev.ladder = 'open'))),
+       'result:' || m.id || ':' || s.seat
+  FROM m CROSS JOIN seats s
+ WHERE s.owner_id IS NOT NULL AND s.rank IS NOT NULL
+   AND notification_wanted(s.owner_id, 'matches', s.rank = 1 OR s.strikes > 0)
+ON CONFLICT (user_id, dedupe_key) DO NOTHING
+"""
+
+# --- a rank that moved, on a ladder this fold changed, told to the owner of each seat whose rank it
+# was. THE RANK IS model_ratings()'s -- conservative DESC, then version id -- over the same
+# ladder_field(), computed twice: before, with this match's seats at their `mu_before`/`sigma_before`
+# from its rating events, and after. Everyone else on the ladder is at their current rating in both,
+# which is exactly what this fold did not change.
+#
+# ONLY A SETTLED RATING is told. A version in placement moves on nearly every match, and a feed that
+# says so eight times in its first hour is the noise that makes a competitor turn a category off;
+# `settled_sigma` is the season's, as the leaderboard's `provisional` is. The fold only tells the
+# SEATS: a version displaced by two others' match is not told, because nothing it did moved it.
+N_RANKS = f"""
+WITH m AS (
+    SELECT mt.id, mt.season_id, se.number AS season, se.rules, g.slug AS game
+      FROM matches mt
+      JOIN seasons se ON se.id = mt.season_id
+      JOIN games g    ON g.id = mt.game_id
+     WHERE mt.id = ($1)::uuid AND mt.status = 'rated' AND mt.trial_version_id IS NULL
+), ev AS (
+    SELECT e.version_id, e.ladder, e.sigma_after,
+           e.mu_before - 3 * e.sigma_before AS before,
+           e.mu_after  - 3 * e.sigma_after  AS after
+      FROM rating_events e JOIN m ON e.match_id = m.id
+), field AS MATERIALIZED (
+    SELECT l.ladder, f.version_id, coalesce(ev.before, f.conservative) AS before, f.conservative AS after
+      FROM m
+     CROSS JOIN (SELECT DISTINCT ladder FROM ev) l
+     CROSS JOIN LATERAL ladder_field(m.season_id, l.ladder) f
+      LEFT JOIN ev ON ev.version_id = f.version_id AND ev.ladder = l.ladder
+), moved AS (
+    SELECT ev.version_id, ev.ladder, ev.sigma_after, ev.after,
+           (SELECT count(*) + 1 FROM field x
+             WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id
+               AND (x.before > ev.before OR (x.before = ev.before AND x.version_id < ev.version_id))) AS prev_rank,
+           (SELECT count(*) + 1 FROM field x
+             WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id
+               AND (x.after > ev.after OR (x.after = ev.after AND x.version_id < ev.version_id))) AS rank,
+           (SELECT count(*) FROM field x WHERE x.ladder = ev.ladder) AS field
+      FROM ev
+     WHERE EXISTS (SELECT 1 FROM field x WHERE x.ladder = ev.ladder AND x.version_id = ev.version_id)
+)
+INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
+                           game, season, model_id, version_id, match_id, data, dedupe_key)
+SELECT e.owner_id, 'ratings', 'rank',
+       CASE WHEN mv.rank < mv.prev_rank THEN 'ok' ELSE 'info' END,
+       e.name || ' v' || v.version ||
+         CASE WHEN mv.rank < mv.prev_rank THEN ' rose to ' ELSE ' fell to ' END ||
+         {ordinal('mv.rank')} || ' on the ' || mv.ladder || ' ladder',
+       CASE WHEN mv.rank < mv.prev_rank THEN 'Up from ' ELSE 'Down from ' END ||
+         {ordinal('mv.prev_rank')} || ' of ' || mv.field || '.',
+       '/leaderboard?season=' || m.season ||
+         CASE WHEN mv.ladder = 'open' THEN '' ELSE '&ladder=' || mv.ladder END,
+       m.game, m.season, e.id, v.id, m.id,
+       jsonb_build_object('ladder', mv.ladder, 'rank', mv.rank, 'prev_rank', mv.prev_rank,
+                          'of', mv.field, 'class', v.weight_class,
+                          'rating', round(mv.after::numeric, 2)),
+       'rank:' || m.id || ':' || v.id || ':' || mv.ladder
+  FROM m
+ CROSS JOIN moved mv
+  JOIN model_versions v ON v.id = mv.version_id
+  JOIN models e         ON e.id = v.model_id
+ WHERE mv.rank <> mv.prev_rank
+   AND mv.sigma_after <= coalesce((m.rules -> 'rating' ->> 'settled_sigma')::float8, ($2)::float8)
+   AND notification_wanted(e.owner_id, 'ratings')
+ON CONFLICT (user_id, dedupe_key) DO NOTHING
+"""
+
+# --- the season this run closed, told to everyone who entered a version in it, with where they
+# finished on open. The season is the game's most recently closed one: the task runs only when the
+# close wrote something, and the close is the only statement that sets closed_at. The rank is
+# model_ratings()'s -- conservative DESC, then id -- over the same ladder_field(), so this sentence
+# and the version page cannot disagree about who was fifth.
+N_SEASON = f"""
+WITH closed AS (
+    SELECT s.id, s.number, g.slug, g.name
+      FROM seasons s JOIN games g ON g.id = s.game_id
+     WHERE s.game_id = ($1)::uuid AND s.closed_at IS NOT NULL
+     ORDER BY s.closed_at DESC
+     LIMIT 1
+), standing AS (
+    SELECT f.owner_id, min(f.rank) AS rank, max(f.field) AS field
+      FROM (SELECT lf.owner_id,
+                   row_number() OVER (ORDER BY lf.conservative DESC, lf.version_id) AS rank,
+                   count(*) OVER () AS field
+              FROM closed, ladder_field(closed.id, 'open') lf) f
+     GROUP BY f.owner_id
+), entrants AS (
+    SELECT DISTINCT e.owner_id
+      FROM closed
+      JOIN model_versions v ON v.season_id = closed.id
+      JOIN models e         ON e.id = v.model_id
+)
+INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
+                           game, season, data, dedupe_key)
+SELECT en.owner_id, 'season', 'season', 'info',
+       closed.name || ' season ' || closed.number || ' has closed',
+       CASE WHEN st.rank IS NULL THEN 'The final standings are in.'
+            ELSE 'You finished ' || {ordinal('st.rank')} || ' of ' || st.field || ' on the open ladder.' END,
+       '/leaderboard?season=' || closed.number,
+       closed.slug, closed.number,
+       jsonb_strip_nulls(jsonb_build_object('rank', st.rank, 'of', st.field, 'ladder', 'open')),
+       'season-closed:' || closed.id
+  FROM closed
+ CROSS JOIN entrants en
+  LEFT JOIN standing st ON st.owner_id = en.owner_id
+ WHERE notification_wanted(en.owner_id, 'season')
+ON CONFLICT (user_id, dedupe_key) DO NOTHING
+"""
+
 # --- the game id from its slug. [vars] carries the slug: the id is generated when the volume is
 # seeded and is not knowable at config time.
 P_GAME = "SELECT id FROM games WHERE slug = ($1)::text"
@@ -818,7 +1061,9 @@ WITHDRAW = {
         "least burst matches. rows_affected is zero almost every minute in both, which is not a "
         "halt. Promotion does its own withdraw and the close cancels its own queue, so a "
         "persistently non-zero sweep count is a signal, not routine. soma/docs/schema.md §7.1, "
-        "docs/rating-and-seasons.md §5.2 and §6.5."
+        "docs/rating-and-seasons.md §5.2 and §6.5. A close that wrote is followed by one "
+        "notification per entrant, keyed on the season, in a task that may fail without "
+        "failing the close."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -832,6 +1077,14 @@ WITHDRAW = {
              var("temp_data.game.0.id"),
              var("metadata.vars.settled_sigma"),
              var("metadata.vars.burst")], "temp_data.closed")},
+        # Only after a close that wrote: withdraw runs every minute and a close is rare, and the
+        # statement reads "the most recently closed season", which is only this run's close when
+        # this run made one.
+        {"id": "notify_closed", "name": "Tell everyone who entered that the season closed",
+         "condition": wrote_something("temp_data.closed"),
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_SEASON, [var("temp_data.game.0.id")],
+                              "temp_data.notified_closed")},
     ],
 }
 
@@ -848,7 +1101,10 @@ COUNT = {
         "counted -- and the next occurrence starts from a clean read. A pass that affects zero rows "
         "does not halt: a concurrent run decided the candidate, and the withdraw after it is "
         "idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. "
-        "soma/docs/schema.md §5, docs/design.md §5."
+        "Each fold, pass and rejection is followed by its notification -- a separate, keyed, "
+        "continue_on_error statement that reads the decision off the row, so a notification can be "
+        "lost to a crash between the two but never costs a fold or a verdict. "
+        "soma/docs/schema.md §5 and §3.11, docs/clocks.md §5."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -896,6 +1152,19 @@ COUNT = {
         {"id": "held", "name": "Halt if the fence moved under the fold",
          "condition": IS_FOLD,
          "function": halt_unless(wrote_something("temp_data.folded"))},
+        # After `held`, so only a fold this run actually wrote is announced -- and N_RESULTS reads
+        # `rated` off the row regardless.
+        {"id": "notify_result", "name": "Tell each seat's owner how it went",
+         "condition": IS_FOLD,
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_RESULTS, [var("temp_data.it.id")],
+                              "temp_data.notified_result")},
+        {"id": "notify_rank", "name": "Tell each seat's owner a settled rank that moved",
+         "condition": IS_FOLD,
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_RANKS, [
+             var("temp_data.it.id"), var("metadata.vars.settled_sigma")],
+             "temp_data.notified_rank")},
 
         {"id": "pass", "name": "Promote and seed",
          "condition": IS_PASS,
@@ -908,11 +1177,23 @@ COUNT = {
          "function": db_write("soma-db", C_WITHDRAW_PRED, [
              var("temp_data.it.predecessor_id"), var("temp_data.it.model_id")],
              "temp_data.withdrawn")},
+        # A pass that affected zero rows was decided by a concurrent run, and the version is
+        # `active` either way: the key makes the two runs' notifications one.
+        {"id": "notify_promoted", "name": "Tell the owner it is on the ladder",
+         "condition": IS_PASS,
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_VERSION, [var("temp_data.it.model_id")],
+                              "temp_data.notified_promoted")},
         {"id": "reject", "name": "Reject, with the reason a competitor reads",
          "condition": IS_REJECT,
          "function": db_write("soma-db", C_REJECT, RUN_FENCE + [
              var("temp_data.it.trial_id"), var("temp_data.it.model_id"),
              var("temp_data.it.reason")], "temp_data.rejected")},
+        {"id": "notify_rejected", "name": "Tell the owner the trial failed",
+         "condition": IS_REJECT,
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_VERSION, [var("temp_data.it.model_id")],
+                              "temp_data.notified_rejected")},
     ],
 }
 
@@ -997,10 +1278,14 @@ PAIR = {
 
 # --- admission §4.2: reject what has run out of attempts, before claiming anything. Separate
 # from the claim so the last attempt is recorded and the rejection can name it.
+#
+# The token it stamps is THIS RUN'S, not the lapsed claim's and not NULL. Nothing reads a token on a
+# rejected row -- every claim, batch and verdict statement requires `testing` -- so the column is
+# free to say which run decided the row, and N_EXPIRED is the statement that needs to know.
 A_EXPIRE = """
 UPDATE model_versions
    SET status = 'rejected', reject_reason = 'TIMED_OUT',
-       admit_started_at = NULL, admit_token = NULL
+       admit_started_at = NULL, admit_token = ($3)::uuid
  WHERE status = 'testing' AND admit_attempts >= ($1)::int
    AND (admit_started_at IS NULL
         OR admit_started_at < now() - (($2)::int * interval '1 second'))
@@ -1170,7 +1455,9 @@ ADMIT = {
         "is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes "
         "one row per item and a per-row claim is already the mutual exclusion. The branch that "
         "matters is on `fault`: a competitor's mistake rejects the version and OUR failure "
-        "releases the claim and gives the attempt back. docs/admission.md §4-§7."
+        "releases the claim and gives the attempt back. Every verdict, and every expiry this run "
+        "stamped with its token, is then told to the owner by a keyed statement that may fail "
+        "without failing the walk. docs/admission.md §4-§7 and §10."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -1182,7 +1469,8 @@ ADMIT = {
         first_sweep({"id": "expire", "name": "Reject what has run out of attempts",
                      "function": db_write("soma-db", A_EXPIRE, [
                          var("metadata.vars.admit_attempts_max"),
-                         var("metadata.vars.admit_timeout_s")], "temp_data.expired")}),
+                         var("metadata.vars.admit_timeout_s"),
+                         var("temp_data.token")], "temp_data.expired")}),
         first_sweep({"id": "claim", "name": "Claim up to admit_batch submissions",
                      "function": db_write("soma-db", A_CLAIM, [
                          var("temp_data.token"), var("metadata.vars.admit_batch"),
@@ -1194,6 +1482,14 @@ ADMIT = {
                          var("metadata.vars.opset_max"),
                          var("metadata.vars.op_allowlist"),
                          var("metadata.vars.model_prefix")], "temp_data.batch")}),
+        # Only when the expiry wrote something: N_EXPIRED finds its rows by token, which no index
+        # serves, and almost every run expires nothing.
+        {"id": "notify_expired", "name": "Tell the owners what just timed out",
+         "condition": {"and": [{"==": [var("temp_data.i"), 0]},
+                               wrote_something("temp_data.expired")]},
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_EXPIRED, [var("temp_data.token")],
+                              "temp_data.notified_expired")},
         {"id": "more", "name": "Stop when the work runs out",
          "function": halt_unless({"<": [var("temp_data.i"),
                                         var("temp_data.batch.0.body.n")]})},
@@ -1538,6 +1834,15 @@ ADMIT = {
          "condition": {"!!": var("temp_data.retry")},
          "function": db_write("soma-db", A_RELEASE, [
              var("temp_data.it.model_id"), var("temp_data.token")], "temp_data.released")},
+
+        # The verdict, told to its owner -- whichever of `verify` and `reject` wrote it, read off
+        # the row. A claim that lapsed mid-walk wrote nothing, so this inserts nothing for it and
+        # the run that owns the item now tells it instead; a given-back item is still `testing`.
+        {"id": "notify", "name": "Tell the owner the verdict",
+         "condition": {"!": var("temp_data.retry")},
+         "continue_on_error": True,
+         "function": db_write("soma-db", N_VERSION, [var("temp_data.it.model_id")],
+                              "temp_data.notified")},
     ],
 }
 
