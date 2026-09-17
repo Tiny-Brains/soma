@@ -14,14 +14,14 @@
 #   BASE            where the API answers          (default http://127.0.0.1:8080)
 #   SMOKE_HANDLE    an existing competitor         (default codetiger)
 #   DB_CONTAINER    the postgres container         (default tinybrains-db-1)
-#   SOMA_ENV_FILE   whatever holds SOMA_SESSION_SECRET (default ../devops/.env)
+#   SOMA_ENV_FILE   whatever holds SOMA_SESSION_SECRET (default ../web/.env, the local stack's)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${BASE:-http://127.0.0.1:8080}"
 HANDLE="${SMOKE_HANDLE:-codetiger}"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
-ENV_FILE="${SOMA_ENV_FILE:-../devops/.env}"
+ENV_FILE="${SOMA_ENV_FILE:-../web/.env}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_USER" -qtAX "$@"; }
 

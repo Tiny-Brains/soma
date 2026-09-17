@@ -15,9 +15,9 @@ what runs. Every statement in §4 to §7 is exercised against Postgres 16 by
 orders of both fence races, the deployed seed, and the Kalam role exercised rather than asserted.
 
 Who writes what, and why the row is both queue and history, is
-[devops/docs/architecture.md](https://github.com/Tiny-Brains/devops/blob/main/docs/architecture.md)
+[architecture.md](architecture.md)
 §3. The decisions this schema took — 2, 3, 7, 18, 21, 22 — are in
-[devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) §3.
+[decisions.md](decisions.md) §3.
 
 ## 1. What this page fixes
 
@@ -617,7 +617,7 @@ read notification past some age is the obvious thing to prune, and the writer fo
 **These eight statements ship from `soma/workflows/soma-runner-*.json`.** They used to live in
 `kalam/scripts/gen-kalam.py` and run on a replica's own database connection; a replica now reaches
 them over `/v1/runner/*` and holds no credential at all. Nothing about what they *do* changed in the
-move — every property below was bought by a finding in `devops/docs/decisions.md` §2 and each one
+move — every property below was bought by a finding in [`decisions.md`](decisions.md) §2 and each one
 survives byte for byte — but three predicates were added, all about the caller rather than the
 match, and §4a is the routes.
 
@@ -901,7 +901,7 @@ The 200 carries three objects — `match` (§4.3's `row`), `claim`, and **`contr
 `strike_ceiling` already worked this way — decision 54 put it on the row so a trial is judged by the
 rule it was played under. This extends the same argument to everything else a match is played under.
 These were `[vars]` on each replica, asserted equal across repositories by
-`devops/scripts/check/configs.sh`, **which cannot read a machine on somebody's desk**: a value that
+web's `scripts/check/configs.sh`, **which cannot read a machine on somebody's desk**: a value that
 must be equal in two places is instead sent from the one place that owns it. `engine_digest` comes
 off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.
 
@@ -1339,7 +1339,7 @@ mark, the reap as its own statement, `models.manifest` as exact text, and the sc
 rather than a migration chain.
 
 Each is recorded with its reasoning and the cost of flipping it in
-[devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) §3,
+[decisions.md](decisions.md) §3,
 under *The match table*.
 
 ## 9. What has been verified, and what the Orion spikes must still prove

@@ -7,7 +7,7 @@ withdraw sweeps what a promotion left behind.
 
 The clocks that surround this one are [`clocks.md`](clocks.md) and the numbers are
 [`config.md`](config.md). The entity it drives is Orion's own `models`, on the node the clocks run on —
-there is no loader service any more, and `devops/docs/decisions.md` (the R-series) is why.
+there is no loader service any more, and [`decisions.md`](decisions.md) (the R-series) is why.
 
 ## 1. What this page fixes
 
@@ -92,7 +92,7 @@ that it could be moved is a package split, not a repository one.
   The channel timeout bounds a *run*, which is up to `admit_batch` submissions; the per-submission
   timeout is what makes a stuck one retryable. Confusing the two is how a batch of four small
   models gets killed because the first was large.
-- **`errors_only` tracing** from day one, as [devops/docs/architecture.md](https://github.com/Tiny-Brains/devops/blob/main/docs/architecture.md) §7 requires of every
+- **`errors_only` tracing** from day one, as [architecture.md](architecture.md) §7 requires of every
   cron channel. A submission's trace is a competitor's release URL and their adapter; it is not
   something to keep by default.
 
@@ -774,7 +774,7 @@ Decisions **20** (the admission timeout), **35** (the competitor declares both h
 (no run fence — the per-row claim is the mutual exclusion), **38** (the game's budgets live in `games.manifest`), **39** (re-validation as the tail
 of the run) and **40** (the stale-admission lockout replaced by a visible trial wait) were taken
 here. Each is recorded with its reasoning in
-[devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) §3,
+[decisions.md](decisions.md) §3,
 under *Admission*.
 
 ---

@@ -6,7 +6,7 @@
 #
 # Creates a scratch database beside `soma`, applies the shipped migrations, PREPAREs every statement
 # in statements.sql, walks scenario.sql, runs the two fence races with concurrent sessions, then
-# applies the devops seed to a second scratch database and checks what it produced. Both databases
+# applies the local stack's seed (web's compose/seed.sql) to a second scratch database and checks what it produced. Both databases
 # are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
 # `soma` or `orion_state` is touched.
 #
@@ -20,17 +20,9 @@ DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
 SCRATCH=soma_verify
 SEEDCHK=soma_verify_seed
 MIGRATIONS=../../migrations
-# The seed lives in devops, which has moved it once. Override SEED, or check out devops beside
-# soma, or the seed half of this script is skipped with a notice.
-SEED="${SEED:-}"
-if [ -z "$SEED" ]; then
-  for candidate in ../../../devops/compose/bootstrap/seed.sql \
-                   ../../../devops/compose/db-init/30-seed.sql \
-                   ../../../devops/db-init/30-seed.sql; do
-    [ -f "$candidate" ] && SEED="$candidate" && break
-  done
-  SEED="${SEED:-../../../devops/compose/bootstrap/seed.sql}"
-fi
+# The seed is the local stack's, in web since devops stopped running anything (N25). Override SEED,
+# or check out web beside soma, or the seed half of this script is skipped with a notice.
+SEED="${SEED:-../../../web/compose/seed.sql}"
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 
@@ -114,7 +106,7 @@ rm -f race1_hold.log race2_hold.log
 # columns docs/schema.md §3.8 names -- the security track's assertion, run rather than asserted.
 echo "===== the deployed schema: migrations + seed ====="
 if [ ! -f "$SEED" ]; then
-  echo "SKIP: seed checks -- $SEED not found (needs the devops repo; set SEED= to point at it)"
+  echo "SKIP: seed checks -- $SEED not found (needs a web checkout beside soma; set SEED= to point at it)"
   psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH"
   exit 0
 fi

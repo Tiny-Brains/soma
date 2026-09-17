@@ -46,6 +46,12 @@ The runner routes are not like the rest of the package:
 including Kalam's and the clocks', which is why it is the reference when a schema change is
 proposed. `docs/clocks.md` is the clocks' design, `docs/admission.md` the admit walk,
 `docs/rating-and-seasons.md` the ladders, `docs/config.md` every tuning number and what measures it.
+Since devops was retired the platform-wide record lives here too: `docs/decisions.md` (Soma's share of
+the decision record, and an index of where every other decision now lives), `docs/architecture.md`
+(the system map), `docs/deployment.md` (Soma's half of deployment: the fleet, cluster mode, the
+autoscaler, the bucket, security, retention) and `docs/orion-notes.md` (the Orion facts the build
+turned up). `scripts/measure/claim-load.sh` and `autoscale.sh` measure the claim and the demand view
+against `tinybrains-db-1`.
 
 ## Commands
 
@@ -89,7 +95,7 @@ package "cannot fix" are fixed, in `shared/soma.json`.
 a failure names the exact task; to iterate on one, copy its `query` out and `PREPARE` it by hand
 against `soma_sqlcheck`. `smoke.sh` has no filter — curl the single route instead (it prints the
 `curl` shape for each). Env: `DB_CONTAINER`/`DB_USER` (default `tinybrains-db-1`), `BASE`,
-`SMOKE_HANDLE` (default `codetiger`), `SOMA_ENV_FILE` (default `../devops/.env`), `SEED`,
+`SMOKE_HANDLE` (default `codetiger`), `SOMA_ENV_FILE` (default `../web/.env`), `SEED`,
 `ORION_ADMIN`, `ORION_ADMIN_API_KEY`, `SOMA_ALLOW_PRIVATE_DB=1` for private DB, bucket and admin
 addresses.
 
@@ -330,7 +336,7 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
 - Session revocation must keep working before JWT expiry — that is what the `live_sessions` join
   buys. Nothing may trust a signed token alone.
 - `prior_mu`, `prior_sigma`, `settled_sigma` and `forfeit_strikes` are Orion `[vars]` in
-  `soma.toml.tmpl`, read by the routes and the clocks alike; `devops/scripts/check/configs.sh`
+  `soma.toml.tmpl`, read by the routes and the clocks alike; web's `scripts/check/configs.sh`
   checks the ones Kalam's templates must agree with.
 - Cookie transport (`cookie_secure`), `app_url` and `oauth_redirect_uri` are deployment vars. No
   route may hard-code a callback host or replace the declared Secure policy.

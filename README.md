@@ -3,8 +3,8 @@
 Soma is the public API, the schema owner and the life cycle of a model version for TinyBrains:
 admission, trials, promotion, matchmaking and rating. It ships an Orion 1.8.1 package of REST
 channels, four cron clocks, workflows, connectors and two Rust-built WebAssembly plugins, plus the
-Postgres migrations shared by the platform. It ships definitions and no server;
-[DevOps](https://github.com/Tiny-Brains/devops) chooses the orion-server instances that host them.
+Postgres migrations shared by the platform. It ships definitions and no server code, inside a node image
+(`ghcr.io/tiny-brains/soma`) that runs orion-server and loads them.
 
 **Until 16 September 2026 the clocks were a repository of their own, `jodi`.** It always loaded into
 this package's Orion and read this package's `[vars]`, so the boundary bought nothing and cost a copy
@@ -69,7 +69,7 @@ and the public access to it; the running API process itself is replaceable.
 
 Kalam and the clocks coordinate through this schema and never call each other: a replica in `db`
 mode over SQL, a replica in `api` mode through the runner gate's statements.
-See the [system map](https://github.com/Tiny-Brains/devops#where-it-sits) for their placement.
+See the [system map](docs/architecture.md) for their placement.
 
 ## Interface
 
@@ -304,8 +304,8 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | admit_batch, admit_timeout_s, admit_attempts_max, admit_deadline_ms | Admission routing and claim policy | Missing values prevent reliable admission |
 | opset_min, opset_max, op_allowlist | Admitted ONNX dialect | Incorrect values admit or reject the wrong graphs |
 
-Orion also needs its own state storage, separate from the platform schema; DevOps supplies
-ORION_STATE_DB_URL and cluster configuration. The [instance template](https://github.com/Tiny-Brains/devops/blob/main/orion/soma.toml.tmpl)
+Orion also needs its own state storage, separate from the platform schema; a deployment supplies
+ORION_STATE_DB_URL and a Redis for cluster mode. The [instance template](docker/soma.toml.tmpl)
 is the configuration reference, including session, quota, season, pairing, rating and admission
 policy. Policy values are provisional deployment choices; `docs/config.md` names every tuning number
 and what measures it. Multiple hosts share Orion cluster state so each clock stays a cluster-wide
@@ -997,5 +997,5 @@ against a competitive roster remain open.
 - Local references: the [clock generator](scripts/gen-clocks.py) and the plugin manifests linked above.
 - Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the packages run against it; [`docs/clocks.md`](docs/clocks.md) — the clocks; [`docs/admission.md`](docs/admission.md); [`docs/rating-and-seasons.md`](docs/rating-and-seasons.md); [`docs/config.md`](docs/config.md) — every number, and what measures it.
 - [The competitor guide](https://github.com/Tiny-Brains/web/tree/main/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
-- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Kalam](https://github.com/Tiny-Brains/kalam), [DevOps](https://github.com/Tiny-Brains/devops). [Jodi](https://github.com/Tiny-Brains/jodi) is history only.
+- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Kalam](https://github.com/Tiny-Brains/kalam). [Jodi](https://github.com/Tiny-Brains/jodi) is history only.
 - Apache-2.0: see [LICENSE](LICENSE).

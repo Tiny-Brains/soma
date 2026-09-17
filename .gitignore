@@ -10,7 +10,7 @@ plugins/*/*.wasm
 plugins/*/plugin.json
 
 # Detached plugin signatures. A signature belongs to whoever holds the trust key, not to this
-# package -- load-package.sh reads PLUGIN_SIG_DIR, and devops keeps them under its own keys/. This
+# package -- load-package.sh reads PLUGIN_SIG_DIR, and a deployment mounts them at /sig. This
 # pattern stays only so a host-side signing run cannot leave one behind here.
 plugins/*/*.wasm.sig
 

@@ -12,7 +12,7 @@ cited below is [`config.md`](config.md).
 The schema these statements run against is
 [schema.md](schema.md). Who writes what,
 and why the fences rather than the locks carry correctness, is
-[devops/docs/architecture.md](https://github.com/Tiny-Brains/devops/blob/main/docs/architecture.md)
+[architecture.md](architecture.md)
 §3 and §5.
 
 ## 1. What this page fixes
@@ -588,5 +588,5 @@ size; and every number in §9, which only a running ladder tunes.
 Decisions **1** (matches in flight per version), **7** to **13**, and the unnumbered calls the runs
 forced — verdicts folded in the same run, pair claiming no run fence, the trial insert as SQL —
 are recorded with their reasoning in
-[devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) §3,
+[decisions.md](decisions.md) §3,
 under *The clocks*.

@@ -5,7 +5,7 @@
 
 Every number the clocks read, what it means, what moves it, and — where the running ladder can
 measure it — the query that does. They live in the `[vars]` block of the instance config that runs
-Soma, `devops/compose/orion/soma.toml.tmpl`, sectioned `CLOCKS`, read by the runs as
+Soma, `docker/soma.toml.tmpl`, sectioned `CLOCKS`, read by the runs as
 `metadata.vars.*`.
 
 **Every one of these is provisional.** A number here is a policy guess unless the *Measured by*
@@ -15,7 +15,7 @@ column names something that has actually been run against it.
 > `null`, and `{">=": [0, null]}` is *true* — so a ceiling read in the wrong scope silently passes
 > every test against it. Every accumulator is a `reduce` with the value carried in its seat, and the
 > first task of each run halts loudly if a var is missing. This cost a day; see
-> [devops/docs/orion-notes.md](https://github.com/Tiny-Brains/devops/blob/main/docs/orion-notes.md) §4.
+> [orion-notes.md](orion-notes.md) §4.
 
 The day a number must change without a redeploy, these move to a `policies` table — versioned,
 immutable, and read in the run that acts on it. Nothing depends on that yet.
@@ -107,7 +107,7 @@ SELECT count(*) FILTER (WHERE distinct_ranks = 1)::float8 / nullif(count(*), 0) 
 | `season_gap_days` (1) | Soma | a product decision, not a measurement |
 | `adapter_ops_max` | the game's manifest | — |
 
-`devops/scripts/check/configs.sh` asserts the equalities that a deploy can get wrong, and runs
+web's `scripts/check/configs.sh` asserts the equalities that a deploy can get wrong, and runs
 before either config ships. A rule that lives only in a comment is one rebase from being wrong, and
 each of these fails silently.
 
@@ -116,4 +116,4 @@ each of these fails silently.
 ## More
 
 - [`clocks.md`](clocks.md) — what the clocks do, and why they are correct without their locks
-- [devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) — the reasoning behind each decision number cited above
+- [`decisions.md`](decisions.md) — the reasoning behind each decision number cited above, and where the rest of the record is

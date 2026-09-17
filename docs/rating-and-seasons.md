@@ -865,7 +865,7 @@ no clock that inflates a sigma, what a season is, one season per version stamped
 non-overlap by partial unique index, withdraw as the closer, where the engine digest lives,
 baselines carried into each new season, and the season's rules as a document on the row — are
 recorded with their reasoning and the cost of flipping each in
-[devops/docs/decisions.md](https://github.com/Tiny-Brains/devops/blob/main/docs/decisions.md) §3,
+[decisions.md](decisions.md) §3,
 under *The clocks*.
 
 ---
