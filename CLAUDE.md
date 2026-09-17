@@ -9,7 +9,9 @@ between packages, and the constants that must stay equal across them. This file 
 
 No server code. Soma is an Orion **1.8.1** package — 49 channel definitions, 49 workflows, 10
 connectors and two wasm plugins — plus `migrations/`, the Postgres schema **every** TinyBrains
-package shares. DevOps owns the orion-server that hosts it. Behaviour lives in declarative JSON and
+package shares. **It ships as a node image** (devops N25): `Dockerfile` puts orion-server, `docker/soma.toml.tmpl`,
+the package and the cartridge of one ants release into one image, whose `serve` loads the package
+into the node at boot and whose `bootstrap` prepares the database. Behaviour lives in declarative JSON and
 inline SQL, so lint plus the SQL checks are this repo's compiler; the only test framework is the
 plugins' `cargo test`, and the only thing built is the two plugin components.
 
@@ -65,7 +67,9 @@ cargo test --manifest-path plugins/Cargo.toml -p tb-rating       # one crate
 cargo test --manifest-path plugins/Cargo.toml -p tb-rating ranks_numbering_is_immaterial
 cargo clippy --manifest-path plugins/Cargo.toml --all-targets    # clean; the `allow`s in tb-rating are deliberate
 ./plugins/tb-rating/build.sh           # or plugins/build.sh tb-rating
-docker build -t tinybrains/soma:dev .  # the artifact image -- the package that actually ships
+docker build -t tinybrains/soma:dev .  # the node image -- web's compose runs it as SOMA_IMAGE
+gh workflow run release.yml            # rehearse a release: both platforms, nothing pushed
+git tag v0.1.0 && git push origin v0.1.0   # publish ghcr.io/tiny-brains/soma
 ```
 
 `check-defs.sh` is the one to run on every change: it reads the definitions and nothing else, so it
@@ -94,8 +98,19 @@ package's auth, cron or plugin blocks and reports *misleading schema errors* on 
 are correct — `unknown variant 'cron'`, plugin functions reported unknown. `check-defs.sh` and the
 generator both assert the version before they run anything, so the trap is now a message rather
 than a puzzle. The pinned source of truth is the separate checkout at
-`~/Development/Plasmatic/Orion-Projects/Orion`; `devops/compose/orion/` holds the image and the
-`soma.toml.tmpl` instance template.
+`~/Development/Plasmatic/Orion-Projects/Orion`; `docker/` holds the image's entrypoint and the
+`soma.toml.tmpl` instance template, and the image carries 1.8.1 whatever the host has:
+`docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/soma --deny-warnings`.
+
+**The image is the deployment unit, and web's compose runs it.** `docker/entrypoint.sh serve`
+migrates Orion's state, forks a self-load of `/pkg/soma` through `scripts/load-package.sh` and execs
+orion-server; the fork asserts both plugins are loaded and no channel is quarantined, and stops the
+node if not. `docker/entrypoint.sh bootstrap` is what devops' loader used to do to the database —
+`orion_state`, the migrations under a recorded digest (a rewrite is refused by name), a mounted
+seed, the `runner_gate` password, the engine digest (a patch, or with `ENGINE_RELEASE=1` a release
+refused while a season is live) and `games.manifest` + `reference_observations` from the cartridge
+the image was built with. **That cartridge is an ants release chosen at build** — the latest, or
+`ANTS_RELEASE` — and a runner built from another release claims nothing.
 
 **`clippy` is not optional, and the reason is on the record.** `channel_call` IGNORES an input key
 it does not know, so the admit walk's probe call — written `body` where the field is `data` — ran
@@ -119,7 +134,7 @@ changing the route — it is where the reasoning lives, not in a comment.
 
 One route breaks the second half of that shape and is meant to: `soma-admin-check` writes a status
 and **no body at all**. It is an authorization probe for a reverse proxy — nginx's `auth_request`
-allows on 2xx and denies on 401/403 — which is how the Orion console at `devops/compose/orion-ui/`
+allows on 2xx and denies on 401/403 — which is how the Orion console in web's `compose/orion-ui/`
 is put behind this platform's own GitHub sign-in. Change its statuses and you change who can open
 that console, so the split is documented in its `description` rather than inferred.
 
@@ -223,12 +238,15 @@ everything else is host-testable, which is where the suites run.
   `seat_count * cardinality(ladders)` length check is the second opinion on its shape.
 
 `tb-rating.wasm`, `tb-pairing.wasm` and both `plugin.json` files are build output and are **not
-committed** — the `plugin.toml` beside each is the authored manifest. They ship in the artifact
+committed** — the `plugin.toml` beside each is the authored manifest. They ship in the node
 image, which builds them under a pinned toolchain with `--remap-path-prefix`, because rustc bakes
 absolute source paths into a component and a plugin digest is what the signature is over and what
 every node verifies. `docker build --no-cache` lands on the same two digests every time
-(`tb-pairing` `sha256:dac150b5…`, `tb-rating` `sha256:a962eade…`); after any change that moves one,
-`devops/scripts/setup/sign-plugins.sh` must run again or the node comes up `degraded`.
+(`tb-pairing` `sha256:a492bcc2…`, `tb-rating` `sha256:a962eade…` since the seat-count pairing
+change); after any change that moves one,
+web's `scripts/setup/sign-plugins.sh` must run again or the self-load stops the node on a quarantined
+channel. The image and its release build both stages on the build platform, so the amd64 and arm64
+images carry the same two components and one signature verifies on both.
 
 ## Orion constraints that shape every statement
 

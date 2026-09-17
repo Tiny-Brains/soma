@@ -149,7 +149,7 @@ admin, **401** for no or a revoked session, **403** for a signed-in non-admin, a
 which is exactly the vocabulary nginx's `auth_request` speaks, allowing on 2xx and denying on
 401/403. It lets this platform put its own sign-in in front of something that is not Soma: today
 the Orion console, which is a static SPA with nowhere to hold a credential
-(`devops/compose/orion-ui/`). The 401/403 split is load-bearing there — 401 sends the caller to
+(web's `compose/orion-ui/`). The 401/403 split is load-bearing there — 401 sends the caller to
 GitHub, and answering it to a competitor who signed in correctly would loop them for ever.
 
 Its workflow is a near-copy of `soma-seasons-create`'s first three tasks **on purpose**: the same
@@ -212,8 +212,21 @@ curl --fail --silent --show-error http://127.0.0.1:8080/v1/games
 
 ## Run it, test it
 
-Soma needs Orion and a migrated database. The [DevOps setup](https://github.com/Tiny-Brains/devops#run-it-test-it)
-provides both, plus replay storage and the browser proxy. Run package commands from this repo root.
+**Soma runs as its own image.** `ghcr.io/tiny-brains/soma` is orion-server with this package, its
+instance config and the cartridge of one ants release; [web's](https://github.com/Tiny-Brains/web)
+`docker-compose.yml` runs it with Postgres, Redis and MinIO, and is the local stack.
+
+```sh
+docker build -t tinybrains/soma:dev .                                  # this checkout, as a node
+SOMA_IMAGE=tinybrains/soma:dev docker compose up -d                    # from web: the stack runs it
+docker run ... ghcr.io/tiny-brains/soma bootstrap                      # the database, before any node
+gh workflow run release.yml                                            # rehearse a release; a v* tag publishes
+```
+
+`serve` (the default) migrates Orion's state, loads the package into the node and stops it if a
+plugin did not load; `bootstrap` creates `orion_state`, applies the migrations under a recorded
+digest, applies a mounted seed, sets the `runner_gate` password and registers the cartridge and its
+engine digest. Both are `docker/entrypoint.sh`. Run package commands from this repo root.
 
 - Orion server 1.8.1 and Postgres 16 for the supported local stack, with `[plugins]` and `[models]` enabled.
 - curl plus jq or Python 3 for loading; Python 3 and Docker for the SQL check.
@@ -278,7 +291,7 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | ORION_ADMIN, ORION_ADMIN_API_KEY | Load-script destination and optional secret bearer token | Defaults target local admin; protected APIs require the token |
 | SOMA_ALLOW_PRIVATE_DB | Loader flag, 1 for private database, bucket and admin addresses | Orion's private-address guard blocks those connections |
 | MODELS_ENDPOINT, MODELS_BUCKET | The models bucket at its INTERNAL address, for soma-models-internal | The admit clock cannot HEAD an artifact or sign its manifest GET |
-| R2_ENDPOINT (loader) | Also substituted into soma-models-http as its base | The connector keeps its placeholder and the manifest fetch 404s |
+| R2_ENDPOINT (loader) | Also substituted into soma-models-http as its base; the image's self-load passes MODELS_ENDPOINT | The connector keeps its placeholder and the manifest fetch 404s |
 | SOMA_NODE_ADMIN | Loader substitution for soma-node-admin, the admin API admission registers a model on | Defaults to ORION_ADMIN, which is right on a node and wrong anywhere else |
 | ORION_ADMIN_BEARER | The whole `Bearer <key>` header value soma-node-admin sends | Every admin call is 401: a connector resolves `env://` only when the reference is the entire string |
 | PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating and tb.pairing | A node with trust keys quarantines the clocks that call an unsigned plugin |
@@ -303,6 +316,10 @@ resolve from the browser, not only from containers.
 ## Layout
 
 ```text
+Dockerfile                    the node image: orion-server, the package, the config and the cartridge
+docker/entrypoint.sh          `serve` (migrate, self-load, run) and `bootstrap` (the database)
+docker/soma.toml.tmpl         the instance config, cluster mode
+.github/workflows/release.yml a v* tag publishes the image for amd64 and arm64
 channels/soma-*.json          HTTP paths, session auth, and quotas
 channels/tb-*.json            the four clocks and the probe channel (generated, committed)
 workflows/soma-*.json         request handling, inline SQL, and response mapping
@@ -360,6 +377,19 @@ LICENSE                       repository licence
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**17 September 2026 (night) — Soma is a node image, and a tag releases it.** `Dockerfile` builds
+orion-server, `docker/soma.toml.tmpl` (from devops' `compose/orion/`), the package and the cartridge
+of the latest ants release (`ANTS_RELEASE` pins one) into one image. `serve` loads the package into
+the node at boot — what devops' loader did — and `bootstrap` does the loader's database half:
+`orion_state`, the migrations and their digest, a mounted seed, the `runner_gate` password, the
+engine digest and the cartridge registration. devops' compose files moved to web (the stack) and
+kalam (the runner), N25. Every building stage runs on the build platform, so amd64 and arm64 carry the
+same components: `tb-pairing` `sha256:a492bcc2…` and `tb-rating` `sha256:a962eade…`, the digests the
+old image built. On web's new stack against the existing volume, bootstrap found the schema
+current, declared `engine-df312c0458d9` and registered 148 observations, and the node loaded its
+package with both plugins signed and nothing quarantined. `.github/workflows/release.yml` publishes
+`ghcr.io/tiny-brains/soma` on a `v*` tag.
 
 **17 September 2026 (night) — pairing never picks a map the roster cannot seat.** Ants ships sixteen
 presets from two seats to eight, and two paths would have starved on them. **The plugin** chose the
