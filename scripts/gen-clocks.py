@@ -857,8 +857,11 @@ SELECT json_build_object(
 # and it must not depend on anything the plugin might be carrying.
 #
 # THE PRESET DECIDES THE SEAT COUNT, so the preset is picked first and the baselines drawn to fill
-# it. A candidate whose preset needs more baselines than exist is left unpaired this run rather
-# than seated twice; if none ever fits, count refuses it at the cap.
+# it -- and it is picked only from the presets the season's baselines CAN fill. A trial that does
+# not land does not count, so the rotation (`trials % length`) would otherwise stop on an
+# eight-seat map against three baselines and offer that same map every run, for ever: the candidate
+# waits on a board it can never be seated on. With no preset fillable at all it waits for a
+# baseline, which is the honest reading of an empty roster.
 P_TRIALS = """
 WITH cand AS (
     SELECT c.id, c.game_id, c.season_id, c.model_id, c.weight_class, e.owner_id, s.rules,
@@ -884,7 +887,21 @@ WITH cand AS (
                                  SELECT coalesce(sp.value ->> 'name', sp.value #>> '{}')
                                    FROM jsonb_array_elements(cand.rules -> 'pairing' -> 'presets')
                                         AS sp (value))),
-                     ($3)::jsonb) AS list
+                     ($3)::jsonb) AS offered
+      ) offer
+      CROSS JOIN LATERAL (
+          -- Narrowed to the maps this season's baselines can seat: the candidate, and one baseline
+          -- of a different owner in every other seat, exactly as `seated` below draws them. A bare
+          -- string has no `players`, which is two seats.
+          SELECT coalesce(jsonb_agg(o.value ORDER BY o.ord), '[]'::jsonb) AS list
+            FROM jsonb_array_elements(offer.offered) WITH ORDINALITY AS o (value, ord)
+           WHERE coalesce((o.value ->> 'players')::int, 2) <= 1 + (
+                     SELECT count(DISTINCT be.owner_id)
+                       FROM model_versions b
+                       JOIN models be ON be.id = b.model_id
+                       JOIN users ub  ON ub.id = be.owner_id AND ub.role = 'baseline'
+                      WHERE b.game_id = cand.game_id AND b.season_id = cand.season_id
+                        AND b.status = 'active')
       ) sel
       JOIN LATERAL (
           -- A preset is either { name, players } or a bare string, which means two seats. On a

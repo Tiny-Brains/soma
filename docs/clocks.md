@@ -502,7 +502,12 @@ SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build
                       AND l.status IN ('pending', 'claimed', 'running'))
 ```
 
-`$1` game · `$2` the re-pair cap · `$3` the presets. The trial's seed is random rather than
+`$1` game · `$2` the re-pair cap · `$3` the presets. The preset rotates over **the presets the
+season's baselines can fill** — the candidate plus one baseline of a different owner per other
+seat — and not over every preset: a trial that does not land does not count, so a rotation that
+reached an eight-seat map with three baselines would offer that map every run, for ever. The
+shipped statement (`scripts/gen-clocks.py`, `P_TRIALS`) seats `players - 1` baselines; the sketch
+above predates seat counts. The trial's seed is random rather than
 derived, since nothing replays a trial's choice. A candidate at the cap is left to count, which
 rejects it as `UNPLAYABLE` (§5.2).
 

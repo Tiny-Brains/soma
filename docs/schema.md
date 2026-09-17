@@ -933,14 +933,17 @@ prevent — its own comment is about a season storing `enabld` cleanly and then 
 **`renew_every_n_turns` is DERIVED, not sent.** It is the deployment's target clamped by the season:
 
 ```sql
-GREATEST(1, LEAST(($4)::int, (($5)::int * 1000) / (3 * e.turn_ms)))
+GREATEST(1, LEAST(($4)::int, (($5)::int * 1000) / ((m.seat_count + 1) * e.turn_ms)))
 ```
 
 Without that, a season raising `turn_ms` leaves the lease expiring before the renew fires — 30 turns
 at 5000 ms is 450 s against a 300 s lease, **on every match**, and it reads as a wedged runner. A
 range check on `turn_ms` cannot close it, because the safe ceiling depends on `lease_seconds`, which
-lives in a different file. Clamping makes `renew_every_n_turns × turn_ms × 3 < lease_seconds` true
-by arithmetic. At the defaults it is `min(30, 100) = 30`, unchanged; at `turn_ms = 5000` it is 20.
+lives in a different file. Clamping makes `renew_every_n_turns × turn_ms × (seat_count + 1) ≤ lease_seconds` true
+by arithmetic. The multiplier is the row's `seat_count + 1` — every seat's deadline and the step —
+because a turn of an eight-seat map can cost nine deadlines where a two-seat one costs three. At the
+defaults it is `min(30, 100) = 30` on two seats and `min(30, 33) = 30` on eight; at `turn_ms = 5000`
+it is 20 on two seats and 6 on eight.
 
 Three values cannot ride the row because they are Orion *instance* config rather than workflow data:
 `engine.ops_budget`, `orion_version` and `max_timeout_ms`. A node cannot be told its own ops budget.

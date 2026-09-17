@@ -347,6 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn a_map_with_more_seats_than_the_roster_has_owners_is_never_chosen() {
+        // Three owners and a catalogue running to eight seats: every want is spent on the maps
+        // three can play, rather than on the ones no draw could fill.
+        let mut d = doc(6);
+        d["demand"]["pool"] = json!([
+            model("a", "nano", "competitor", 25.0, 8.3),
+            model("b", "nano", "competitor", 26.0, 8.0),
+            model("base", "nano", "baseline", 25.0, 3.0)
+        ]);
+        d["demand"]["limits"]["presets"] = json!([
+            { "name": "open-8", "players": 8 }, { "name": "maze-6", "players": 6 },
+            { "name": "cave-3", "players": 3 }, { "name": "open-2", "players": 2 }
+        ]);
+        let out = invoke(FUNCTION, d).unwrap();
+        let ps = out["pairings"].as_array().unwrap();
+        assert!(!ps.is_empty(), "{out}");
+        for p in ps {
+            let n = p["seats"].as_array().unwrap().len();
+            assert!(n <= 3, "{p}");
+            assert!(["cave-3", "open-2"].contains(&p["preset"].as_str().unwrap()), "{p}");
+        }
+
+        // And a roster no map fits is an empty plan, not a refusal.
+        let mut d = doc(6);
+        d["demand"]["limits"]["presets"] = json!([{ "name": "open-8", "players": 8 }]);
+        assert_eq!(invoke(FUNCTION, d).unwrap(), json!({ "n": 0, "pairings": [] }));
+    }
+
+    #[test]
     fn a_bare_string_preset_still_means_two_seats() {
         // A manifest written before presets carried a seat count must still load.
         let mut d = doc(2);

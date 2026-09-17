@@ -361,6 +361,19 @@ LICENSE                       repository licence
 
 ## Status
 
+**17 September 2026 (night) — pairing never picks a map the roster cannot seat.** Ants ships sixteen
+presets from two seats to eight, and two paths would have starved on them. **The plugin** chose the
+least-played preset first and spent the version's want when too few owners were left to fill it, so
+on a small roster every want went to maps nobody could play; `choose` now filters the presets to
+those whose `players` is at most the pool's distinct owners (its pool size under self-pairing), and
+`a_map_with_more_seats_than_the_roster_has_owners_is_never_chosen` pins it. **The trial query** was
+worse: a trial rotates `trials % length` and a trial that does not land does not count, so a candidate
+whose turn reached a six-seat map against three baselines was offered that map every run, for ever.
+`P_TRIALS` now rotates over the presets the season's baselines can fill. **The runner gate's renew
+clamp** used a fixed `3 * turn_ms`, which is two seats and the step; it is `(seat_count + 1) * turn_ms`
+now, in `soma-runner-claim`, `verify/statements.sql` and `schema.md` §4 alike, and Kalam's `db` path
+clamps the same way. `config.md`'s `presets` row names all sixteen.
+
 **17 September 2026 — notifications.** An account is now told what the platform decided about it.
 `notifications` and `notification_settings` are in `0002_sessions.sql`, beside `sessions`, with no
 grant at all -- `kalam` and `runner_gate` gain nothing, and `verify/run.sh` asserts it by role,

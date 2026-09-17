@@ -27,7 +27,7 @@ immutable, and read in the run that acts on it. Nothing depends on that yet.
 | Var | Value | What moves it |
 |---|---|---|
 | `game` | `ants` | a second game makes this a roster rather than a name |
-| `presets` | `open-2`, `maze-2`, `cave-2`, each at 2 players | the game's manifest is the source, and this names a subset of it. Ants' `rooms-4` seats four, and is left out while pairing chooses a preset before it seats anyone: on a roster that cannot fill four seats, a four-seat preset spends every version's want and pairs nothing |
+| `presets` | all sixteen Ants presets, `open-2` to `maze-8`, each with its `players` (2 to 8) | the game's manifest is the source, and this names a subset of it. Pairing picks only a preset the roster can seat — the plugin filters by distinct owners in the pool, the trial query by the season's baselines — so a wide map waits for a roster that can fill it instead of spending every version's want on a draw that cannot land. A replica claims up to eight seats (kalam `MAX_SEATS`) |
 
 ## 2. The clocks
 

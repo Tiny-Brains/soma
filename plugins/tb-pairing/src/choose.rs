@@ -5,7 +5,7 @@
 //! keeps a `verified`, `superseded` or `rejected` version out without this code knowing those
 //! words. Trials are chosen in SQL (§6.4), not here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A small deterministic generator: not for cryptography or statistics, but for making one run's
 /// arbitrary choices reproducible from its occurrence id. SplitMix64.
@@ -135,6 +135,22 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     let mut pool: Vec<&Entry> = input.pool.iter().collect();
     pool.sort_by(|a, b| a.model_id.cmp(&b.model_id));
 
+    // ONLY THE MAPS THIS ROSTER CAN SEAT. Every seat of a match is a different owner unless the
+    // season allows self-pairing, so a map of more seats than there are owners is one no draw can
+    // fill -- and choosing it spends the wanting version's want for nothing. With a catalogue
+    // running from two seats to eight that is not an edge: three baselines and nobody else would
+    // have spent every want on the six-seat maps and paired nothing. Owner budgets can still leave a
+    // fitting map short on a run, and that case keeps its spend below.
+    let seatable = if input.self_pairing {
+        pool.len()
+    } else {
+        pool.iter().map(|e| e.owner_id.as_str()).collect::<HashSet<_>>().len()
+    };
+    let presets: Vec<&Preset> = input.presets.iter().filter(|p| p.players <= seatable).collect();
+    if presets.is_empty() {
+        return out;
+    }
+
     let mut remaining: HashMap<&str, i64> = HashMap::new();
     for w in &input.wants {
         if w.want > 0 {
@@ -181,7 +197,7 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
         }
 
         // The preset comes FIRST, because it decides how many seats there are to fill.
-        let preset = preset_for(a, input, rng);
+        let preset = preset_for(a, &presets, input, rng);
         let opponents = opponents(a, &pool, &remaining, input, &owner_budget, preset.players - 1, rng);
         if opponents.len() + 1 < preset.players {
             // Not enough distinct versions to seat this map. Spend the want rather than spin:
@@ -217,12 +233,13 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     out
 }
 
-/// The preset this version has played least, ties broken by the seed. Map coverage: a rating
-/// should reflect the game, not whichever map the version happened to be given.
-fn preset_for<'a>(a: &Entry, input: &'a Input, rng: &mut Rng) -> &'a Preset {
-    let mut best: Vec<&Preset> = Vec::new();
+/// The preset this version has played least, ties broken by the seed, among the ones the roster can
+/// seat. Map coverage: a rating should reflect the game, not whichever map the version happened to
+/// be given.
+fn preset_for<'a>(a: &Entry, presets: &[&'a Preset], input: &Input, rng: &mut Rng) -> &'a Preset {
+    let mut best: Vec<&'a Preset> = Vec::new();
     let mut best_n = i64::MAX;
-    for p in &input.presets {
+    for &p in presets {
         let n = input
             .played
             .get(a.model_id.as_str())
