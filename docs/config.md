@@ -27,7 +27,7 @@ immutable, and read in the run that acts on it. Nothing depends on that yet.
 | Var | Value | What moves it |
 |---|---|---|
 | `game` | `ants` | a second game makes this a roster rather than a name |
-| `presets` | `["standard", "maze", "cell"]` | the game's manifest is the source; this is a copy of it |
+| `presets` | `open-2`, `maze-2`, `cave-2`, each at 2 players | the game's manifest is the source, and this names a subset of it. Ants' `rooms-4` seats four, and is left out while pairing chooses a preset before it seats anyone: on a roster that cannot fill four seats, a four-seat preset spends every version's want and pairs nothing |
 
 ## 2. The clocks
 
