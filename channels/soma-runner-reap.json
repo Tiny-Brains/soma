@@ -6,10 +6,10 @@
   "protocol": "cron",
   "workflow_id": "soma-runner-reap",
   "transport_config": {
-    "schedule": "* * * * * *",
+    "schedule": "*/5 * * * * *",
     "timezone": "UTC",
     "misfire_policy": "latest",
     "concurrency": { "policy": "forbid", "key": "runner-reap" }
   },
-  "config": { "timeout_ms": 10000 }
+  "config": { "timeout_ms": 10000, "tracing": { "$from": "constants.clock_tracing" } }
 }

@@ -391,7 +391,7 @@ Layer 06 §7's policy table says what is kept; this page is where two of its row
 | standings | for ever | the `seasons` and `ratings` rows. Nothing to build |
 | match rows | indefinitely | nothing to build; revisit when vacuum shows it — deferred by design until then |
 | **replays** | by a bucket lifecycle rule | an R2 lifecycle rule on the `replays/` prefix. Layer 06 §7's evictable-hash query is what says which are safe to sweep |
-| **traces** | Orion's own retention | `[trace_storage]`. `sync` mode is right at Soma's volume; the five cron channels already carry `errors_only`, so a clean wave writes nothing |
+| **traces** | 24 h | `[trace_queue] retention_hours`, pinned in `docker/soma.toml.tmpl` rather than left on Orion's 72; the same key expires `cron_occurrences`. `sync` mode is right at Soma's volume because the five cron channels and the gate's four poll routes (`token`, `claim`, `renew`, `release`) all carry `errors_only`, so a clean wave writes nothing — on a **sync** route that means no row at all, on a **cron** channel a ~140-byte husk, because `create_pending` runs before the workflow and `for_async_submission` upgrades `off` to `sync` |
 | model store | by the same query | the evictable-hash query names weights held only by closed seasons' rejected rows |
 
 ---

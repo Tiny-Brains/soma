@@ -141,7 +141,7 @@ auth constant whose scheme is not `rstrip() + " "`. It cost five minutes and wou
 
 ---
 
-## 0d. Two smaller ones from the same build
+## 0d. Smaller ones from the same build
 
 **`${NAME:?message}` is not a form Orion understands.** It accepts `${NAME}` and `${NAME:-default}`
 and reports anything else as `Invalid env var name 'NAME:?message'`, quoting the whole string as the
@@ -159,6 +159,24 @@ ceiling is below what a workflow asks for gives the model less time than the cal
 every layer above reports a normal result. If a per-call deadline is data — from a season, a tenant,
 a request — the node's ceiling has to be the largest value that data may hold, and asserted against
 wherever that bound is declared.
+
+**A clock's traces cannot be turned off, and `errors_only` means two different things.** The sync
+request path calls `should_drop` (`channel/registry.rs:57`) *before* it writes anything, so a REST
+channel carrying `errors_only: true` persists **no row at all** for a clean call. A cron channel
+cannot: `cron/worker.rs:394` runs the effective config through `for_async_submission()`, which
+upgrades `mode = "off"` to `sync` and pins `sample_rate` to 1.0, and `create_pending` then writes the
+row *before* the workflow starts so a run that dies mid-flight is visible. `errors_only` there drops
+only the **result**, leaving a ~140-byte husk per occurrence — measured on the local stack, that is
+exactly what `tb-count`, `tb-pair` and `tb-admit` write. So the only levers on a clock's trace
+volume are its schedule and `[trace_queue] retention_hours`; `tracing.mode = "off"` on a cron channel
+is silently not what it says.
+
+**Retention is real and it is one knob for two tables.** `[trace_queue] retention_hours` defaults to
+**72**, and `bootstrap.rs` hands the same value to both the trace cleanup and `cron::start_cleanup`
+— an occurrence and the trace it produced age out together. Left unset, a node keeps three days of
+every poll its gate answered. `TraceQueueConfig` is `deny_unknown_fields`, so a mistyped key here is
+fatal at boot rather than ignored; `orion-server validate-config -c <tmpl>` prints the effective
+value and is the cheap way to check it.
 
 ---
 

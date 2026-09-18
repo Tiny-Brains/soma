@@ -303,3 +303,15 @@ enabled = true
 
 [trace_storage]
 mode = "sync"
+
+# RETENTION, PINNED RATHER THAN INHERITED. Orion's default is 72 hours, and the cleanup task reads
+# this one key for BOTH `traces` and `cron_occurrences` -- an occurrence and the trace it produced
+# age out together, so there is one decision here and not two.
+#
+# 24 because the traces are a debugging record, not an audit one: what a match did is in `matches`,
+# `match_seats` and `rating_events`, which nothing here expires. Measured on the local stack with
+# one idle runner, the gate's poll routes wrote 289 MB/day before they carried `errors_only` --
+# three days of that is most of a gigabyte of empty polls, and the question any of it answers is
+# asked within the hour.
+[trace_queue]
+retention_hours = 24

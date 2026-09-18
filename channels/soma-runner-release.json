@@ -12,6 +12,7 @@
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.runner_rate" },
     "auth": { "$from": "constants.runner_auth" },
-    "principal_rate_limit": { "$from": "constants.per_runner_rate" }
+    "principal_rate_limit": { "$from": "constants.per_runner_rate" },
+    "tracing": { "$from": "constants.gate_tracing" }
   }
 }

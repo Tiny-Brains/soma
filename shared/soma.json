@@ -46,7 +46,8 @@
       "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
       "output": "temp_data.who"
     },
-    "clock_tracing": { "errors_only": true, "task_details": true }
+    "clock_tracing": { "errors_only": true, "task_details": true },
+    "gate_tracing": { "errors_only": true, "task_details": true }
   },
   "fragments": {
     "refuse": {
