@@ -48,7 +48,7 @@ CREATE TABLE games (
     active_engine_digest text,
 
     -- The cartridge's own registration data, published by whoever wrote it and read by admission:
-    -- `manifest` is its declaration (abi, game, presets, limits, budgets), `reference_observations`
+    -- `manifest` is its declaration (abi, game, basic boards, limits, budgets), `reference_observations`
     -- the states an adapter is validated against. Per game by construction -- a 128x128 Ants board
     -- and a card game share no budget -- so a second cartridge is content, not a config change.
     manifest             jsonb,
@@ -179,10 +179,11 @@ LANGUAGE sql IMMUTABLE AS $$
       -- The operational sibling of pairing.forfeit_strikes.
       ('execution', 'refusal_ceiling', 'int',     1,   100, NULL),
     -- ---- pairing: what the ladder asks for. Read by pair, and by count's verdict.
+    --      Which BOARDS it is played on is not a rule (N28): it is season_maps, the one part of a
+    --      season an admin may change while it is live. `pairing.presets` went with the presets.
       ('pairing', 'enabled',              'bool',    NULL, NULL, NULL),
       ('pairing', 'self_pairing',         'bool',    NULL, NULL, NULL),
       ('pairing', 'queue_share_max',      'int',        1, 1000, NULL),
-      ('pairing', 'presets',              'presets', NULL, NULL, NULL),
       ('pairing', 'cross_class_fraction', 'num',        0,    1, NULL),
       ('pairing', 'burst',                'int',        0, 1000, NULL),
       ('pairing', 'steady_cap',           'int',        0, 1000, NULL),
@@ -274,28 +275,18 @@ CREATE FUNCTION season_rules_ok(r jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE 
                                                 WHERE jsonb_typeof(e) <> 'string'
                                                    OR (e #>> '{}') !~*
                                '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-                  -- exactly what pair parses: {name, players} or a bare string meaning two seats.
-                  -- THE PRESET DECIDES THE SEAT COUNT, so fewer than two is a pairing that can
-                  -- never be filled and is refused here rather than left unpaired for ever.
-                  WHEN 'presets' THEN jsonb_typeof(x.v) = 'array'
-                               AND jsonb_array_length(x.v) >= 1
-                               AND NOT EXISTS (
-                                   SELECT 1 FROM jsonb_array_elements(x.v) e
-                                    WHERE NOT (
-                                      (jsonb_typeof(e) = 'string' AND btrim(e #>> '{}') <> '')
-                                   OR (jsonb_typeof(e) = 'object'
-                                       AND (e - 'name' - 'players') = '{}'::jsonb
-                                       AND jsonb_typeof(e -> 'name') = 'string'
-                                       AND btrim(e ->> 'name') <> ''
-                                       AND (e -> 'players' IS NULL
-                                            OR (jsonb_typeof(e -> 'players') = 'number'
-                                                AND (e ->> 'players')::numeric >= 2
-                                                AND (e ->> 'players')::numeric
-                                                    = trunc((e ->> 'players')::numeric))))))
                   END)
        -- one cross-key rule. An opset window that is not a window admits nothing --
        AND coalesce((r -> 'graph' ->> 'opset_min')::int, 0)
            <= coalesce((r -> 'graph' ->> 'opset_max')::int, 2147483647);
+$$;
+
+-- A season's slug, from its name: lower-cased, every run of anything but [a-z0-9] one hyphen, the
+-- ends trimmed. "Summer 2026" is summer-2026 and "FireAnts 2026" fireants-2026. IMMUTABLE, so the
+-- CHECK on seasons can hold every row to it; a name that leaves nothing ("🔥 🔥") gives '' and
+-- fails seasons_slug_shape, which the create reads back as season_name_unusable.
+CREATE FUNCTION season_slug(p_name text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT btrim(regexp_replace(lower(p_name), '[^a-z0-9]+', '-', 'g'), '-');
 $$;
 
 -- A competition window for one game, created by an admin. A version belongs to exactly one season;
@@ -305,7 +296,19 @@ $$;
 CREATE TABLE seasons (
     id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     game_id              uuid        NOT NULL REFERENCES games (id),
-    number               int         NOT NULL,                       -- 1, 2, ... per game
+
+    -- AN INTERNAL ORDINAL, AND NO LONGER ANY KIND OF ADDRESS (N28): 1, 2, ... per game, read by the
+    -- baseline carry (the season before this one) and by the order seasons are listed in, and by
+    -- nothing a person types. Every URL, route parameter, query and notification names the slug.
+    number               int         NOT NULL,
+
+    -- WHAT A PERSON CALLS IT, AND HOW EVERYTHING ELSE ADDRESSES IT. The admin names the season
+    -- ("Summer 2026", "FireAnts 2026") and the slug is derived from the name by season_slug() --
+    -- a CHECK, below, so no writer can store a slug that is not its name's. NEITHER EVER CHANGES:
+    -- no route updates them, because a slug that moved would break every link already shared, and
+    -- a name that moved would leave the slug naming something else.
+    name                 text        NOT NULL,
+    slug                 text        NOT NULL,
 
     engine_digest        text        NOT NULL,   -- pinned from games.active_engine_digest at creation
 
@@ -348,10 +351,19 @@ CREATE TABLE seasons (
     created_at           timestamptz NOT NULL DEFAULT now(),
 
     UNIQUE (game_id, number),
+    -- One slug a game, and so one name a game up to what the slug keeps: "Summer 2026" and
+    -- "summer-2026" would be one URL. The create answers season_slug_taken rather than a 23505.
+    UNIQUE (game_id, slug),
     -- Not a second key: the composite target model_versions pins its game to, so a version cannot
     -- belong to one game's entry and another game's season.
     UNIQUE (id, game_id),
     CONSTRAINT seasons_number_positive CHECK (number >= 1),
+    CONSTRAINT seasons_name_shape      CHECK (name = btrim(name) AND char_length(name) BETWEEN 1 AND 48),
+    -- The slug IS the name's, and never a word a route already uses as a segment.
+    CONSTRAINT seasons_slug_derived    CHECK (slug = season_slug(name)),
+    CONSTRAINT seasons_slug_shape      CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                                              AND char_length(slug) <= 48
+                                              AND slug NOT IN ('current', 'live', 'latest', 'new')),
     CONSTRAINT seasons_window          CHECK (submissions_close_at > submissions_open_at),
     CONSTRAINT seasons_rules_shape     CHECK (season_rules_ok(rules)),
     CONSTRAINT seasons_weight_classes_shape CHECK (weight_classes_ok(weight_classes))
@@ -691,6 +703,66 @@ CREATE TABLE ratings (
     PRIMARY KEY (version_id, ladder)
 );
 
+-- ---------------------------------------------------------------- season maps
+
+-- THE BOARDS A SEASON IS PLAYED ON (N28). Uploaded one file at a time by an admin, stored DISABLED,
+-- and played only once an admin enables them; enabled and disabled at will until the close, and
+-- NEVER DELETED -- no route deletes one, and soma-db refuses a DELETE outright -- because the matches
+-- played on a board name it, and the board is public from the moment its upload succeeds.
+--
+-- The one part of a season that may change while it is live. `rules` is immutable once submissions
+-- open, and that stays true: which boards are in play is not a rule, and pair reads the enabled set
+-- on every run. A queued match pins its board by id, so disabling one cannot change a match under
+-- it; the disable cancels only the rows nobody has claimed.
+--
+-- THE HEADER IS THE PLATFORM'S AND THE BOARD IS THE CARTRIDGE'S. map_id, players, rows and cols
+-- are read out of the file at upload and are all the platform ever reads; `board` is stored as sent
+-- and only ever passed to worldgen, on the claim. Whether it is a board worth playing is the
+-- ENGINE'S judgement, made at upload (Soma calls worldgen on it) and again at every enable.
+CREATE TABLE season_maps (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    map_id      text        NOT NULL,     -- the file's `id`
+    players     smallint    NOT NULL,
+    rows        smallint    NOT NULL,
+    cols        smallint    NOT NULL,
+    -- sha256 of board::text -- Postgres's own canonical rendering of the jsonb, not the uploaded
+    -- file's bytes, which a workflow never sees. Enough to refuse the same board uploaded twice.
+    digest      text        NOT NULL,
+    board       jsonb       NOT NULL,
+    enabled     boolean     NOT NULL DEFAULT false,
+    added_at    timestamptz NOT NULL DEFAULT now(),
+    added_by    uuid        NOT NULL REFERENCES users (id),
+
+    -- One id and one board a season, for ever. There is no delete, so a board taken out of play is
+    -- disabled and later enabled again, never uploaded a second time.
+    UNIQUE (season_id, map_id),
+    UNIQUE (season_id, digest),
+    CONSTRAINT season_maps_id_shape  CHECK (map_id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                                            AND char_length(map_id) <= 64),
+    -- THE MAP DECIDES THE SEAT COUNT, and a match needs two. The upper bound is not here: it is the
+    -- cartridge's `limits.boards`, which the upload checks against the game row it can read.
+    CONSTRAINT season_maps_players   CHECK (players >= 2),
+    CONSTRAINT season_maps_sides     CHECK (rows >= 1 AND cols >= 1),
+    CONSTRAINT season_maps_board     CHECK (jsonb_typeof(board) = 'object')
+);
+
+-- Every enable and disable, so "which boards were in play on 3 October" has an answer. Written in
+-- the same statement as the flip; the upload writes none, because added_at is the upload and a
+-- board uploaded and never enabled was never in play.
+--
+-- A surrogate key, not (season_map_id, at): two flips of one board inside one transaction -- which
+-- the verify scenario does -- would share a now(), so `at` is clock_timestamp() and not the key.
+CREATE TABLE season_map_events (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    season_map_id uuid        NOT NULL REFERENCES season_maps (id),
+    at            timestamptz NOT NULL DEFAULT clock_timestamp(),
+    enabled       boolean     NOT NULL,
+    by_user       uuid        NOT NULL REFERENCES users (id),
+    cancelled     int         NOT NULL DEFAULT 0     -- pending matches the disable cancelled
+);
+CREATE INDEX season_map_events_map_idx ON season_map_events (season_map_id, at);
+
 -- -------------------------------------------------------------------- matches
 
 -- A match is born 'pending' by pair with everything needed to play it and nothing about how it
@@ -706,7 +778,10 @@ CREATE TABLE matches (
     season_id            uuid         NOT NULL REFERENCES seasons (id),   -- the live season at insert
     engine_digest        text         NOT NULL,   -- which engine must play it: the season's copy
     seed                 bigint       NOT NULL,
-    preset               text         NOT NULL,
+    -- THE BOARD, pinned at pair (N28). The season's maps change while it is live; this row's does
+    -- not, and the claim reads the board through it. seat_count is that board's players, which
+    -- pair's insert derives rather than trusts.
+    season_map_id        uuid         NOT NULL REFERENCES season_maps (id),
     seat_count           smallint     NOT NULL,
     ladders              ladder[]     NOT NULL,   -- derived at insert; empty for a trial
     trial_version_id     uuid         REFERENCES model_versions (id),
@@ -971,6 +1046,10 @@ CREATE INDEX matches_season_played_idx
     ON matches (season_id, played_at DESC, id DESC)
     WHERE status IN ('finished', 'rated');
 
+-- A disable's cancel: the pending rows on one board.
+CREATE INDEX matches_pending_map_idx
+    ON matches (season_map_id) WHERE status = 'pending';
+
 -- One live trial per candidate. 'finished' is inside the predicate on purpose: a trial played but
 -- not yet decided still counts as live, so pair cannot insert a second one in the window between
 -- Kalam finishing it and count deciding it.
@@ -1025,12 +1104,12 @@ CREATE FUNCTION season_state(s seasons) RETURNS text LANGUAGE sql STABLE AS $$
 $$;
 
 -- The season a game is currently read through: the live one, else the latest closed. Six routes
--- resolve a season this way and a seventh does with `?season=N` (p_number), which is the same
--- selection with the number pinned.
-CREATE FUNCTION current_season(p_game uuid, p_number int DEFAULT NULL)
+-- resolve a season this way and a seventh does with `?season=<slug>` (p_slug), which is the same
+-- selection with the slug pinned.
+CREATE FUNCTION current_season(p_game uuid, p_slug text DEFAULT NULL)
 RETURNS SETOF seasons LANGUAGE sql STABLE AS $$
     SELECT * FROM seasons s
-     WHERE s.game_id = p_game AND (p_number IS NULL OR s.number = p_number)
+     WHERE s.game_id = p_game AND (p_slug IS NULL OR s.slug = p_slug)
      ORDER BY (s.closed_at IS NULL) DESC, s.number DESC
      LIMIT 1;
 $$;
@@ -1055,7 +1134,8 @@ $$;
 -- GET /v1/matches can reach.
 CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT json_build_object(
-        'number', s.number,
+        'name',   s.name,
+        'slug',   s.slug,
         'state',  season_state(s),
         'submissions_open_at',  s.submissions_open_at,
         'submissions_close_at', s.submissions_close_at,
@@ -1076,7 +1156,65 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
                                WHERE mt.season_id = s.id AND mt.status IN ('finished', 'rated')
                                  AND mt.trial_version_id IS NULL),
         'in_flight_versions', (SELECT count(*) FROM model_versions v
-                               WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')));
+                               WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')),
+        -- The boards, summarised: how many are in play, how many are not, and the seats and sides
+        -- the ones in play span. The boards themselves are GET .../seasons/{slug}/maps.
+        'maps', (SELECT json_build_object(
+                    'enabled',  count(*) FILTER (WHERE sm.enabled),
+                    'disabled', count(*) FILTER (WHERE NOT sm.enabled),
+                    'players',  CASE WHEN bool_or(sm.enabled) THEN json_build_array(
+                                    min(sm.players) FILTER (WHERE sm.enabled),
+                                    max(sm.players) FILTER (WHERE sm.enabled)) END,
+                    'sides',    CASE WHEN bool_or(sm.enabled) THEN json_build_array(
+                                    min(least(sm.rows, sm.cols)) FILTER (WHERE sm.enabled),
+                                    max(greatest(sm.rows, sm.cols)) FILTER (WHERE sm.enabled)) END)
+                   FROM season_maps sm WHERE sm.season_id = s.id));
+$$;
+
+-- THE HEADER OF AN UPLOADED MAP, or NULL when the file has none worth reading (N28): an `id` that
+-- is a slug and whole-number `players`, `rows` and `cols`. It is what the platform reads out of a
+-- board and ALL it reads -- the rest of the file is the cartridge's, judged by its own worldgen.
+-- Each cast sits behind the pattern that makes it safe, so a file saying "players": "two" is a NULL
+-- header and a 400, never a 22P02 on the upload path.
+CREATE FUNCTION season_map_header(v jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN jsonb_typeof(v) = 'object'
+         AND jsonb_typeof(v -> 'id') = 'string'
+         AND (v ->> 'id') ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND char_length(v ->> 'id') <= 64
+         AND jsonb_typeof(v -> 'players') = 'number' AND (v ->> 'players') ~ '^[0-9]{1,3}$'
+         AND jsonb_typeof(v -> 'rows') = 'number' AND (v ->> 'rows') ~ '^[0-9]{1,3}$'
+         AND jsonb_typeof(v -> 'cols') = 'number' AND (v ->> 'cols') ~ '^[0-9]{1,3}$'
+        THEN jsonb_build_object('id', v ->> 'id', 'players', (v ->> 'players')::int,
+                                'rows', (v ->> 'rows')::int, 'cols', (v ->> 'cols')::int)
+    END;
+$$;
+
+-- WHETHER A HEADER FITS THE GAME'S ENVELOPE: the cartridge's `limits.boards`, which it derives from
+-- the basic boards admission's reference set is drawn on. Seats, each side, and the cells an
+-- adapter's cost scales with -- the side alone would let a square board of the largest side through
+-- with more cells than any board an adapter was proved on. NULL, and so a refusal, for a cartridge
+-- that declares no envelope: an engine from before N28 has made no promise to check against.
+CREATE FUNCTION season_map_within(h jsonb, l jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT (h ->> 'players')::int BETWEEN (l -> 'players' ->> 0)::int AND (l -> 'players' ->> 1)::int
+       AND (h ->> 'rows')::int BETWEEN (l -> 'sides' ->> 0)::int AND (l -> 'sides' ->> 1)::int
+       AND (h ->> 'cols')::int BETWEEN (l -> 'sides' ->> 0)::int AND (l -> 'sides' ->> 1)::int
+       AND (h ->> 'rows')::int * (h ->> 'cols')::int <= (l ->> 'cells_max')::int;
+$$;
+
+-- ONE SEASON MAP, as four routes return it (N28): the header the platform reads, whether it is in
+-- play, and how many counted matches it has carried. The board itself is not here -- it is the
+-- cartridge's, and only the routes that draw one ask for it, beside this.
+CREATE FUNCTION season_map_json(sm season_maps) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'map_id',   sm.map_id,
+        'players',  sm.players,
+        'rows',     sm.rows,
+        'cols',     sm.cols,
+        'enabled',  sm.enabled,
+        'added_at', sm.added_at,
+        'matches',  (SELECT count(*) FROM matches m
+                      WHERE m.season_map_id = sm.id AND m.status IN ('finished', 'rated')
+                        AND m.trial_version_id IS NULL));
 $$;
 
 -- ------------------------------------------------ the season's rules, as predicates
@@ -1367,6 +1505,9 @@ END $$;
 
 GRANT USAGE ON SCHEMA public TO kalam;
 GRANT SELECT ON matches, match_seats TO kalam;
+-- The board its claimed row is played on (N28), which db mode's K_ROW joins exactly as the gate's
+-- claim does. The board and its id, and nothing about who uploaded it or when.
+GRANT SELECT (id, map_id, board) ON season_maps TO kalam;
 -- The roster a replica registers on its own node (decision R8): the manifest, where the bytes are
 -- and the digest they must hash to. COLUMN-LEVEL on purpose -- `weight_class`, `param_count`,
 -- `infer_us`, `reject_reason` and every admission column stay out of reach, so "Kalam reads no
@@ -1410,6 +1551,7 @@ END $$;
 
 GRANT USAGE ON SCHEMA public TO runner_gate;
 GRANT SELECT ON matches, match_seats TO runner_gate;
+GRANT SELECT (id, map_id, board) ON season_maps TO runner_gate;
 GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
     ON model_versions TO runner_gate;
 -- The claim reads the row's own season and game to build the execution contract (N18). SELECT

@@ -36,6 +36,12 @@ serve() {
   esac
   export SOMA_COOKIE_SECURE
 
+  # The engine this node loads, which [vars] engine_digest names so a map upload can refuse a season
+  # pinned to another one: validating a board on a different engine proves nothing about the one
+  # that will play it.
+  SOMA_ENGINE_DIGEST=$(cat "$CARTRIDGE/engine-digest" 2>/dev/null || true)
+  export SOMA_ENGINE_DIGEST
+
   # Doubles as the readiness probe for Postgres. soma.toml.tmpl sets auto_migrate = false, because a
   # cluster may not migrate at boot from every node at once; this is the step that satisfies it.
   echo "==> migrating state"
@@ -78,11 +84,12 @@ serve() {
         h=$(curl -fsS -H "Authorization: Bearer $ORION_ADMIN_KEY" http://127.0.0.1:8080/health || true)
         rating=$(printf '%s' "$h" | grep -c '"tb.rating"' || true)
         pairing=$(printf '%s' "$h" | grep -c '"tb.pairing"' || true)
+        ants=$(printf '%s' "$h" | grep -c '"tb.ants"' || true)
         quarantined=$(printf '%s' "$h" | python3 -c 'import json,sys; print(len((json.load(sys.stdin).get("channels") or {}).get("quarantined") or []))' 2>/dev/null || echo 1)
-        if [ "$rating" -ge 1 ] && [ "$pairing" -ge 1 ] && [ "$quarantined" = "0" ]; then
-          echo "==> loaded: tb.rating and tb.pairing are live, no channel is quarantined"
+        if [ "$rating" -ge 1 ] && [ "$pairing" -ge 1 ] && [ "$ants" -ge 1 ] && [ "$quarantined" = "0" ]; then
+          echo "==> loaded: tb.rating, tb.pairing and tb.ants are live, no channel is quarantined"
         else
-          echo "self-load: tb.rating=$rating tb.pairing=$pairing quarantined=$quarantined -- a plugin" >&2
+          echo "self-load: tb.rating=$rating tb.pairing=$pairing tb.ants=$ants quarantined=$quarantined -- a plugin" >&2
           echo "           signature that does not verify quarantines the channels that call it:" >&2
           echo "           re-sign the plugins in this image with the deployment's trust key." >&2
           kill -TERM 1 2>/dev/null
@@ -235,7 +242,7 @@ SELECT count(*) FROM g;
 SQL
 )
     if [ "${n:-0}" -eq 0 ]; then
-      echo "REFUSED: a season is live. Close it (POST /v1/games/{game}/seasons/current/close), or build this image from the release the season plays." >&2
+      echo "REFUSED: a season is live. Close it (POST /v1/games/{game}/seasons/{slug}/close), or build this image from the release the season plays." >&2
       exit 1
     fi
   else

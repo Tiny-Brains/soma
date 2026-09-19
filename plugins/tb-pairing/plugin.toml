@@ -23,15 +23,8 @@ category = "transform"
 # rather than restating its shape.
 [[functions.input_fields]]
 name = "demand"
-description = "The demand document: room, wants, the pool that may be seated, and presets played"
+description = "The demand document: room, wants, the pool that may be seated, the season's maps and which each has played"
 kind = "object"
-required = true
-template_at = true
-
-[[functions.input_fields]]
-name = "presets"
-description = "The game's presets, one of which each pairing is played on"
-kind = "array"
 required = true
 template_at = true
 

@@ -119,7 +119,7 @@ it cannot be played. Its columns are
 
 | The row says | Written by | When | Read by |
 |---|---|---|---|
-| **what to play** — game, seats (which model version in which seat, with its hashes and its adapter reference), map or preset, seed, which ladders it counts for — none for a trial — and the engine digest it requires | Soma's pair clock | at insert | Kalam; Soma, to show "playing now" if it wants to |
+| **what to play** — game, seats (which model version in which seat, with its hashes and its adapter reference), the board -- one of the season's enabled maps, sent whole on the claim (N28) --, seed, which ladders it counts for — none for a trial — and the engine digest it requires | Soma's pair clock | at insert | Kalam; Soma, to show "playing now" if it wants to |
 | **why it exists** — a pairing id and the rating snapshot it was paired on | Soma's pair clock | at insert | audit |
 | **who is playing it** — status, a claim token, a lease expiry, an attempt count, a refusal count, and the runner that holds it (`played_by`, through the gate) | Kalam, directly or through the gate, which then mints the token | at claim; on renew; the reap returns a lapsed lease | Kalam; the Runners screen |
 | **what happened** — ranks, scores, reason, per-seat strikes, duration, the engine digest it played and the Orion version that ran it; on failure, a reason and the seat it is attributed to | Kalam | at finish, or at failure | Soma's routes and its count clock |

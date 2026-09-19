@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-seasons-update",
   "name": "Edit a season that has not opened",
-  "description": "Admin only, and the Edit button belongs on a `scheduled` row and no other: a season that has not opened has no submissions stamped into it, no matches paired against it and no standings, so its window, its rules and its caps are still safe to move. THE PREDICATE `now() < submissions_open_at` IN THE UPDATE is what enforces that, so the refusal cannot be raced by a caller arriving in the second the season opens; `why` then reads the state back and 409 carries which state it found. The engine digest is not editable -- a season plays one engine from beginning to end or its standings mean nothing -- and neither is the number. Every field is coalesced against the stored value, which is what PATCH means; `rules` is replaced whole rather than merged, because the seasons_rules_known CHECK refuses an unknown key and a merge could only produce a document the constraint would reject anyway.",
+  "description": "Admin only, and the Edit button belongs on a `scheduled` row and no other: a season that has not opened has no submissions stamped into it, no matches paired against it and no standings, so its window, its rules and its caps are still safe to move. THE PREDICATE `now() < submissions_open_at` IN THE UPDATE is what enforces that, so the refusal cannot be raced by a caller arriving in the second the season opens; `why` then reads the state back and 409 carries which state it found. The engine digest is not editable -- a season plays one engine from beginning to end or its standings mean nothing -- and neither is the NAME or the slug, which are fixed at creation (N28): a body naming one is refused rather than ignored. The season's maps are not edited here either: they have routes of their own, and unlike everything here they may change while the season is live. Every field is coalesced against the stored value, which is what PATCH means; `rules` is replaced whole rather than merged, because the seasons_rules_known CHECK refuses an unknown key and a merge could only produce a document the constraint would reject anyway.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -31,16 +31,31 @@
       }
     },
     {
+      "id": "renamed",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [{ "!!": { "var": "data.req.name" } }, { "!!": { "var": "data.req.slug" } }]
+        },
+        "status": 400,
+        "body": {
+          "error": "season_name_fixed",
+          "detail": "A season's name and slug are fixed when it is created, so every link to it keeps working."
+        },
+        "name": "No renaming"
+      }
+    },
+    {
       "id": "edit",
       "name": "Edit",
       "function": {
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE seasons s SET submissions_open_at = coalesce(($3)::timestamptz, s.submissions_open_at), submissions_close_at = coalesce(($4)::timestamptz, s.submissions_close_at), rules = coalesce(($5)::jsonb, s.rules), weight_classes = coalesce(($6)::jsonb, s.weight_classes) FROM games g WHERE g.id = s.game_id AND g.slug = ($1)::text AND s.number = ($2)::int AND s.closed_at IS NULL AND now() < s.submissions_open_at",
+          "query": "UPDATE seasons s SET submissions_open_at = coalesce(($3)::timestamptz, s.submissions_open_at), submissions_close_at = coalesce(($4)::timestamptz, s.submissions_close_at), rules = coalesce(($5)::jsonb, s.rules), weight_classes = coalesce(($6)::jsonb, s.weight_classes) FROM games g WHERE g.id = s.game_id AND g.slug = ($1)::text AND s.slug = ($2)::text AND s.closed_at IS NULL AND now() < s.submissions_open_at",
           "params": [
             { "var": "metadata.params.game" },
-            { "var": "metadata.params.number" },
+            { "var": "metadata.params.slug" },
             { "var": "data.req.submissions_open_at" },
             { "var": "data.req.submissions_close_at" },
             { "var": "data.req.rules" },
@@ -58,8 +73,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('number', s.number, 'state', season_state(s)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.number = ($2)::int",
-          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.number" }],
+          "query": "SELECT json_build_object('slug', s.slug, 'state', season_state(s)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
           "output": "temp_data.why"
         }
       }
@@ -96,8 +111,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.number = ($2)::int",
-          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.number" }],
+          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
           "output": "temp_data.rows"
         }
       }

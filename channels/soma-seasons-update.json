@@ -5,7 +5,7 @@
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["PATCH"],
-  "route_pattern": "/v1/games/{game}/seasons/{number}",
+  "route_pattern": "/v1/games/{game}/seasons/{slug}",
   "workflow_id": "soma-seasons-update",
   "config": {
     "response": { "$from": "constants.shaped" },

@@ -28,6 +28,11 @@
       "burst": 5,
       "key_logic": { "var": "auth.sub" }
     },
+    "per_admin_board_rate": {
+      "requests_per_second": 5,
+      "burst": 40,
+      "key_logic": { "var": "auth.sub" }
+    },
     "runner_rate": { "requests_per_second": 30, "burst": 60 },
     "runner_token_rate": { "requests_per_second": 30, "burst": 60 },
     "per_runner_rate": {

@@ -12,19 +12,21 @@
 //! **Input** is the demand document (docs/design.md §6.1) plus the policy knobs:
 //!
 //! ```json
-//! { "demand": { "room": 12, "wants": [...], "pool": [...], "played": [...] },
-//!   "presets": [ { "name": "standard", "players": 2 }, { "name": "maze", "players": 4 } ],
+//! { "demand": { "room": 12, "wants": [...], "pool": [...], "played": [...],
+//!               "limits": { "maps": [ { "id": "<season_maps.id>", "players": 2 }, ... ] } },
 //!   "cross_class_fraction": 0.20,
 //!   "seed": "<the occurrence id>" }
 //! ```
 //!
-//! **The preset decides the seat count**, not the game — so the map is chosen first and the
-//! opponents drawn afterwards. A bare string preset is read as two seats.
+//! **The map decides the seat count**, not the game — so the map is chosen first and the opponents
+//! drawn afterwards. The maps are the season's ENABLED boards (decision N28), read by pair on every
+//! run, because an admin may change them while the season is live; there is no deploy list to fall
+//! back to, so a season with none enabled is refused here and pairs nothing.
 //!
 //! **Output** is the plan, in the shape pair's insert loop walks:
 //!
 //! ```json
-//! { "n": 2, "pairings": [ { "seats": ["<a>", "<b>", "<c>", "<d>"], "preset": "maze", "seed": 12 } ] }
+//! { "n": 2, "pairings": [ { "seats": ["<a>", "<b>", "<c>", "<d>"], "map": "<id>", "seed": 12 } ] }
 //! ```
 //!
 //! Trials are not here: pair prepends them from SQL (docs/design.md §6.4), so a waiting candidate
@@ -32,7 +34,7 @@
 
 mod choose;
 
-use choose::{Entry, Input, Preset, Rating, Rng, Want};
+use choose::{Entry, Input, Map, Rating, Rng, Want};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -87,41 +89,34 @@ fn pair(input: &Value) -> Result<Value, Fault> {
     // the ordinary state of a settled ladder, and it must cost one empty plan, not a refusal.
     let room = demand.get("room").and_then(Value::as_i64).unwrap_or(0).max(0) as usize;
 
-    // Each preset carries the number of seats it is played at: the map decides the seat count, not
-    // the game. A bare string is read as two seats, so an older manifest still loads; a preset
-    // declaring fewer than two is a refusal, because there is no match to play.
+    // Each map carries the number of seats it is played at: the map decides the seat count, not
+    // the game. They are the season's enabled boards, each `{id, players}`; one declaring fewer
+    // than two seats is a refusal, because there is no match to play on it.
     let limits = demand.get("limits").filter(|l| l.is_object());
-    let presets: Vec<Preset> = limits
-        .and_then(|l| l.get("presets"))
-        .filter(|p| p.is_array())
-        .or_else(|| input.get("presets"))
+    let maps: Vec<Map> = limits
+        .and_then(|l| l.get("maps"))
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter_map(|p| match p {
-                    Value::String(name) => Some(Preset { name: name.clone(), players: 2 }),
-                    Value::Object(_) => Some(Preset {
-                        name: p.get("name")?.as_str()?.to_string(),
-                        players: p.get("players").and_then(Value::as_u64).unwrap_or(2) as usize,
-                    }),
-                    _ => None,
+                .filter_map(|m| {
+                    Some(Map {
+                        id: m.get("id")?.as_str()?.to_string(),
+                        players: m.get("players")?.as_u64()? as usize,
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default();
-    if presets.is_empty() {
+    if maps.is_empty() {
         return Err(Fault::new(
-            "NO_PRESETS",
-            "'presets' must name at least one preset; a match has to be played on something",
+            "NO_MAPS",
+            "the season has no enabled map; a match has to be played on something",
         ));
     }
-    if let Some(bad) = presets.iter().find(|p| p.players < 2) {
+    if let Some(bad) = maps.iter().find(|m| m.players < 2) {
         return Err(Fault::new(
-            "BAD_PRESET",
-            format!(
-                "preset '{}' declares {} seats; a match needs at least two",
-                bad.name, bad.players
-            ),
+            "BAD_MAP",
+            format!("map '{}' declares {} seats; a match needs at least two", bad.id, bad.players),
         ));
     }
 
@@ -192,7 +187,7 @@ fn pair(input: &Value) -> Result<Value, Fault> {
         for r in rows {
             if let (Some(m), Some(p), Some(n)) = (
                 r.get("model_id").and_then(Value::as_str),
-                r.get("preset").and_then(Value::as_str),
+                r.get("map").and_then(Value::as_str),
                 r.get("n").and_then(Value::as_i64),
             ) {
                 played.entry(m.to_string()).or_default().insert(p.to_string(), n);
@@ -205,26 +200,16 @@ fn pair(input: &Value) -> Result<Value, Fault> {
     let mut owner_room: HashMap<String, i64> = HashMap::new();
     if let Some(rows) = demand.get("owners").and_then(Value::as_array) {
         for r in rows {
-            if let (Some(o), Some(n)) = (
-                r.get("owner_id").and_then(Value::as_str),
-                r.get("room").and_then(Value::as_i64),
-            ) {
+            if let (Some(o), Some(n)) =
+                (r.get("owner_id").and_then(Value::as_str), r.get("room").and_then(Value::as_i64))
+            {
                 owner_room.insert(o.to_string(), n);
             }
         }
     }
 
     let plan = choose::choose(
-        &Input {
-            room,
-            wants,
-            pool,
-            played,
-            presets,
-            cross_class_fraction,
-            self_pairing,
-            owner_room,
-        },
+        &Input { room, wants, pool, played, maps, cross_class_fraction, self_pairing, owner_room },
         &mut Rng::from_str(seed),
     );
 
@@ -232,7 +217,7 @@ fn pair(input: &Value) -> Result<Value, Fault> {
         "n": plan.len(),
         "pairings": plan.iter().map(|p| json!({
             "seats": p.seats,
-            "preset": p.preset,
+            "map": p.map,
             "seed": p.seed,
         })).collect::<Vec<_>>(),
     }))
@@ -265,6 +250,10 @@ mod tests {
                              {"ladder": "open", "mu": mu, "sigma": sigma} ] })
     }
 
+    fn two_seats(ids: &[&str]) -> Value {
+        json!(ids.iter().map(|id| json!({ "id": id, "players": 2 })).collect::<Vec<_>>())
+    }
+
     fn doc(room: i64) -> Value {
         json!({
             "demand": {
@@ -275,14 +264,12 @@ mod tests {
                 "pool": [ model("a", "nano", "competitor", 25.0, 8.3),
                           model("base", "nano", "baseline", 25.0, 3.0) ],
                 "played": [],
-                // The season's pairing policy travels INSIDE the demand document now; the
-                // top-level `presets` below is the deploy's fallback and is what an older caller
-                // would send alone.
+                // The season's pairing policy travels INSIDE the demand document, and so do its
+                // boards: the season's enabled maps, which are the only source there is (N28).
                 "limits": { "self_pairing": false, "cross_class_fraction": 0.20,
-                            "presets": ["standard", "maze", "cell"] },
+                            "maps": two_seats(&["standard", "maze", "cell"]) },
                 "owners": []
             },
-            "presets": ["standard", "maze", "cell"],
             "cross_class_fraction": 0.20,
             "seed": "occ-1"
         })
@@ -296,7 +283,7 @@ mod tests {
         assert_eq!(ps.len(), 3);
         for p in ps {
             assert_eq!(p["seats"].as_array().unwrap().len(), 2);
-            assert!(p["preset"].as_str().is_some());
+            assert!(p["map"].as_str().is_some());
             assert!(p["seed"].as_i64().unwrap() >= 0);
             assert_ne!(p["seats"][0], p["seats"][1]);
         }
@@ -328,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_carries_its_own_seat_count() {
+    fn a_map_carries_its_own_seat_count() {
         // The map decides the seat count, through the JSON boundary.
         let mut d = doc(2);
         d["demand"]["pool"] = json!([
@@ -337,28 +324,28 @@ mod tests {
             model("c", "nano", "competitor", 24.0, 7.5),
             model("base", "nano", "baseline", 25.0, 3.0)
         ]);
-        d["demand"]["limits"]["presets"] = json!([{ "name": "melee", "players": 4 }]);
+        d["demand"]["limits"]["maps"] = json!([{ "id": "melee", "players": 4 }]);
         let out = invoke(FUNCTION, d).unwrap();
         assert!(out["n"].as_i64().unwrap() > 0, "{out}");
         for p in out["pairings"].as_array().unwrap() {
             assert_eq!(p["seats"].as_array().unwrap().len(), 4, "{p}");
-            assert_eq!(p["preset"], "melee");
+            assert_eq!(p["map"], "melee");
         }
     }
 
     #[test]
     fn a_map_with_more_seats_than_the_roster_has_owners_is_never_chosen() {
-        // Three owners and a catalogue running to eight seats: every want is spent on the maps
-        // three can play, rather than on the ones no draw could fill.
+        // Three owners and a season's boards running to eight seats: every want is spent on the
+        // maps three can play, rather than on the ones no draw could fill.
         let mut d = doc(6);
         d["demand"]["pool"] = json!([
             model("a", "nano", "competitor", 25.0, 8.3),
             model("b", "nano", "competitor", 26.0, 8.0),
             model("base", "nano", "baseline", 25.0, 3.0)
         ]);
-        d["demand"]["limits"]["presets"] = json!([
-            { "name": "open-8", "players": 8 }, { "name": "maze-6", "players": 6 },
-            { "name": "cave-3", "players": 3 }, { "name": "open-2", "players": 2 }
+        d["demand"]["limits"]["maps"] = json!([
+            { "id": "open-8", "players": 8 }, { "id": "maze-6", "players": 6 },
+            { "id": "cave-3", "players": 3 }, { "id": "open-2", "players": 2 }
         ]);
         let out = invoke(FUNCTION, d).unwrap();
         let ps = out["pairings"].as_array().unwrap();
@@ -366,37 +353,30 @@ mod tests {
         for p in ps {
             let n = p["seats"].as_array().unwrap().len();
             assert!(n <= 3, "{p}");
-            assert!(["cave-3", "open-2"].contains(&p["preset"].as_str().unwrap()), "{p}");
+            assert!(["cave-3", "open-2"].contains(&p["map"].as_str().unwrap()), "{p}");
         }
 
         // And a roster no map fits is an empty plan, not a refusal.
         let mut d = doc(6);
-        d["demand"]["limits"]["presets"] = json!([{ "name": "open-8", "players": 8 }]);
+        d["demand"]["limits"]["maps"] = json!([{ "id": "open-8", "players": 8 }]);
         assert_eq!(invoke(FUNCTION, d).unwrap(), json!({ "n": 0, "pairings": [] }));
     }
 
     #[test]
-    fn a_bare_string_preset_still_means_two_seats() {
-        // A manifest written before presets carried a seat count must still load.
+    fn a_map_without_a_seat_count_is_no_map() {
+        // A board states its own seats; there is no default to read an unsized one as, so it is
+        // skipped -- and a season whose maps are all like that has nothing to play on.
         let mut d = doc(2);
-        d["demand"]["limits"]["presets"] = json!(["standard", "maze"]);
-        let out = invoke(FUNCTION, d).unwrap();
-        assert!(
-            out["pairings"].as_array().unwrap().iter().all(|p| p["seats"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 2),
-            "{out}"
-        );
+        d["demand"]["limits"]["maps"] = json!([{ "id": "standard" }, "maze"]);
+        assert_eq!(invoke(FUNCTION, d).unwrap_err().code, "NO_MAPS");
     }
 
     #[test]
-    fn a_preset_below_two_seats_is_refused() {
+    fn a_map_below_two_seats_is_refused() {
         let mut d = doc(2);
-        d["demand"]["limits"]["presets"] = json!([{ "name": "solitaire", "players": 1 }]);
+        d["demand"]["limits"]["maps"] = json!([{ "id": "solitaire", "players": 1 }]);
         let e = invoke(FUNCTION, d).unwrap_err();
-        assert_eq!(e.code, "BAD_PRESET", "{}", e.message);
+        assert_eq!(e.code, "BAD_MAP", "{}", e.message);
     }
 
     #[test]
@@ -409,10 +389,10 @@ mod tests {
         empty_seed["seed"] = json!("");
         assert_eq!(invoke(FUNCTION, empty_seed).unwrap_err().code, "NO_SEED");
 
-        let mut no_presets = doc(3);
-        no_presets["demand"]["limits"]["presets"] = json!([]);
-        no_presets["presets"] = json!([]);
-        assert_eq!(invoke(FUNCTION, no_presets).unwrap_err().code, "NO_PRESETS");
+        // A season with no map enabled: pair halts on this rather than queueing a match with none.
+        let mut no_maps = doc(3);
+        no_maps["demand"]["limits"]["maps"] = json!([]);
+        assert_eq!(invoke(FUNCTION, no_maps).unwrap_err().code, "NO_MAPS");
 
         let mut bad_fraction = doc(3);
         bad_fraction["demand"]["limits"]["cross_class_fraction"] = json!(1.5);

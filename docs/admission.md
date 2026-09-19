@@ -417,7 +417,10 @@ is not comparable between two versions without knowing the size it was measured 
 `stats.probe_dims` is that, and it lands in `model_versions.probe_dims`.
 
 **The requirement this page cannot enforce and depends on anyway**: the reference set must contain a
-worst-case observation — the largest preset, the most units. The budget is checked *per evaluation*
+worst-case observation — the largest board an upload may be, the most units. Since N28 that is the
+cartridge's `limits.boards`, which it derives from the same basic boards the reference set is drawn
+on, and Soma refuses a season map outside it: a season's boards change while it is live, so the gate
+must cover what a season COULD play, not what it plays now. The budget is checked *per evaluation*
 during a real match, so an adapter probed only against a small sample and then struck on every turn
 has been admitted by a gate that did not test it, and the competitor finds out by forfeiting. §8 is
 that requirement's answer.
@@ -611,7 +614,7 @@ cartridge:
 
 | Column | What it holds | Who reads it |
 |---|---|---|
-| `manifest` | the cartridge's declaration verbatim: `abi`, `game`, `version`, `presets`, `limits`, `budgets` | admission (`budgets`), and eventually pair (`presets`) instead of `[vars]` |
+| `manifest` | the cartridge's declaration verbatim: `abi`, `game`, `version`, the basic boards' catalogue (`maps`), `limits` -- `limits.boards` among them -- and `budgets` | admission (`budgets`), the map upload (`limits.boards`) |
 | `reference_observations` | an array of observations in the game's own state shape, **worst case included** | admission, and §9's sweep |
 
 This is the shape a second cartridge takes without a schema change, which is the point: a new game
@@ -619,14 +622,15 @@ is a plugin in Kalam's package plus a row here, and its admission gate is conten
 
 **What Ants owes, and now ships.** `ants/` generates `cartridge.json` from `engine/src/bin/manifest.rs`
 rather than writing it — that is the `manifest` column — and it generates
-`reference/observations.json` the same way: run the engine on the largest preset to a busy turn with
-a committed seed, dump every live seat's view. Ten observations, deterministic, the game's own
-rather than a loader fixture standing in for them, and a 128×128 worst case among them is what holds
+`reference/observations.json` the same way: run the engine on each of the five basic boards to an
+early, a middling and a busy turn on three committed seeds, dump every live seat's view. Two hundred
+and seven observations, deterministic, the game's own rather than a loader fixture standing in for
+them, and the 120×124 eight-seat board among them -- the largest an upload may be -- is what holds
 `adapter_ops_max` at a million. The loader had one hand-dumped fixture; a set of one is enough to
 admit a model and not enough to call the gate finished.
 
-**Pair's presets stay in `[vars]` for now.** They could come from `manifest.presets` and eventually
-should, but moving them is a change to a running clock for no gain this page needs, and
+**Pair's boards are the season's** since N28 -- `season_maps`, read on every run -- and there is no
+preset list in `[vars]` or the manifest to move.
 The general move of policy out of `[vars]` and into a `policies` table is tracked separately.
 
 ---
@@ -748,7 +752,8 @@ answers nothing rather than a fetch that has to be classified, and the budget/ma
 `stats.probe_dims`, without which `infer_us` is not comparable between versions.
 
 **Of the cartridge and `ants/`, one thing, and it ships.** A published reference observation set —
-the largest preset, a busy turn, every live seat's view, from a committed seed. §8.
+the basic boards, the largest an upload may be among them, at busy turns, every live seat's view,
+from committed seeds. §8.
 
 **Of the schema, nothing new** beyond §15's columns, which are additive and pre-release.
 

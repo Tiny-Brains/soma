@@ -105,7 +105,7 @@ depends on what the ladder still has to learn about it.
 | State | Who | Cap on its own matches | Why |
 |---|---|---|---|
 | **trial** | `verified`, no live trial row | 1 | `matches_one_live_trial_uniq` already says so; the trial is a playability check |
-| **placement** | `active`, fewer counted matches on its class ladder than the burst | the **burst**, spread across the game's presets | a new version's first matches are all paired on the same prior whichever order they run in, so running them at once costs no information and saves the wait |
+| **placement** | `active`, fewer counted matches on its class ladder than the burst | the **burst**, spread across the season's enabled boards | a new version's first matches are all paired on the same prior whichever order they run in, so running them at once costs no information and saves the wait |
 | **unsettled** | `active`, sigma above the settled threshold on either ladder | the **steady cap**, small | each result moves the rating; a pairing benefits from the last one |
 | **settled** | `active`, sigma at or below the threshold on both ladders | 0 of its own | it plays as the most useful opponent for someone else, uncapped; its own rating barely moves. This is what lets demand fall as the ladder settles, and with it the replica count (architecture §7) |
 
@@ -300,7 +300,7 @@ SELECT json_build_object('n', count(*),
 finish order, so a trial decided in this run is decided after every result that arrived before
 it was counted. A `repair` item runs no task: the candidate is `verified` with no live trial and
 fewer trials than the cap, which is exactly what pair's trial insert looks for (§6.4), so the next
-pair run pairs it again, on the next preset. The decision is computed in SQL so the workflow only
+pair run pairs it again, on the next board. The decision is computed in SQL so the workflow only
 dispatches; the rules are finding 6b's, as the table in §5.2 states them.
 
 ### 5.2 The verdict rules — finding 6b, with the words a competitor reads
@@ -310,7 +310,7 @@ dispatches; the rules are finding 6b's, as the table in §5.2 states them.
 | `finished` | strikes below the forfeit count | **pass** — promote (the schema §5.3), then withdraw the predecessor's queue (the schema §5.4) | — |
 | `finished` | forfeited: strikes at the count | **reject** | `FORFEIT` |
 | `failed` | `fault_seat` is its seat | **reject** | `FAULT:<fault_reason>` — `HASH_MISMATCH`, `GRAPH_INVALID`, `ADAPTER_INVALID`, or what Kalam adds |
-| `failed`, unattributed — `LEASE_LAPSED`, `UNLOADABLE`, an engine trap; or `cancelled` — its baseline superseded, or the engine retired | — | **re-pair**: nothing written; pair inserts a fresh trial on the next preset | — |
+| `failed`, unattributed — `LEASE_LAPSED`, `UNLOADABLE`, an engine trap; or `cancelled` — its baseline superseded, or the engine retired, or its board disabled (N28) | — | **re-pair**: nothing written; pair inserts a fresh trial on the next board | — |
 | any of the above, once the candidate has had the cap's worth of trials with no pass | — | **reject** | `UNPLAYABLE` |
 
 A pass does not look at the rank: the trial is a playability check, and a candidate that lost
@@ -352,20 +352,18 @@ inserts one pairing with the schema §6.2 and halts when the pairings run out or
         "output": "temp_data.roster" } } },
     { "id": "demand", "condition": { "==": [{ "var": "temp_data.i" }, 0] },
       "function": { "name": "db_read", "input": { "connector": "soma-db",
-        "query": "<§6.1: the demand view, the pool, the presets played, the room, as one document>",
+        "query": "<§6.1: the demand view, the pool, the boards in play and played, the room, as one document>",
         "params": [{ "var": "metadata.vars.game_id" }, { "var": "metadata.vars.burst" },
                    { "var": "metadata.vars.steady_cap" }, { "var": "metadata.vars.settled_sigma" },
                    { "var": "metadata.vars.pair_depth_target" }],
         "output": "temp_data.demand" } } },
     { "id": "trials", "condition": { "==": [{ "var": "temp_data.i" }, 0] },
       "function": { "name": "db_read", "input": { "connector": "soma-db", "query": "<§6.4>",
-        "params": [{ "var": "metadata.vars.game_id" }, { "var": "metadata.vars.repair_cap" },
-                   { "var": "metadata.vars.presets" }],
+        "params": [{ "var": "metadata.vars.game_id" }, { "var": "metadata.vars.repair_cap" }],
         "output": "temp_data.trials" } } },
     { "id": "pair",   "condition": { "==": [{ "var": "temp_data.i" }, 0] },
       "function": { "name": "tb.pairing.pair", "input": {
         "demand": { "var": "temp_data.demand.0.body" },
-        "presets": { "var": "metadata.vars.presets" },
         "cross_class_fraction": { "var": "metadata.vars.cross_class_fraction" },
         "seed": { "var": "metadata.trigger.occurrence_id" } },
         "output": "temp_data.paired" } },
@@ -383,7 +381,7 @@ inserts one pairing with the schema §6.2 and halts when the pairings run out or
     { "id": "insert", "function": { "name": "db_write", "input": { "connector": "soma-db",
         "query": "<the schema §6.2>",
         "params": [{ "var": "temp_data.roster.0.epoch" }, { "var": "metadata.vars.game" },
-                   { "var": "temp_data.it.seed" }, { "var": "temp_data.it.preset" },
+                   { "var": "temp_data.it.seed" }, { "var": "temp_data.it.map" },
                    { "var": "temp_data.it.seats" }, { "var": "temp_data.it.trial" },
                    { "var": "temp_data.pairing_id" }],
         "output": "temp_data.inserted" } } },
@@ -396,11 +394,13 @@ inserts one pairing with the schema §6.2 and halts when the pairings run out or
 Trial pairings come first in the plan so a waiting candidate is never crowded out by the room.
 An insert that affects zero rows halts the run: the roster moved, and the next run re-reads.
 
-### 6.1 The demand read — the view, the pool, the presets played, the room
+### 6.1 The demand read — the view, the pool, the boards, the room
 
 One document: `wants`, the §4 view; `pool`, every `active` version, baselines included, with its two
 ratings, class and in-flight count, which is who the plugin may seat opposite a want; `played`,
-per version per preset, how many counted matches, for map coverage; and `room`. The view is §4
+per version per board, how many counted matches, for map coverage; `limits.maps`, the season's
+ENABLED boards with their seats, read on every run because an admin may change them while the season
+is live (N28); and `room`. The view is §4
 verbatim as a CTE; the rest:
 
 ```sql
@@ -411,10 +411,10 @@ verbatim as a CTE; the rest:
       FROM models md
      WHERE md.game_id = ($1)::uuid AND md.status = 'active'
 ), played AS (
-    SELECT s.model_id, m.preset, count(*) AS n
+    SELECT s.model_id, m.season_map_id AS map, count(*) AS n
       FROM match_seats s JOIN matches m ON m.id = s.match_id
      WHERE m.game_id = ($1)::uuid AND m.status IN ('finished', 'rated')
-     GROUP BY s.model_id, m.preset
+     GROUP BY s.model_id, m.season_map_id
 ), depth AS (
     SELECT count(*) AS pending FROM matches WHERE game_id = ($1)::uuid AND status = 'pending'
 )
@@ -434,15 +434,15 @@ against a promotion.
 
 ### 6.2 The pairing plugin — `tb.pairing.pair`
 
-**Input**: the §6.1 document, the game's presets, the cross-class fraction, and a seed — the
+**Input**: the §6.1 document -- the season's enabled boards inside it -- the cross-class fraction, and a seed — the
 occurrence id, so a retry of the same occurrence proposes the same pairings and an audit can
-replay the choice. **Output**: `{ "n": k, "pairings": [{ "seats": [a, b], "preset": "…", "seed":
+replay the choice. **Output**: `{ "n": k, "pairings": [{ "seats": [a, b], "map": "…", "seed":
 s }, …] }` with `k ≤ room`, the seats' ids in seat order, and a world seed per pairing derived from
 the run's seed and the index.
 
 **What it must do**, in this order, for each want from largest to smallest until the room is used:
 
-1. **The preset** is the one the wanting version has played least, ties broken by the seed —
+1. **The board** is the one the wanting version has played least, ties broken by the seed —
    map coverage, so a rating reflects the game rather than one map (architecture §7).
 2. **The opponent** is drawn from the pool, never the version itself, never one with a live trial
    against it. With probability equal to the cross-class fraction it comes from another class,
@@ -469,20 +469,20 @@ decision 9 ([`config.md`](config.md)).
 ### 6.3 The insert
 
 the schema §6.2, once per pairing, with the epoch read at sweep 0. The statement derives hashes, ladders,
-the contesting check and the rating snapshot itself; the plugin's output is ids, a preset and a
-seed. `rows_affected` of 2 is a match; 0 halts the run.
+the contesting check, the seat count -- off the board, refusing one disabled since the read -- and the
+rating snapshot itself; the plugin's output is ids, a board and a seed. `rows_affected` of 2 is a match; 0 halts the run.
 
 ### 6.4 The trial insert — SQL, no plugin
 
 A `verified` version with no live trial row and fewer trials than the cap gets one, against a
 baseline of its own class if one exists, else any baseline, preferring the baseline with the
-fewest matches in flight; on the preset after the one its last trial used, so a re-pair changes
+fewest matches in flight; on the board after the one its last trial used, so a re-pair changes
 the map. As a document in the plan's shape:
 
 ```sql
 SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build_object(
          'seats', json_build_array(c.id, b.id), 'trial', c.id,
-         'preset', (($3)::text[])[1 + (n.trials % cardinality(($3)::text[]))],
+         'map', <the season's enabled boards, in the order they were added>[n.trials % <how many>],
          'seed', (random() * 2147483647)::bigint)), '[]'::json)) AS body
   FROM models c
   JOIN LATERAL (
@@ -502,9 +502,9 @@ SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build
                       AND l.status IN ('pending', 'claimed', 'running'))
 ```
 
-`$1` game · `$2` the re-pair cap · `$3` the presets. The preset rotates over **the presets the
-season's baselines can fill** — the candidate plus one baseline of a different owner per other
-seat — and not over every preset: a trial that does not land does not count, so a rotation that
+`$1` game · `$2` the re-pair cap. The board rotates over **the season's enabled boards its
+baselines can fill** — the candidate plus one baseline of a different owner per other seat — and
+not over every board: a trial that does not land does not count, so a rotation that
 reached an eight-seat map with three baselines would offer that map every run, for ever. The
 shipped statement (`scripts/gen-clocks.py`, `P_TRIALS`) seats `players - 1` baselines; the sketch
 above predates seat counts. The trial's seed is random rather than
@@ -573,7 +573,7 @@ with what moves each and, where the running ladder can measure it, the query tha
 `d_demand`, `c_decide`, `p_trials`): the demand view returns a state, cap and want per version
 and the room; the verdict read returns `pass` for a finished trial whose candidate did not
 forfeit and `reject` with `FAULT:HASH_MISMATCH` for one failed on the candidate's seat; the trial
-read pairs a waiting candidate with a same-class baseline on the next preset and skips one with a
+read pairs a waiting candidate with a same-class baseline on the next board and skips one with a
 live trial.
 
 **Not verified** — the build's and the build's: the loop, the conditioned first-sweep tasks and the `filter`

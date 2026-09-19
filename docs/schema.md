@@ -192,8 +192,8 @@ CREATE TABLE matches (
     -- what to play — the pair clock, at insert
     engine_digest        text         NOT NULL,      -- the engine this row requires
     seed                 bigint       NOT NULL,
-    preset               text         NOT NULL,
-    seat_count           smallint     NOT NULL,      -- how many rows match_seats holds for it
+    season_map_id        uuid         NOT NULL REFERENCES season_maps (id),  -- the board (N28, §3.3a)
+    seat_count           smallint     NOT NULL,      -- the board's players; how many rows match_seats holds
     ladders              ladder[]     NOT NULL,      -- derived at insert; '{}' for a trial
     trial_version_id       uuid         REFERENCES models (id),   -- the candidate, when a trial
     pairing_id           uuid,                       -- the pairing plugin's seed
@@ -254,6 +254,20 @@ CREATE SEQUENCE rating_seq AS bigint;
 `ladders` is the one array that remains: one or two enum values, written once, tested with
 `= ANY`. A table for it would be a table with at most two rows per match; a `class_ladder`
 column would hide "and always open" in every reader.
+
+### 3.3a `season_maps` and `season_map_events` — the boards a season is played on (N28)
+
+A season's boards are uploaded to it, one map file a row, by an admin: the header the platform reads
+(`map_id`, `players`, `rows`, `cols`), a `digest` of the jsonb for refusing a duplicate, the `board`
+itself -- the cartridge's, never read here and only passed to worldgen on the claim -- and `enabled`,
+which starts **false**. Rows are never deleted. `UNIQUE (season_id, map_id)` and `(season_id, digest)`
+make a board once per season; a disabled one is enabled again, never re-uploaded. Every flip writes a
+`season_map_events` row (`enabled`, `by_user`, and how many queued matches a disable `cancelled`), the
+record of which boards a live season's ratings were earned on. `season_map_header()` reads a file's
+header safely and `season_map_within()` checks it against the cartridge's `limits.boards`;
+`season_map_json()` is the shape four routes return. `seasons` gains `name` and `slug`, the slug held
+to `season_slug(name)` by a CHECK and unique per game; `number` is an internal ordinal. The design
+and its reasons are [`season-maps.md`](season-maps.md).
 
 ### 3.4 `match_seats` — one row per seat, the facts that are about a seat
 
@@ -704,7 +718,7 @@ vanished is indistinguishable from one that is slow and the lease resolves both 
 statement with nobody having to decide which it was.
 
 `seat_count <= $4` is the refusal that must stay: a seat is a task and the task list is fixed, so a
-6-player preset claimed by a 4-lane runner would be a match played short a seat. Refusing to claim
+6-seat board claimed by a 4-lane runner would be a match played short a seat. Refusing to claim
 is visible in the queue; playing it short is a match nobody can explain.
 
 The queue partitions on `engine_digest` for free, which is what makes a mixed-engine rollout work.
@@ -713,7 +727,7 @@ The queue partitions on `engine_digest` for free, which is what makes a mixed-en
 
 ```sql
 SELECT json_build_object(
-         'id', m.id, 'seed', m.seed, 'preset', m.preset, 'seat_count', m.seat_count,
+         'id', m.id, 'seed', m.seed, 'map_id', sm.map_id, 'map', sm.board, 'seat_count', m.seat_count,
          'trial_model_id', m.trial_version_id, 'strike_ceiling', m.strike_ceiling,
          'seats', (SELECT json_agg(json_build_object(
                      'm', 0, 'seat', s.seat, 'version_id', s.version_id,
@@ -724,6 +738,7 @@ SELECT json_build_object(
                     FROM match_seats s WHERE s.match_id = m.id)) AS row,
        m.engine_digest AS engine_digest, m.lease_expires_at AS lease_expires_at
   FROM matches m
+  JOIN season_maps sm ON sm.id = m.season_map_id    -- THE BOARD RIDES THE ROW (N28)
  WHERE m.claim_token = ($1)::uuid AND m.status = 'claimed'
 ```
 
@@ -1234,9 +1249,9 @@ WITH seated AS MATERIALIZED (
      WHERE md.status = 'active'                                          -- contesting, by inclusion
         OR (md.status = 'verified' AND md.id = ($6)::uuid)                -- the candidate of a trial
 ), m AS (
-    INSERT INTO matches (game_id, engine_digest, seed, preset, seat_count, ladders,
+    INSERT INTO matches (game_id, engine_digest, seed, season_map_id, seat_count, ladders,
                          trial_version_id, pairing_id)
-    SELECT g.id, g.active_engine_digest, ($3)::bigint, ($4)::text, cardinality(($5)::uuid[]),
+    SELECT g.id, g.active_engine_digest, ($3)::bigint, board.id, board.players,   -- N28: see below
            CASE WHEN ($6)::uuid IS NOT NULL THEN '{}'::ladder[]          -- a trial feeds no ladder
                 WHEN (SELECT count(DISTINCT weight_class) FROM seated) = 1
                      THEN ARRAY[(SELECT weight_class FROM seated LIMIT 1), 'open']::ladder[]
@@ -1259,9 +1274,11 @@ SELECT m.id, s.seat, s.version_id, s.weights_hash, s.manifest_hash,
   FROM m, seated s
 ```
 
-`$1` the epoch read at run start · `$2` game slug · `$3` seed · `$4` preset · `$5` the seats'
-model ids in seat order · `$6` the candidate, or null · `$7` pairing id. The plugin chooses ids,
-seed and preset; the statement derives the hashes, the ladders, the contesting check and the
+`$1` the epoch read at run start · `$2` game slug · `$3` seed · `$4` the board, a `season_maps` id ·
+`$5` the seats' model ids in seat order · `$6` the candidate, or null · `$7` pairing id. The plugin
+chooses ids, seed and board; the statement derives the seat count from the board -- an ENABLED map of
+the live season, joined as `board`, and a seat list of any other length inserts nothing (N28; the
+shipped statement is `scripts/gen-clocks.py` `P_INSERT`) -- and the hashes, the ladders, the contesting check and the
 rating snapshot from `models` and `ratings`, so pair carries no copy of the roster rules and the
 snapshot is what the database held at the instant of insert. `rows_affected` is the seat count;
 zero means the roster moved under the run, a seat left, or the candidate is not `verified` — either way

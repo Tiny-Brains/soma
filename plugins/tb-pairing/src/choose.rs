@@ -82,11 +82,12 @@ pub struct Want {
 
 /// A map, and how many seats are played on it.
 ///
-/// The seat count is the PRESET's, not the game's: a game may offer a two-seat map and a four-seat
-/// one, which is why the preset is picked first below and the opponents drawn afterwards.
+/// The seat count is the MAP's, not the game's: a season may offer a two-seat board and a four-seat
+/// one, which is why the map is picked first below and the opponents drawn afterwards.
 #[derive(Clone, Debug)]
-pub struct Preset {
-    pub name: String,
+pub struct Map {
+    /// The season's map row id, which is what pair's insert pins the match to.
+    pub id: String,
     pub players: usize,
 }
 
@@ -94,9 +95,9 @@ pub struct Input {
     pub room: usize,
     pub wants: Vec<Want>,
     pub pool: Vec<Entry>,
-    /// model_id -> preset -> counted matches on it.
+    /// model_id -> map -> counted matches on it.
     pub played: HashMap<String, HashMap<String, i64>>,
-    pub presets: Vec<Preset>,
+    pub maps: Vec<Map>,
     pub cross_class_fraction: f64,
     /// Whether a season permits two versions of one owner in one match. False everywhere the
     /// platform ships: a season that allows it has standings that mean less, and should say so.
@@ -113,9 +114,9 @@ pub struct Input {
 
 #[derive(Debug, PartialEq)]
 pub struct Pairing {
-    /// As many seats as the chosen preset is played at. Seat order is the array order.
+    /// As many seats as the chosen map is played at. Seat order is the array order.
     pub seats: Vec<String>,
-    pub preset: String,
+    pub map: String,
     pub seed: i64,
 }
 
@@ -126,7 +127,7 @@ pub struct Pairing {
 /// spent may be seated opposite, limited only by its owner's room (docs/design.md §4).
 pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     let mut out = Vec::new();
-    if input.room == 0 || input.pool.len() < 2 || input.presets.is_empty() {
+    if input.room == 0 || input.pool.len() < 2 || input.maps.is_empty() {
         return out;
     }
 
@@ -146,8 +147,8 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     } else {
         pool.iter().map(|e| e.owner_id.as_str()).collect::<HashSet<_>>().len()
     };
-    let presets: Vec<&Preset> = input.presets.iter().filter(|p| p.players <= seatable).collect();
-    if presets.is_empty() {
+    let maps: Vec<&Map> = input.maps.iter().filter(|p| p.players <= seatable).collect();
+    if maps.is_empty() {
         return out;
     }
 
@@ -160,11 +161,8 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
 
     // Seats each owner may still take, spent as the plan is built. An owner absent from the map is
     // uncapped; the demand view names no owner at all when the season sets no share.
-    let mut owner_budget: HashMap<&str, i64> = input
-        .owner_room
-        .iter()
-        .map(|(o, n)| (o.as_str(), *n))
-        .collect();
+    let mut owner_budget: HashMap<&str, i64> =
+        input.owner_room.iter().map(|(o, n)| (o.as_str(), *n)).collect();
     let room_for = |budget: &HashMap<&str, i64>, owner: &str| -> i64 {
         budget.get(owner).copied().unwrap_or(i64::MAX)
     };
@@ -190,28 +188,28 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
         };
 
         // Its owner is at their share of the queue across every model they hold. Spend the want
-        // rather than spin, exactly as an unfillable preset does: the next run may find room.
+        // rather than spin, exactly as an unfillable map does: the next run may find room.
         if room_for(&owner_budget, &a.owner_id) < 1 {
             remaining.insert(seat_a, 0);
             continue;
         }
 
-        // The preset comes FIRST, because it decides how many seats there are to fill.
-        let preset = preset_for(a, &presets, input, rng);
-        let opponents = opponents(a, &pool, &remaining, input, &owner_budget, preset.players - 1, rng);
-        if opponents.len() + 1 < preset.players {
+        // The map comes FIRST, because it decides how many seats there are to fill.
+        let map = map_for(a, &maps, input, rng);
+        let opponents = opponents(a, &pool, &remaining, input, &owner_budget, map.players - 1, rng);
+        if opponents.len() + 1 < map.players {
             // Not enough distinct versions to seat this map. Spend the want rather than spin:
-            // the next run may have a fuller roster, or a smaller preset.
+            // the next run may have a fuller roster, or a smaller map.
             remaining.insert(seat_a, 0);
             continue;
         }
 
-        let mut seats = Vec::with_capacity(preset.players);
+        let mut seats = Vec::with_capacity(map.players);
         seats.push(a.model_id.clone());
         for b in &opponents {
             seats.push(b.model_id.clone());
         }
-        out.push(Pairing { seats, preset: preset.name.clone(), seed: rng.seed() });
+        out.push(Pairing { seats, map: map.id.clone(), seed: rng.seed() });
 
         // Every seat of the match spends one of its owner's, the wanting side included.
         for owner in std::iter::once(&a.owner_id).chain(opponents.iter().map(|b| &b.owner_id)) {
@@ -233,17 +231,17 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     out
 }
 
-/// The preset this version has played least, ties broken by the seed, among the ones the roster can
+/// The map this version has played least, ties broken by the seed, among the ones the roster can
 /// seat. Map coverage: a rating should reflect the game, not whichever map the version happened to
 /// be given.
-fn preset_for<'a>(a: &Entry, presets: &[&'a Preset], input: &Input, rng: &mut Rng) -> &'a Preset {
-    let mut best: Vec<&'a Preset> = Vec::new();
+fn map_for<'a>(a: &Entry, maps: &[&'a Map], input: &Input, rng: &mut Rng) -> &'a Map {
+    let mut best: Vec<&'a Map> = Vec::new();
     let mut best_n = i64::MAX;
-    for &p in presets {
+    for &p in maps {
         let n = input
             .played
             .get(a.model_id.as_str())
-            .and_then(|by_preset| by_preset.get(p.name.as_str()))
+            .and_then(|by_map| by_map.get(p.id.as_str()))
             .copied()
             .unwrap_or(0);
         if n < best_n {
@@ -385,11 +383,8 @@ mod tests {
         }
     }
 
-    fn presets(players: usize) -> Vec<Preset> {
-        ["standard", "maze", "cell"]
-            .iter()
-            .map(|n| Preset { name: n.to_string(), players })
-            .collect()
+    fn maps(players: usize) -> Vec<Map> {
+        ["standard", "maze", "cell"].iter().map(|n| Map { id: n.to_string(), players }).collect()
     }
 
     fn input(room: usize, wants: &[(&str, i64)], pool: Vec<Entry>) -> Input {
@@ -401,7 +396,7 @@ mod tests {
                 .collect(),
             pool,
             played: HashMap::new(),
-            presets: presets(2),
+            maps: maps(2),
             cross_class_fraction: 0.20,
             self_pairing: false,
             owner_room: HashMap::new(),
@@ -492,7 +487,10 @@ mod tests {
                 owned("a2", "alice", "nano", 25.0, 8.3),
                 owned("b", "bob", "nano", 25.0, 8.3),
             ];
-            let plan = choose(&input(6, &[("a1", 3), ("a2", 3)], pool), &mut Rng::from_str(&format!("occ-{seed}")));
+            let plan = choose(
+                &input(6, &[("a1", 3), ("a2", 3)], pool),
+                &mut Rng::from_str(&format!("occ-{seed}")),
+            );
             for p in &plan {
                 let alice = p.seats.iter().filter(|s| s.starts_with("a")).count();
                 assert!(alice <= 1, "seed {seed}: alice took {alice} seats of {:?}", p.seats);
@@ -513,7 +511,7 @@ mod tests {
                 owned("c", "carol", "nano", 25.0, 8.3),
             ];
             let mut i = input(4, &[("w", 4)], pool);
-            i.presets = presets(4);
+            i.maps = maps(4);
             for p in choose(&i, &mut Rng::from_str(&format!("occ-{seed}"))) {
                 let mut owners: Vec<&str> =
                     p.seats.iter().map(|s| if s.starts_with("a") { "alice" } else { s }).collect();
@@ -549,7 +547,11 @@ mod tests {
         let mut i = input(6, &[("a", 3), ("b", 3)], pool);
         i.owner_room = HashMap::from([("alice".to_string(), 0)]);
         for p in choose(&i, &mut Rng::from_str(&format!("occ-{}", 11))) {
-            assert!(!p.seats.contains(&"a".to_string()), "alice was seated at her cap: {:?}", p.seats);
+            assert!(
+                !p.seats.contains(&"a".to_string()),
+                "alice was seated at her cap: {:?}",
+                p.seats
+            );
         }
     }
 
@@ -596,7 +598,10 @@ mod tests {
         forward.owner_room = rooms.iter().cloned().collect();
         let mut backward = input(6, &[("a", 2), ("b", 2)], pool);
         backward.owner_room = rooms.into_iter().rev().collect();
-        assert_eq!(choose(&forward, &mut Rng::from_str(&format!("occ-{}", 9))), choose(&backward, &mut Rng::from_str(&format!("occ-{}", 9))));
+        assert_eq!(
+            choose(&forward, &mut Rng::from_str(&format!("occ-{}", 9))),
+            choose(&backward, &mut Rng::from_str(&format!("occ-{}", 9)))
+        );
     }
 
     #[test]
@@ -634,27 +639,27 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_gets_played() {
-        // Map coverage: with no history, repeated pairings must not all land on one preset.
+    fn every_map_gets_played() {
+        // Map coverage: with no history, repeated pairings must not all land on one map.
         let inp = input(30, &[("a", 30)], nano_pool());
         let seen: std::collections::HashSet<String> =
-            choose(&inp, &mut Rng::from_str("occ")).into_iter().map(|p| p.preset).collect();
-        assert_eq!(seen.len(), 3, "expected all three presets, saw {seen:?}");
+            choose(&inp, &mut Rng::from_str("occ")).into_iter().map(|p| p.map).collect();
+        assert_eq!(seen.len(), 3, "expected all three maps, saw {seen:?}");
     }
 
     #[test]
-    fn the_least_played_preset_is_chosen() {
+    fn the_least_played_map_is_chosen() {
         let mut inp = input(1, &[("a", 1)], nano_pool());
         inp.played.insert(
             "a".into(),
             [("standard", 10), ("maze", 10), ("cell", 1)]
                 .into_iter()
-                .map(|(preset, n)| (preset.to_string(), n))
+                .map(|(map, n)| (map.to_string(), n))
                 .collect(),
         );
         for occ in 0..50 {
             let out = choose(&inp, &mut Rng::from_str(&format!("o{occ}")));
-            assert_eq!(out[0].preset, "cell", "the least-played preset must win outright");
+            assert_eq!(out[0].map, "cell", "the least-played map must win outright");
         }
     }
 
@@ -702,8 +707,8 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_s_seat_count_decides_the_match_s_size() {
-        // A four-seat preset produces four-seat pairings from the same roster and code path.
+    fn a_map_s_seat_count_decides_the_match_s_size() {
+        // A four-seat map produces four-seat pairings from the same roster and code path.
         let pool = vec![
             entry("a", "nano", 25.0, 8.3),
             entry("b", "nano", 26.0, 8.0),
@@ -711,18 +716,18 @@ mod tests {
             entry("d", "nano", 25.5, 8.1),
         ];
         let mut inp = input(4, &[("a", 4)], pool);
-        inp.presets = presets(4);
+        inp.maps = maps(4);
         let out = choose(&inp, &mut Rng::from_str("occ"));
         assert!(!out.is_empty());
         for p in &out {
-            assert_eq!(p.seats.len(), 4, "a four-seat preset must seat four: {p:?}");
+            assert_eq!(p.seats.len(), 4, "a four-seat map must seat four: {p:?}");
             let unique: std::collections::HashSet<&String> = p.seats.iter().collect();
             assert_eq!(unique.len(), 4, "a version was seated twice: {p:?}");
         }
     }
 
     #[test]
-    fn presets_of_different_sizes_coexist() {
+    fn maps_of_different_sizes_coexist() {
         // One map at two seats, one at four, each pairing sized by whichever came up.
         let pool = vec![
             entry("a", "nano", 25.0, 8.3),
@@ -731,27 +736,25 @@ mod tests {
             entry("d", "nano", 25.5, 8.1),
         ];
         let mut inp = input(20, &[("a", 20)], pool);
-        inp.presets = vec![
-            Preset { name: "duel".into(), players: 2 },
-            Preset { name: "melee".into(), players: 4 },
-        ];
+        inp.maps =
+            vec![Map { id: "duel".into(), players: 2 }, Map { id: "melee".into(), players: 4 }];
         let out = choose(&inp, &mut Rng::from_str("occ"));
         let sizes: std::collections::HashSet<(String, usize)> =
-            out.iter().map(|p| (p.preset.clone(), p.seats.len())).collect();
+            out.iter().map(|p| (p.map.clone(), p.seats.len())).collect();
         assert!(sizes.contains(&("duel".to_string(), 2)), "{sizes:?}");
         assert!(sizes.contains(&("melee".to_string(), 4)), "{sizes:?}");
-        // And every pairing is sized by its own preset, never by the other's.
+        // And every pairing is sized by its own map, never by the other's.
         for p in &out {
-            let want = if p.preset == "duel" { 2 } else { 4 };
+            let want = if p.map == "duel" { 2 } else { 4 };
             assert_eq!(p.seats.len(), want, "{p:?}");
         }
     }
 
     #[test]
-    fn a_preset_the_pool_cannot_fill_is_skipped_rather_than_half_seated() {
+    fn a_map_the_pool_cannot_fill_is_skipped_rather_than_half_seated() {
         // Three versions and a four-seat map: seating one twice is worse than not pairing.
         let mut inp = input(4, &[("a", 4)], nano_pool());
-        inp.presets = vec![Preset { name: "melee".into(), players: 4 }];
+        inp.maps = vec![Map { id: "melee".into(), players: 4 }];
         assert!(choose(&inp, &mut Rng::from_str("occ")).is_empty());
     }
 

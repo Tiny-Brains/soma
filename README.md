@@ -84,11 +84,15 @@ request handling and response construction, with matching soma-prefixed filename
 | GET | /v1/auth/github/callback | Public OAuth callback | Complete sign-in and set the session cookie |
 | GET | /v1/status | Public | Arena counters: queue, throughput, and what each clock is behind on |
 | GET | /v1/games | Public | Registered games, each with its current season |
-| GET | /v1/games/{game} | Public | One game: what it says about itself, its presets and limits, its season |
+| GET | /v1/games/{game} | Public | One game: what it says about itself, its limits (`limits.boards`, what a season map may be), its season |
 | GET | /v1/games/{game}/seasons | Public | Game seasons, with version and match counts |
 | POST | /v1/games/{game}/seasons | Admin session | Create a season |
-| PATCH | /v1/games/{game}/seasons/{number} | Admin session | Edit a season that has not opened |
-| POST | /v1/games/{game}/seasons/current/close | Admin session | Request closure of the live season |
+| PATCH | /v1/games/{game}/seasons/{slug} | Admin session | Edit a season that has not opened; its name and slug never change |
+| POST | /v1/games/{game}/seasons/{slug}/close | Admin session | Request closure of the live season, named by its slug |
+| GET | /v1/games/{game}/seasons/{slug}/maps | Public | A season's boards, enabled or not; `?enabled=true`, `?boards=true` |
+| GET | /v1/games/{game}/seasons/{slug}/maps/{map_id} | Public | One board, the board itself, and when it was enabled and disabled |
+| POST | /v1/games/{game}/seasons/{slug}/maps | Admin session | Upload one map file: judged by the engine, stored disabled, public |
+| PATCH | /v1/games/{game}/seasons/{slug}/maps/{map_id} | Admin session | `{"enabled": bool}`: put a board in play or take it out; disabling cancels its queued matches |
 | GET | /v1/games/{game}/leaderboard | Public | Standings; ladder, season, limit, and cursor query parameters |
 | GET | /v1/games/{game}/submission | Session | Whether the caller may submit, why not, and as which version |
 | GET | /v1/models | Session | Caller's versions, with ratings and ranks; optional game filter |
@@ -294,10 +298,10 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | R2_ENDPOINT (loader) | Also substituted into soma-models-http as its base; the image's self-load passes MODELS_ENDPOINT | The connector keeps its placeholder and the manifest fetch 404s |
 | SOMA_NODE_ADMIN | Loader substitution for soma-node-admin, the admin API admission registers a model on | Defaults to ORION_ADMIN, which is right on a node and wrong anywhere else |
 | ORION_ADMIN_BEARER | The whole `Bearer <key>` header value soma-node-admin sends | Every admin call is 401: a connector resolves `env://` only when the reference is the entire string |
-| PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating and tb.pairing | A node with trust keys quarantines the clocks that call an unsigned plugin |
+| PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating, tb.pairing and tb.ants | A node with trust keys quarantines the clocks -- and the map routes -- that call an unsigned plugin |
 | /config/baselines.toml, or BASELINES_CONFIG | `bootstrap`: the baselines' roster -- `[models.*]` artifacts by URL or path, `[[baselines]]` with a permanent `id`, a `name` and a `model` (`docker/baselines.py`) | The image's own roster seeds `nano-bc`, `micro-bc` and `micro-percell`; `none` skips the step, and a season with no baselines admits nothing |
 | MODELS_ENDPOINT, MODELS_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY (bootstrap) | The models bucket as a node reaches it, with a credential that may PUT: the baselines step uploads what the roster names and restores what a season carry left out | `bootstrap` refuses at the baselines step, and names the four |
-| game, presets | Ladder and map selection | Pairing has no valid selection context |
+| game, engine_digest | The game pair plays, and the engine this node loads (the entrypoint exports it from the image's cartridge) | Pairing has no game; every map upload is refused `engine_mismatch` |
 | count_batch, pair_depth_target, burst, steady_cap | Batch and demand controls | Defaults are not supplied by this package |
 | cross_class_fraction, repair_cap | Pairing policy | Incorrect values alter coverage and demand |
 | sigma_inflation | A successor's rating uncertainty | Inconsistent priors change ladder behavior |
@@ -365,7 +369,7 @@ LICENSE                       repository licence
 - **The generated clock files are the installed package.** `check-defs.sh` and `check-sql.sh` fail when they do not match `scripts/gen-clocks.py`.
 - **A shape many routes return is defined once, in the migration.** `season_json()` and `season_state()`, `model_ratings()`, `model_phase()`, `current_season()`, `match_seat_rows()` and the two `season_admits*()` rule predicates are where those shapes and judgements are built. Six routes return a season, three print "rank 6 of 47", three list a match's seats, and the submission rules are asked once by the insert that must not happen and once by the read that says why it did not. A second copy of any of them is a page that disagrees with another page, or a refusal whose reason denies it, with no way to notice.
 - **A season owns its weight classes.** `seasons.weight_classes` is the only definition of what nano means; admission reads the version's own season and the book points readers at it. The column is validated strictly ascending, because admission takes the first class a size fits and an out-of-order table makes a class silently unreachable. The trade is deliberate: a class result is comparable within its season, not across seasons.
-- **A game introduces itself.** The provenance copy, the presets and the limits come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
+- **A game introduces itself.** The provenance copy and the limits -- `limits.boards` among them, the envelope a season map must fit (N28) -- come from the cartridge manifest through `GET /v1/games/{game}`, so a second game is a registration and not a web deploy. The fold in the cartridge's own `build.sh` admits named keys only, refuses a non-string and requires https: this document is rendered in a browser.
 - **Migrations define one schema for all packages.** A schema change must pass each consumer's SQL check before deployment.
 - **A notification never costs a decision.** Every writer is its own `continue_on_error` statement after the thing it reports -- never a CTE in a fenced fold, a verdict or a close -- reads the decision off the row, asks `notification_wanted()` inside its INSERT, and is keyed `ON CONFLICT (user_id, dedupe_key) DO NOTHING`. A run that dies between the two loses that notification; nothing can duplicate or invent one. `docs/schema.md` §3.11.
 - **Revocation remains effective before JWT expiry.** Session workflows consult live_sessions rather than trusting a signed token alone.
@@ -379,6 +383,26 @@ LICENSE                       repository licence
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**19 September 2026 — a season's boards are uploaded to it, and a season has a name (N28).**
+Built from [`docs/season-maps.md`](docs/season-maps.md). `season_maps` and `season_map_events` are in
+`0001_init.sql` (rewritten in place, so a local database is rebuilt, not migrated); a season has a
+`name` and a derived, fixed `slug` that is its address in every route, query and notification, with
+`number` kept as an internal ordinal. Four new routes list, read, upload and enable/disable a season's
+maps; the upload runs `tb.ants.worldgen` on the board on this node -- the image now carries and loads
+the component -- and checks it against the cartridge's `limits.boards`. Pair reads the season's
+enabled boards on every run, `P_INSERT` derives the seat count from the board and refuses a disabled
+one, and the claim sends the board whole. `[vars].presets`, `rules.pairing.presets` and
+`matches.preset` are gone; `tb.pairing` takes `limits.maps`. The two admin map routes meter at
+`per_admin_board_rate` (5 rps, burst 40), because a season's thirty-odd boards arrive together.
+`check-defs.sh` clean, `check-sql.sh` 115/115, `verify/run.sh` as before plus the new walks (its one
+failure is the seed's baselines assertion, which predates this: bootstrap seeds them now), and on the
+rebuilt local stack smoke is 75/75, the 32 season-1 boards from `tinybrains/maps/` upload and enable
+through the real route, matches pair and rate on them, a disable cancelled a board's queued matches
+and left the rated one, and `tinybrains conform` re-ran a ladder replay identically. The `Dockerfile`
+takes the cartridge from an `ants` stage, so `--build-context ants=../ants/dist` builds against an
+ants checkout. **Needs an ants release** (the engine digest moved, `limits.boards` is new) before a
+published image can carry it.
 
 **18 September 2026 — the baselines are a roster `bootstrap` applies.** They were a block of
 `web/compose/seed.sql` with placeholder hashes and `web/scripts/dev/seed-baselines.sh`, which

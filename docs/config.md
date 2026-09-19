@@ -27,7 +27,7 @@ immutable, and read in the run that acts on it. Nothing depends on that yet.
 | Var | Value | What moves it |
 |---|---|---|
 | `game` | `ants` | a second game makes this a roster rather than a name |
-| `presets` | all sixteen Ants presets, `open-2` to `maze-8`, each with its `players` (2 to 8) | the game's manifest is the source, and this names a subset of it. Pairing picks only a preset the roster can seat — the plugin filters by distinct owners in the pool, the trial query by the season's baselines — so a wide map waits for a roster that can fill it instead of spending every version's want on a draw that cannot land. A replica claims up to eight seats (kalam `MAX_SEATS`) |
+| `engine_digest` | the image's own cartridge, exported by the entrypoint | the engine this node loads, which a map upload compares with the season's: validating a board on another engine proves nothing (N28). **There is no board list here any more**: a season's boards are `season_maps`, uploaded and enabled by an admin, and pair picks only one the roster can seat — the plugin filters by distinct owners in the pool, the trial query by the season's baselines — so a wide board waits for a roster that can fill it. A replica claims up to eight seats (kalam `MAX_SEATS`), the top of `limits.boards` |
 
 ## 2. The clocks
 
@@ -35,7 +35,7 @@ immutable, and read in the run that acts on it. Nothing depends on that yet.
 |---|---|---|---|
 | `count_batch` | 50 | 7 | three tasks a match, well inside a 60 s timeout at ten a second. Raise it if count lags the match rate |
 | `pair_depth_target` | 64 | 7 | about two waves for four replicas: deep enough that a claim never waits, shallow enough that a pairing is at most a few minutes old. **The autoscaler must never read queue depth**, because this caps it — see decision 43 |
-| `burst` | 8 | 1 | one per preset and a few more; enough for TrueSkill to leave the prior. All eight are paired on one prior, so more buys wall time, not information |
+| `burst` | 8 | 1 | a handful of boards and a few more; enough for TrueSkill to leave the prior. All eight are paired on one prior, so more buys wall time, not information |
 | `steady_cap` | 2 | 1 | one result lands while the next is paired. Raise it if replicas idle on a small roster |
 | `repair_cap` | 3 | 8 | three platform failures in a row on one candidate is an incident, not a coincidence |
 | `forfeit_strikes` | 5 | — | **must equal Kalam's `strike_ceiling`.** Kalam applies it; count reads its consequences off the row. A disagreement means count judges a trial by a rule the wave did not play by, silently. `devops/scripts/check/configs.sh` asserts the equality |

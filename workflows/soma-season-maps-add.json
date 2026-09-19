@@ -1,0 +1,224 @@
+{
+  "workflow_id": "soma-season-maps-add",
+  "name": "Upload a map into a season",
+  "description": "Admin only, and THE ONLY WAY A SEASON MAP REACHES THE PLATFORM (N28): season maps are in no repository and no release. The body is one map file, exactly as mapgen writes it. It is stored DISABLED -- an upload changes nothing about pairing until an admin enables it -- and it is public from this moment. Checked in the order a mistake is most likely: the season exists and is not closed; the header is a header; it fits the cartridge's limits.boards, which is the envelope admission's reference set was drawn on, so a model admitted today can play it; the season plays the engine this node loaded, because validating a board on another engine proves nothing; it is not a board the season already has, by id or by content; and THE ENGINE ACCEPTS IT -- tb.ants.worldgen, run here on the board as sent, which is the validator every match would run anyway. Its refusal reaches a workflow as a code and never as the engine's reason, so the 422 points at `tinybrains maps check`, which runs the same engine locally and prints why. Its rate is per_admin_board_rate, not the 1 rps every other write gets: a season's boards arrive together, thirty-odd uploads and as many enables, from one admin.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "ctx",
+      "name": "Everything the upload is checked against",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH b AS ( SELECT ($3)::jsonb AS v ), h AS ( SELECT season_map_header(b.v) AS h, 'sha256:' || encode(sha256(convert_to(b.v::text, 'UTF8')), 'hex') AS digest FROM b ), se AS ( SELECT s.id, s.closed_at, s.engine_digest, g.manifest -> 'limits' -> 'boards' AS limits FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text ) SELECT json_build_object( 'season', EXISTS (SELECT 1 FROM se), 'closed', (SELECT se.closed_at IS NOT NULL FROM se), 'header', h.h, 'limits', (SELECT se.limits FROM se), 'within', coalesce((SELECT season_map_within(h.h, se.limits) FROM se), false), 'engine', json_build_object('season', (SELECT se.engine_digest FROM se), 'node', ($4)::text), 'engine_ok', coalesce((SELECT se.engine_digest = ($4)::text FROM se), false), 'existing', (SELECT json_build_object('map_id', sm.map_id, 'enabled', sm.enabled, 'same_id', sm.map_id = h.h ->> 'id') FROM season_maps sm JOIN se ON se.id = sm.season_id WHERE sm.map_id = h.h ->> 'id' OR sm.digest = h.digest ORDER BY (sm.map_id = h.h ->> 'id') DESC LIMIT 1)) AS body FROM h",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req" },
+            { "var": "metadata.vars.engine_digest" }
+          ],
+          "output": "temp_data.ctx"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.season" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": { "var": "temp_data.ctx.0.body.closed" },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "A closed season's boards are its record; nothing is added to them."
+        },
+        "name": "The season has closed"
+      }
+    },
+    {
+      "id": "header",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.header" } },
+        "status": 400,
+        "body": {
+          "error": "map_bad_header",
+          "detail": "A map file names its `id` (lower-case letters, digits and hyphens) and whole-number `players`, `rows` and `cols`."
+        },
+        "name": "A header worth reading"
+      }
+    },
+    {
+      "id": "outside",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.within" } },
+        "status": 400,
+        "body": {
+          "error": "map_outside_limits",
+          "detail": {
+            "header": { "var": "temp_data.ctx.0.body.header" },
+            "limits": { "var": "temp_data.ctx.0.body.limits" }
+          }
+        },
+        "name": "Inside the envelope",
+        "description": "limits.boards is what the basic boards span -- seats, each side, cells -- and so what admission proved every adapter against. A board outside it could strike an admitted model on every turn."
+      }
+    },
+    {
+      "id": "engine",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.engine_ok" } },
+        "status": 409,
+        "body": { "error": "engine_mismatch", "detail": { "var": "temp_data.ctx.0.body.engine" } },
+        "name": "The season's engine, on this node"
+      }
+    },
+    {
+      "id": "exists",
+      "use": "refuse",
+      "with": {
+        "when": { "!!": { "var": "temp_data.ctx.0.body.existing" } },
+        "status": 409,
+        "body": {
+          "error": {
+            "if": [
+              { "var": "temp_data.ctx.0.body.existing.same_id" },
+              "map_id_taken",
+              "map_duplicate"
+            ]
+          },
+          "detail": { "var": "temp_data.ctx.0.body.existing" }
+        },
+        "name": "Not a board it already has",
+        "description": "A board is never uploaded twice: one taken out of play is disabled, and enabling it again is the fix, which the detail makes possible by saying whether it is."
+      }
+    },
+    {
+      "id": "judge",
+      "name": "The engine judges the board",
+      "continue_on_error": true,
+      "function": {
+        "name": "tb.ants.worldgen",
+        "input": {
+          "seeds": [1],
+          "map": { "var": "data.req" },
+          "players": { "var": "temp_data.ctx.0.body.header.players" },
+          "max_turns": 1,
+          "output": "temp_data.judged"
+        }
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.judged.wave_state" } },
+        "status": 422,
+        "body": {
+          "error": "map_invalid",
+          "detail": "The engine refused this board. `tinybrains maps check <file>` runs the same engine and prints its reason."
+        },
+        "name": "The engine accepts it"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Store it, disabled",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "INSERT INTO season_maps (season_id, map_id, players, rows, cols, digest, board, added_by) SELECT se.id, h.h ->> 'id', (h.h ->> 'players')::smallint, (h.h ->> 'rows')::smallint, (h.h ->> 'cols')::smallint, 'sha256:' || encode(sha256(convert_to(($3)::jsonb::text, 'UTF8')), 'hex'), ($3)::jsonb, ($4)::uuid FROM seasons se JOIN games g ON g.id = se.game_id, (SELECT season_map_header(($3)::jsonb) AS h) h WHERE g.slug = ($1)::text AND se.slug = ($2)::text AND se.closed_at IS NULL AND h.h IS NOT NULL ON CONFLICT DO NOTHING",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.inserted"
+        }
+      }
+    },
+    {
+      "id": "raced",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.inserted.rows_affected" }, 0] } },
+        "status": 409,
+        "body": {
+          "error": "map_conflict",
+          "detail": "Another upload of this board, or the season's close, got there first. Read the season's maps and try again."
+        },
+        "name": "Nothing raced it"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT season_map_json(sm) AS body FROM season_maps sm JOIN seasons se ON se.id = sm.season_id JOIN games g ON g.id = se.game_id WHERE g.slug = ($1)::text AND se.slug = ($2)::text AND sm.map_id = (season_map_header(($3)::jsonb) ->> 'id')",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

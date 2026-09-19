@@ -222,7 +222,7 @@ def psql(sql, **vars_):
 def state(game):
     out = psql(r"""
 WITH live AS (
-    SELECT s.id, s.number, s.weight_classes, s.rules
+    SELECT s.id, s.name, s.weight_classes, s.rules
       FROM seasons s JOIN games g ON g.id = s.game_id
      WHERE g.slug = :'game' AND s.closed_at IS NULL
 ), mine AS (
@@ -446,16 +446,16 @@ def main():
             if live:
                 cls = classify(int(m["size_metric_bytes"]), live["weight_classes"])
                 if cls is None:
-                    refused.append(f"{handle}: {m['size_metric_bytes']} bytes fits no weight class of season {live['number']}")
+                    refused.append(f"{handle}: {m['size_metric_bytes']} bytes fits no weight class of {live['name']}")
                     continue
                 if m.get("class") and m["class"] != cls:
-                    print(f"    note: {handle} measures {m['class']} by its own table and {cls} by season {live['number']}'s; the season's decides")
+                    print(f"    note: {handle} measures {m['class']} by its own table and {cls} by {live['name']}'s; the season's decides")
             if had.get("version_id"):
                 # Its ratings describe the bytes it played. Moving them under it would rate one
                 # model's results as another's, so a new model is a new id, as a competitor's
                 # new weights are a new version.
                 if had["weights_hash"] != m["weights_hash"]:
-                    refused.append(f"{handle} plays {had['weights_hash'][:19]}... in season {live['number']}, "
+                    refused.append(f"{handle} plays {had['weights_hash'][:19]}... in {live['name']}, "
                                    f"and the roster now gives it {m['weights_hash'][:19]}... -- a different model needs a new id")
                     continue
                 vid = None

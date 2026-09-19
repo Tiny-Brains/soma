@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-season-maps-update",
+  "name": "soma-season-maps-update",
+  "tags": ["pkg:soma"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PATCH"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/maps/{map_id}",
+  "workflow_id": "soma-season-maps-update",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 20000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_admin_board_rate" }
+  }
+}

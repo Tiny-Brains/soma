@@ -520,7 +520,7 @@ SELECT e.owner_id, 'submissions',
             THEN 'It is on the ' || v.weight_class || ' and open ladders.'
             ELSE v.reject_reason END,
        '/models/' || e.id || '/v' || v.version,
-       g.slug, se.number, e.id, v.id,
+       g.slug, se.slug, e.id, v.id,
        jsonb_strip_nulls(jsonb_build_object(
            'model', e.name, 'version', v.version, 'status', v.status,
            'stage', CASE WHEN v.status = 'verified'             THEN 'admission'
@@ -556,10 +556,11 @@ N_EXPIRED = n_versions("v.admit_token = ($1)::uuid AND v.reject_reason = 'TIMED_
 # best-placed OTHER seat's owner -- the winner when you lost, the runner-up when you won.
 N_RESULTS = f"""
 WITH m AS (
-    SELECT mt.id, mt.seat_count, mt.preset, g.slug AS game, se.number AS season
+    SELECT mt.id, mt.seat_count, sm.map_id, g.slug AS game, se.slug AS season
       FROM matches mt
-      JOIN games g    ON g.id = mt.game_id
-      JOIN seasons se ON se.id = mt.season_id
+      JOIN games g        ON g.id = mt.game_id
+      JOIN seasons se     ON se.id = mt.season_id
+      JOIN season_maps sm ON sm.id = mt.season_map_id
      WHERE mt.id = ($1)::uuid AND mt.status = 'rated' AND mt.trial_version_id IS NULL
 ), seats AS MATERIALIZED (
     SELECT r.* FROM m CROSS JOIN LATERAL match_seat_rows(m.id) r
@@ -577,7 +578,7 @@ SELECT s.owner_id, 'matches', 'result',
               WHEN m.seat_count = 2 AND s.outcome = 'draw'  THEN ' drew'
               WHEN m.seat_count = 2                         THEN ' lost'
               ELSE ' placed ' || {ordinal('s.rank')} || ' of ' || m.seat_count END,
-       'Scored ' || s.score || ' on ' || m.preset ||
+       'Scored ' || s.score || ' on ' || m.map_id ||
          CASE WHEN s.strikes = 1 THEN ', with 1 strike'
               WHEN s.strikes > 1 THEN ', with ' || s.strikes || ' strikes'
               ELSE '' END || '.',
@@ -586,7 +587,7 @@ SELECT s.owner_id, 'matches', 'result',
        (SELECT o.owner FROM seats o WHERE o.seat <> s.seat ORDER BY o.rank NULLS LAST, o.seat LIMIT 1),
        jsonb_strip_nulls(jsonb_build_object(
            'place', s.rank, 'of', m.seat_count, 'score', s.score, 'strikes', s.strikes,
-           'outcome', s.outcome, 'class', s.class, 'preset', m.preset,
+           'outcome', s.outcome, 'class', s.class, 'map', m.map_id,
            -- the change in the CONSERVATIVE rating on open, which is the number a ladder prints
            'delta', (SELECT round(((ev.mu_after - 3 * ev.sigma_after)
                                    - (ev.mu_before - 3 * ev.sigma_before))::numeric, 2)
@@ -614,7 +615,7 @@ ON CONFLICT (user_id, dedupe_key) DO NOTHING
 # SEATS: a version displaced by two others' match is not told, because nothing it did moved it.
 N_RANKS = f"""
 WITH m AS (
-    SELECT mt.id, mt.season_id, se.number AS season, se.rules, g.slug AS game
+    SELECT mt.id, mt.season_id, se.slug AS season, se.rules, g.slug AS game
       FROM matches mt
       JOIN seasons se ON se.id = mt.season_id
       JOIN games g    ON g.id = mt.game_id
@@ -675,7 +676,7 @@ ON CONFLICT (user_id, dedupe_key) DO NOTHING
 # and the version page cannot disagree about who was fifth.
 N_SEASON = f"""
 WITH closed AS (
-    SELECT s.id, s.number, g.slug, g.name
+    SELECT s.id, s.slug AS season, s.name AS season_name, g.slug
       FROM seasons s JOIN games g ON g.id = s.game_id
      WHERE s.game_id = ($1)::uuid AND s.closed_at IS NOT NULL
      ORDER BY s.closed_at DESC
@@ -696,11 +697,11 @@ WITH closed AS (
 INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
                            game, season, data, dedupe_key)
 SELECT en.owner_id, 'season', 'season', 'info',
-       closed.name || ' season ' || closed.number || ' has closed',
+       closed.season_name || ' has closed',
        CASE WHEN st.rank IS NULL THEN 'The final standings are in.'
             ELSE 'You finished ' || {ordinal('st.rank')} || ' of ' || st.field || ' on the open ladder.' END,
-       '/leaderboard?season=' || closed.number,
-       closed.slug, closed.number,
+       '/leaderboard?season=' || closed.season,
+       closed.slug, closed.season,
        jsonb_strip_nulls(jsonb_build_object('rank', st.rank, 'of', st.field, 'ladder', 'open')),
        'season-closed:' || closed.id
   FROM closed
@@ -718,8 +719,8 @@ P_GAME = "SELECT id FROM games WHERE slug = ($1)::text"
 P_EPOCH = "SELECT epoch FROM clocks WHERE key = 'roster'"
 
 # --- design §6.1: everything pair needs to choose, at one instant -- what each version wants,
-# who may be seated opposite, which presets each has played, and how much room the depth target
-# leaves.
+# who may be seated opposite, which of the season's boards each has played, and how much room the
+# depth target leaves.
 P_DEMAND_DOC = """
 WITH live AS (
     -- 06 §6.3: only the live season's versions want anything or may be seated. No live season,
@@ -736,9 +737,17 @@ WITH live AS (
            -- NULL means uncapped, and it must stay NULL rather than become a sentinel here:
            -- Postgres least() SKIPS nulls, so `least(want, NULL)` is `want` and an absent cap
            -- would silently disable itself. Every use below coalesces explicitly.
-           (live.rules -> 'pairing' ->> 'queue_share_max')::int                          AS queue_share_max,
-           live.rules -> 'pairing' -> 'presets'                                          AS presets
+           (live.rules -> 'pairing' ->> 'queue_share_max')::int                          AS queue_share_max
       FROM live
+), maps AS (
+    -- THE BOARDS IN PLAY, read on every run (N28): the season's ENABLED maps, which an admin may
+    -- change while the season is live. The season is the only source -- there is no deploy list to
+    -- fall back to -- so a season with none enabled pairs nothing, the same paused state as no
+    -- season at all. A match already queued keeps the board it was paired on.
+    SELECT sm.id, sm.players
+      FROM season_maps sm JOIN live ON live.id = sm.season_id
+     WHERE sm.enabled
+     ORDER BY sm.added_at, sm.map_id
 ), v AS (
     SELECT vv.id AS model_id, e.owner_id, vv.weight_class,
            max(r.sigma)          FILTER (WHERE r.ladder = 'open' OR reach.n > 0) AS sigma,
@@ -817,10 +826,10 @@ WITH live AS (
       JOIN live     ON live.id = vv.season_id
      WHERE vv.status = 'active'
 ), played AS (
-    SELECT s.version_id AS model_id, m.preset, count(*) AS n
+    SELECT s.version_id AS model_id, m.season_map_id AS map, count(*) AS n
       FROM match_seats s JOIN matches m ON m.id = s.match_id
      WHERE m.game_id = ($1)::uuid AND m.status IN ('finished', 'rated')
-     GROUP BY s.version_id, m.preset
+     GROUP BY s.version_id, m.season_map_id
 ), depth AS (
     SELECT count(*) AS pending FROM matches WHERE game_id = ($1)::uuid AND status = 'pending'
 )
@@ -838,7 +847,9 @@ SELECT json_build_object(
          'limits', (SELECT json_build_object(
                         'self_pairing',         lim.self_pairing,
                         'cross_class_fraction', lim.cross_class_fraction,
-                        'presets',              lim.presets) FROM lim),
+                        'maps',                 (SELECT coalesce(json_agg(json_build_object(
+                                                     'id', mp.id, 'players', mp.players)), '[]'::json)
+                                                   FROM maps mp)) FROM lim),
          -- How many more seats each owner may hold. ABSENT MEANS UNCAPPED -- the same convention
          -- `want` uses -- and a season that sets a share names every owner, baselines included.
          'owners', (SELECT coalesce(json_agg(json_build_object(
@@ -853,15 +864,15 @@ SELECT json_build_object(
 """
 
 # --- design §6.4: the trial pairings, chosen in SQL rather than by the plugin. The choice is
-# mechanical -- a waiting candidate, the preset after its last trial's, and baselines to fill it --
+# mechanical -- a waiting candidate, the board after its last trial's, and baselines to fill it --
 # and it must not depend on anything the plugin might be carrying.
 #
-# THE PRESET DECIDES THE SEAT COUNT, so the preset is picked first and the baselines drawn to fill
-# it -- and it is picked only from the presets the season's baselines CAN fill. A trial that does
-# not land does not count, so the rotation (`trials % length`) would otherwise stop on an
-# eight-seat map against three baselines and offer that same map every run, for ever: the candidate
-# waits on a board it can never be seated on. With no preset fillable at all it waits for a
-# baseline, which is the honest reading of an empty roster.
+# THE BOARD DECIDES THE SEAT COUNT, so the board is picked first and the baselines drawn to fill
+# it -- and it is picked only from the season's ENABLED boards its baselines CAN fill (N28). A trial
+# that does not land does not count, so the rotation (`trials % n`) would otherwise stop on an
+# eight-seat board against three baselines and offer that same board every run, for ever: the
+# candidate waits on a board it can never be seated on. With no board fillable at all -- or none
+# enabled -- it waits, which is the honest reading of an empty roster or an empty season.
 P_TRIALS = """
 WITH cand AS (
     SELECT c.id, c.game_id, c.season_id, c.model_id, c.weight_class, e.owner_id, s.rules,
@@ -873,48 +884,31 @@ WITH cand AS (
        AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id
                           AND l.status IN ('pending', 'claimed', 'running'))
 ), pick AS (
-    SELECT cand.*, p.name AS preset, p.players
+    SELECT cand.*, p.id AS map, p.players
       FROM cand
-      CROSS JOIN LATERAL (
-          -- The season may name a subset of the game's presets. It NARROWS and never redefines:
-          -- `players` belongs to the cartridge, so a season naming a preset the deploy does not
-          -- carry contributes nothing rather than inventing a seat count nobody can play.
-          SELECT coalesce(
-                     (SELECT jsonb_agg(g.value)
-                        FROM jsonb_array_elements(($3)::jsonb) AS g (value)
-                       WHERE cand.rules -> 'pairing' -> 'presets' IS NULL
-                          OR coalesce(g.value ->> 'name', g.value #>> '{}') IN (
-                                 SELECT coalesce(sp.value ->> 'name', sp.value #>> '{}')
-                                   FROM jsonb_array_elements(cand.rules -> 'pairing' -> 'presets')
-                                        AS sp (value))),
-                     ($3)::jsonb) AS offered
-      ) offer
-      CROSS JOIN LATERAL (
-          -- Narrowed to the maps this season's baselines can seat: the candidate, and one baseline
-          -- of a different owner in every other seat, exactly as `seated` below draws them. A bare
-          -- string has no `players`, which is two seats.
-          SELECT coalesce(jsonb_agg(o.value ORDER BY o.ord), '[]'::jsonb) AS list
-            FROM jsonb_array_elements(offer.offered) WITH ORDINALITY AS o (value, ord)
-           WHERE coalesce((o.value ->> 'players')::int, 2) <= 1 + (
-                     SELECT count(DISTINCT be.owner_id)
-                       FROM model_versions b
-                       JOIN models be ON be.id = b.model_id
-                       JOIN users ub  ON ub.id = be.owner_id AND ub.role = 'baseline'
-                      WHERE b.game_id = cand.game_id AND b.season_id = cand.season_id
-                        AND b.status = 'active')
-      ) sel
       JOIN LATERAL (
-          -- A preset is either { name, players } or a bare string, which means two seats. On a
-          -- bare string `->> 'name'` is NULL, so `#>> '{}'` -- the whole scalar as text -- is the
-          -- fallback. Getting this wrong is silent: the pairing still lands, with a null preset.
-          SELECT coalesce(e.value ->> 'name', e.value #>> '{}') AS name,
-                 coalesce((e.value ->> 'players')::int, 2) AS players
-            FROM jsonb_array_elements(sel.list) WITH ORDINALITY AS e (value, ord)
-           WHERE e.ord = 1 + (cand.trials % greatest(jsonb_array_length(sel.list), 1))
+          -- The season's enabled boards in the order they were added, narrowed to the ones this
+          -- season's baselines can seat: the candidate, and one baseline of a different owner in
+          -- every other seat, exactly as `seated` below draws them. The candidate's `trials`
+          -- rotates over them, so a re-pair changes the board.
+          SELECT b.id, b.players
+            FROM (SELECT sm.id, sm.players,
+                         row_number() OVER (ORDER BY sm.added_at, sm.map_id) - 1 AS k,
+                         count(*) OVER () AS n
+                    FROM season_maps sm
+                   WHERE sm.season_id = cand.season_id AND sm.enabled
+                     AND sm.players <= 1 + (
+                         SELECT count(DISTINCT be.owner_id)
+                           FROM model_versions bv
+                           JOIN models be ON be.id = bv.model_id
+                           JOIN users ub  ON ub.id = be.owner_id AND ub.role = 'baseline'
+                          WHERE bv.game_id = cand.game_id AND bv.season_id = cand.season_id
+                            AND bv.status = 'active')) b
+           WHERE b.k = cand.trials % b.n
       ) p ON true
      WHERE cand.trials < coalesce((cand.rules -> 'pairing' ->> 'trials_max')::int, ($2)::int)
 ), seated AS (
-    SELECT pick.id AS trial_version_id, pick.preset, pick.players,
+    SELECT pick.id AS trial_version_id, pick.map, pick.players,
            jsonb_build_array(pick.id) || coalesce(opp.ids, '[]'::jsonb) AS seats
       FROM pick
       LEFT JOIN LATERAL (
@@ -941,15 +935,16 @@ WITH cand AS (
       ) opp ON true
 )
 SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build_object(
-         'seats', seats, 'trial', trial_version_id, 'preset', preset,
+         'seats', seats, 'trial', trial_version_id, 'map', map,
          'seed', (random() * 2147483647)::bigint)), '[]'::json)) AS body
   FROM seated
  WHERE jsonb_array_length(seats) = players
 """
 
 # --- schema §6.2: one pairing, inserted under the epoch read at run start. The statement derives
-# the hashes, the ladders and the contesting check itself, so the plugin supplies only ids, a
-# preset and a seed -- and a pairing decided against a roster that has moved inserts nothing.
+# the hashes, the ladders, the seat count and the contesting check itself, so the plugin supplies
+# only ids, a board and a seed -- and a pairing decided against a roster that has moved, or on a
+# board an admin has since disabled, inserts nothing.
 P_INSERT = """
 WITH season AS (
     -- 06 §6.1: the live season supplies the digest and is what every seat must belong to. No live
@@ -958,6 +953,13 @@ WITH season AS (
       FROM seasons s
       JOIN games g ON g.id = s.game_id AND g.slug = ($2)::text
      WHERE s.closed_at IS NULL
+), board AS (
+    -- THE BOARD DECIDES THE SEAT COUNT, and the statement reads it rather than trusting the plan
+    -- (N28): an enabled map of THIS season, or nothing is inserted. A board disabled between pair's
+    -- read and this insert is how a stale plan would otherwise queue a match on it.
+    SELECT sm.id, sm.players
+      FROM season_maps sm JOIN season ON season.id = sm.season_id
+     WHERE sm.id = ($4)::uuid AND sm.enabled
 ), seated AS MATERIALIZED (
     SELECT seat.ord - 1 AS seat, v.id AS version_id, e.owner_id,
            v.weights_hash, v.manifest_hash, v.weight_class
@@ -968,10 +970,9 @@ WITH season AS (
      WHERE v.status = 'active'
         OR (v.status = 'verified' AND v.id = ($6)::uuid)
 ), m AS (
-    INSERT INTO matches (game_id, season_id, engine_digest, seed, preset, seat_count, ladders,
+    INSERT INTO matches (game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders,
                          trial_version_id, pairing_id, strike_ceiling)
-    SELECT season.game_id, season.id, season.engine_digest, ($3)::bigint, ($4)::text,
-           cardinality(($5)::uuid[]),
+    SELECT season.game_id, season.id, season.engine_digest, ($3)::bigint, board.id, board.players,
            CASE WHEN ($6)::uuid IS NOT NULL THEN '{}'::ladder[]
                 WHEN (SELECT count(DISTINCT weight_class) FROM seated) = 1
                      THEN ARRAY[(SELECT weight_class FROM seated LIMIT 1), 'open']::ladder[]
@@ -985,9 +986,11 @@ WITH season AS (
            -- on turn 0.
            coalesce((season.rules -> 'pairing' ->> 'forfeit_strikes')::smallint, ($8)::smallint)
       FROM season
+      JOIN board ON true
       JOIN (SELECT key FROM clocks WHERE key = 'roster' AND epoch = ($1)::bigint FOR SHARE) fence
         ON true
      WHERE (SELECT count(*) FROM seated) = cardinality(($5)::uuid[])
+       AND cardinality(($5)::uuid[]) = board.players
        -- SELF-PAIRING IS REFUSED HERE AND NOT ONLY IN THE PLUGIN. Two versions of one owner in one
        -- match is a free rating transfer between a competitor's own entries: the ladder is wrong,
        -- not merely worse, so it is correctness and belongs in the statement. The plugin's job is
@@ -1247,15 +1250,14 @@ PAIR = {
         first_sweep({"id": "trials", "name": "Find candidates waiting for a trial",
                      "function": db_read("soma-db", P_TRIALS, [
                          var("temp_data.game.0.id"),
-                         var("metadata.vars.repair_cap"),
-                         var("metadata.vars.presets")], "temp_data.trials")}),
+                         var("metadata.vars.repair_cap")], "temp_data.trials")}),
         first_sweep({"id": "pair", "name": "Choose the room's pairings",
                      "function": {"name": "tb.pairing.pair", "input": {
-                         # `presets` and `cross_class_fraction` used to be inputs of their own and
-                         # are now inside demand.limits, read from the season with the deploy's
-                         # [vars] as the fallback. One document, one source.
+                         # The boards and `cross_class_fraction` are inside demand.limits: the
+                         # boards are the season's enabled maps and nothing else (N28), the
+                         # fraction the season's with the deploy's [vars] as the fallback. One
+                         # document, one source.
                          "demand": var("temp_data.demand.0.body"),
-                         "presets": var("metadata.vars.presets"),
                          "seed": var("metadata.trigger.occurrence_id"),
                          "output": "temp_data.paired"}}}),
         first_sweep({"id": "plan", "name": "Trials first, then the room",
@@ -1276,7 +1278,7 @@ PAIR = {
         {"id": "insert", "name": "Insert the match and its seats",
          "function": db_write("soma-db", P_INSERT, [
              var("temp_data.roster.0.epoch"), var("metadata.vars.game"),
-             var("temp_data.it.seed"), var("temp_data.it.preset"),
+             var("temp_data.it.seed"), var("temp_data.it.map"),
              var("temp_data.it.seats"), var("temp_data.it.trial"),
              var("temp_data.pairing_id"),
              var("metadata.vars.forfeit_strikes")], "temp_data.inserted")},

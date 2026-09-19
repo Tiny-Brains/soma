@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-seasons-list",
   "name": "List a game's seasons",
-  "description": "Every season of the game, newest first. The index of past seasons, whose standings GET /v1/games/{game}/leaderboard?season=N reads and which are kept for ever.",
+  "description": "Every season of the game, newest first. The index of past seasons, whose standings GET /v1/games/{game}/leaderboard?season=<slug> reads and which are kept for ever.",
   "tags": ["pkg:soma"],
   "tasks": [
     {

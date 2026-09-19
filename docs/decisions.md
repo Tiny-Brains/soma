@@ -35,7 +35,7 @@ that was worked out.
 | Plain series: the training environment (47, 48 of the loader's) | [cli](https://github.com/Tiny-Brains/cli/blob/main/DECISIONS.md) |
 | Plain series: deployment 47 and 49 (the compose file's) | [web](https://github.com/Tiny-Brains/web/blob/main/DECISIONS.md) |
 | **R1, R2, R4, R6, R9, R10, R11** · **R3, R7, R8** · **R5** | soma · kalam · ants |
-| **N3, N6–N8, N12, N13, N15–N19** · **N1, N2, N4, N5, N9** · **N20–N22, N24** · **N23** · **N25** | soma · kalam · ants · cli · web |
+| **N3, N6–N8, N12, N13, N15–N19, N28** · **N1, N2, N4, N5, N9** · **N20–N22, N24, N27** · **N23** · **N25** | soma · kalam · ants · cli · web |
 | Still open | the repository each is forced in: 30, 31, N14 and three unnumbered in soma; N10 and a runner on another network in kalam; 32 in ants; 26, 27, N11 and the orchestrator in web |
 
 The plain series collides with itself once: the retired loader's **47, 48, 49** and deployment's
@@ -305,6 +305,15 @@ would have refused most real matches. A fourth gate, `turns` within `max_turns`,
 | N19 | Are the clocks a repository and a package of their own? | **No. `jodi` merges into `soma`**: the four clocks, `tb-probe`, `tb.rating` and `tb.pairing` load as part of the soma package under their existing ids, from `soma/scripts/gen-clocks.py` and `soma/plugins/`, and **the `jodi` role goes** — the clocks run over `soma-db` as the owner, which pools 20 | Architecture §1's "the day Soma's REST surface must scale independently of the match maker, Jodi gets its own service and neither repository changes". That day never came: the two always loaded into one Orion and one `[vars]` block, and 17 of jodi's 30 commits had a same-day twin in soma. The boundary cost a copy of every loader and check script, and jodi's `check-sql.sh` had stopped seeing 14 of its 23 statements. **Cost:** a clock that deletes, reads `sessions` or rewrites an entry is caught by review, not by a grant. A future split of servers is a second package compiled from one repository |
 
 ---
+
+### A season's boards, and its name
+
+Taken and built 19 September 2026. The design and the three rounds of calls that shaped it are
+[`season-maps.md`](season-maps.md); what it changed in each repository is in their Status blocks.
+
+| # | Question | Decision | What it overturns, and what it cost |
+|---|---|---|---|
+| N28 | Where do a season's boards come from, and what is a season called? | **A season's boards are uploaded to it, one file at a time, by an admin, and are in no repository and no release.** An upload is judged by the engine's own `worldgen` on Soma's node (which now loads `tb.ants`), checked against the cartridge's `limits.boards`, stored **disabled** in `season_maps` and **public** from that moment; an admin enables and disables boards at any time before the close, and a board is **never deleted**. Disabling cancels the matches queued on it and lets claimed and running ones finish and count. Pair reads the season's enabled boards on every run, and the board **rides the claim**. **Presets are gone**: the component carries no boards (`build.rs` is deleted) and `worldgen` requires the board whole. **The release ships five basic boards**, one per size and two to eight seats, which define `limits.boards` and are what admission's reference set is drawn on, so a model admitted today can play any board a season adds later. **A season has a name** ("Summer 2026"), fixed at creation, and **its slug is its only address** -- in every URL, route, query and notification; `number` is an internal ordinal | **N27**'s *one board a preset* and the 17 September rule that a board is an engine-digest change, travelling on the same rails as a rules change: that made a season's boards the deployed engine's, so a new board was a new engine, refused under a live season and claimed by no replica on the old one. Packages -- a content-addressed set of boards per season, shipped in the ants release -- were the first design and were dropped for uploads. **Cost:** a live season's standings are earned on whichever boards were enabled at the time, which only `season_map_events` records; the envelope is whatever the basic boards span, so a season wanting a 128-a-side board needs a new basic board and an ants release first; Soma's image now carries and signs the component; and a board's reason for refusal reaches a workflow only as a code, so the admin reads it from `tinybrains maps check` |
 
 ## 5. Still open
 

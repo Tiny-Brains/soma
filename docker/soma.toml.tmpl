@@ -77,30 +77,11 @@ season_gap_days    = ${SEASON_GAP_DAYS:-1}
 # a pairing rate should not be a new workflow version.
 game = "ants"
 
-# A preset names a pool of boards and how many seats play them -- THE PRESET DECIDES THE SEAT COUNT.
-# Every preset Ants ships, two seats to eight: the runs of one L16 orthogonal array over seats,
-# terrain, board size, hills and food (ants/mapgen/recipes/, each recipe's header names its run).
-# Pairing only ever picks a preset the roster can seat -- the plugin filters by distinct owners and
-# the trial query by the season's baselines -- so the wide maps wait for a roster that fills them
-# rather than starving everyone else. A replica claims up to eight seats (kalam MAX_SEATS).
-presets = [
-  { name = "open-2", players = 2 },
-  { name = "maze-2", players = 2 },
-  { name = "rooms-2", players = 2 },
-  { name = "cave-2", players = 2 },
-  { name = "maze-3", players = 3 },
-  { name = "cave-3", players = 3 },
-  { name = "open-4", players = 4 },
-  { name = "rooms-4", players = 4 },
-  { name = "open-5", players = 5 },
-  { name = "cave-5", players = 5 },
-  { name = "maze-6", players = 6 },
-  { name = "rooms-6", players = 6 },
-  { name = "rooms-7", players = 7 },
-  { name = "cave-7", players = 7 },
-  { name = "open-8", players = 8 },
-  { name = "maze-8", players = 8 },
-]
+# THE ENGINE THIS NODE LOADS, from the image's own cartridge (the entrypoint exports it). A season map
+# upload refuses a season pinned to any other engine, because validating a board on one engine proves
+# nothing about the one that will play it (N28). There is no board list here any more: a season's
+# boards are season_maps, uploaded and enabled by an admin, and pair reads them from the database.
+engine_digest = "${SOMA_ENGINE_DIGEST:-}"
 
 # pair_depth_target is a staleness cap, never the signal -- demand is the signal. It is also why
 # the autoscaler must never read queue depth: this caps the queue, so depth would cap the fleet at

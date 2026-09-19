@@ -193,8 +193,8 @@ CREATE TABLE notifications (
     description text,
     link        text,                    -- an application path: '/matches/<id>', never a URL
 
-    game        text,                    -- the slug
-    season      int,
+    game        text,                    -- the game's slug
+    season      text,                    -- the season's slug (N28): what every link names it by
     model_id    uuid        REFERENCES models (id) ON DELETE SET NULL,
     version_id  uuid        REFERENCES model_versions (id) ON DELETE SET NULL,
     match_id    uuid        REFERENCES matches (id) ON DELETE SET NULL,
@@ -220,7 +220,7 @@ CREATE TABLE notifications (
     -- notification must never be a way to send a competitor somewhere that is not this site.
     CONSTRAINT notifications_link_is_a_path
         CHECK (link IS NULL OR (left(link, 1) = '/' AND left(link, 2) <> '//' AND length(link) <= 500)),
-    CONSTRAINT notifications_season_positive  CHECK (season IS NULL OR season >= 1),
+    CONSTRAINT notifications_season_slug      CHECK (season IS NULL OR season ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
     CONSTRAINT notifications_data_object      CHECK (jsonb_typeof(data) = 'object'),
     CONSTRAINT notifications_dedupe_shape
         CHECK (btrim(dedupe_key) <> '' AND length(dedupe_key) <= 200)

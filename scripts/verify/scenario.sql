@@ -8,8 +8,9 @@
 \echo '--- seed: game, users, models, versions, ratings'
 INSERT INTO games (id, slug, name, active_engine_digest)
 VALUES ('00000000-0000-0000-0000-00000000000a', 'ants', 'Ants', 'sha256:e1');
-INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, submissions_close_at)
-VALUES ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 1, 'sha256:e1',
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at)
+VALUES ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 1,
+        'Summer 2026', 'summer-2026', 'sha256:e1',
         now() - interval '1 hour', now() + interval '1 day');
 INSERT INTO users (id, github_id, handle, role) VALUES
   ('00000000-0000-0000-0000-0000000000b1', NULL, 'baseline.random', 'baseline'),
@@ -55,25 +56,52 @@ INSERT INTO runners (id, key_id, label, engine_digest, max_in_flight) VALUES
 UPDATE runners SET revoked_at = now() WHERE id = 'c1000000-0000-0000-0000-000000000003';
 SELECT label, max_in_flight FROM live_runners ORDER BY label;
 
+\echo '--- season maps (N28): three boards uploaded and enabled -- two of two seats, one of four'
+-- What soma-season-maps-add leaves behind, less the engine's judgement, which needs a node. The
+-- boards are stand-ins: nothing in the schema reads inside one, which is the point.
+INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
+  ('70000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', 'default',   2, 24, 24, 'sha256:d1', '{"id": "default"}',   true, '00000000-0000-0000-0000-0000000000ad'),
+  ('70000000-0000-0000-0000-000000000002', '50000000-0000-0000-0000-000000000001', 'other-map', 2, 30, 30, 'sha256:d2', '{"id": "other-map"}', true, '00000000-0000-0000-0000-0000000000ad'),
+  ('70000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000001', 'melee',     4, 48, 48, 'sha256:d3', '{"id": "melee"}',     true, '00000000-0000-0000-0000-0000000000ad');
+\echo '    the same board twice in a season (expect unique violation)'
+INSERT INTO season_maps (season_id, map_id, players, rows, cols, digest, board, added_by)
+VALUES ('50000000-0000-0000-0000-000000000001', 'default-again', 2, 24, 24, 'sha256:d1', '{}', '00000000-0000-0000-0000-0000000000ad');
+\echo '    a header worth reading (expect a header); "players": "two" (expect null, not a cast error); inside the envelope (t) and one side too long (f)'
+SELECT season_map_header('{"id": "tiny-open-2p", "players": 2, "rows": 24, "cols": 24, "water": []}') AS header;
+SELECT season_map_header('{"id": "x", "players": "two", "rows": 24, "cols": 24}') IS NULL AS no_header;
+SELECT season_map_within('{"players": 2, "rows": 24, "cols": 24}',
+                         '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}') AS inside,
+       season_map_within('{"players": 2, "rows": 24, "cols": 125}',
+                         '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}') AS too_long;
+
 \echo '--- pair: epoch read; trial insert (expect INSERT 0 2 seats); ranked insert (expect 2); second live trial (expect unique violation)'
 EXECUTE p_epoch;
-EXECUTE p_insert (0, 'ants', 42, 'default',
+EXECUTE p_insert (0, 'ants', 42, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 43, 'default',
+EXECUTE p_insert (0, 'ants', 43, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 44, 'default',
+EXECUTE p_insert (0, 'ants', 44, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
-\echo '--- pair: stale epoch (expect 0); a row on another preset (expect 2)'
-EXECUTE p_insert (99, 'ants', 45, 'default',
+\echo '--- pair: stale epoch (expect 0); a row on another board (expect 2)'
+EXECUTE p_insert (99, 'ants', 45, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 46, 'other-map',
+EXECUTE p_insert (0, 'ants', 46, '70000000-0000-0000-0000-000000000002',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
-SELECT seed, preset, status, seat_count, ladders, trial_version_id IS NOT NULL AS trial FROM matches ORDER BY seed;
+SELECT seed, (SELECT map_id FROM season_maps sm WHERE sm.id = matches.season_map_id) AS map,
+       status, seat_count, ladders, trial_version_id IS NOT NULL AS trial FROM matches ORDER BY seed;
+\echo '--- pair: a board an admin has disabled takes no new match (expect 0); two seats on a four-seat board take none either -- the insert reads the count off the board (expect 0)'
+BEGIN;
+UPDATE season_maps SET enabled = false WHERE id = '70000000-0000-0000-0000-000000000002';
+EXECUTE p_insert (0, 'ants', 70, '70000000-0000-0000-0000-000000000002',
+  '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
+ROLLBACK;
+EXECUTE p_insert (0, 'ants', 71, '70000000-0000-0000-0000-000000000003',
+  '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT m.seed, s.seat, s.version_id, s.weights_hash, s.paired_ratings FROM match_seats s JOIN matches m ON m.id = s.match_id ORDER BY m.seed, s.seat;
 SELECT id AS m42 FROM matches WHERE seed = 42 \gset
 SELECT id AS m43 FROM matches WHERE seed = 43 \gset
@@ -195,13 +223,13 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 SELECT seed, status, rated_seq FROM matches WHERE seed = 42;
 \echo '--- count: pass again (expect INSERT 0 0)'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
-\echo '--- promotion statement 2: withdraw the pending rows naming v1 (expect 1: the other-preset row, successor v2)'
+\echo '--- promotion statement 2: withdraw the pending rows naming v1 (expect 1: the other-board row, successor v2)'
 EXECUTE c_withdraw_pred ('20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
 SELECT seed, status, withdrawn_reason, successor_version_id FROM matches WHERE seed = 46;
 \echo '--- pair with the epoch read before promotion (expect 0: fenced out); with the new epoch (expect 2)'
-EXECUTE p_insert (0, 'ants', 47, 'default',
+EXECUTE p_insert (0, 'ants', 47, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (1, 'ants', 47, 'default',
+EXECUTE p_insert (1, 'ants', 47, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 \echo '--- withdraw sweep: retire the engine on the live season (expect 1: seed 47 ENGINE_RETIRED); a closed season refuses inserts (expect 0) and the sweep finds nothing queued (expect 0)'
 UPDATE games SET active_engine_digest = 'sha256:e2';
@@ -209,7 +237,7 @@ UPDATE seasons SET engine_digest = 'sha256:e2';
 EXECUTE w_sweep;
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 47;
 UPDATE seasons SET closed_at = now();
-EXECUTE p_insert (1, 'ants', 48, 'default',
+EXECUTE p_insert (1, 'ants', 48, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 EXECUTE w_sweep;
 UPDATE seasons SET closed_at = NULL;
@@ -220,7 +248,7 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
   ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'verified', 'nano',
    'sha256:wa3', 'sha256:ma3', '1.8.1');
-EXECUTE p_insert (1, 'ants', 50, 'default',
+EXECUTE p_insert (1, 'ants', 50, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
@@ -246,10 +274,10 @@ EXECUTE n_results (:'m42');
 EXECUTE n_ranks (:'m43', 5.0);
 \echo '--- a fold that FLIPS the open ladder, rolled back: alice v2 from 2nd to 1st. Unsettled (settled_sigma 1.0) says nothing (expect INSERT 0 0); settled, alice is told and the baseline is not (expect INSERT 0 1); again (expect INSERT 0 0)'
 BEGIN;
-INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, preset, seat_count, ladders,
+INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, season_map_id, seat_count, ladders,
                      claim_token, replay_key, engine_digest_played, orion_version, played_at, rated_at, rated_seq)
 VALUES ('60000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000000a',
-        '50000000-0000-0000-0000-000000000001', 'rated', 'sha256:e2', 900, 'default', 2, '{open}',
+        '50000000-0000-0000-0000-000000000001', 'rated', 'sha256:e2', 900, '70000000-0000-0000-0000-000000000001', 2, '{open}',
         gen_random_uuid(), 'replays/flip', 'sha256:e2', '1.8.1', now(), now(), nextval('rating_seq'));
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
   ('60000000-0000-0000-0000-0000000000f1', 0, '20000000-0000-0000-0000-000000000002', 'sha256:wa2', 'sha256:ma2', 1, 9, 0),
@@ -309,7 +337,7 @@ SELECT subject, description, link, season, data FROM notifications WHERE categor
 ROLLBACK;
 
 \echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed MODEL_UNAVAILABLE)'
-EXECUTE p_insert (2, 'ants', 51, 'default',
+EXECUTE p_insert (2, 'ants', 51, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001');
@@ -323,7 +351,7 @@ SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 EXECUTE s_history ('20000000-0000-0000-0000-000000000001', 10);
 
 \echo '--- the kalam role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); read model_versions, read or write events (expect denied)'
-EXECUTE p_insert (2, 'ants', 52, 'default',
+EXECUTE p_insert (2, 'ants', 52, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m52 FROM matches WHERE seed = 52 \gset
 SET ROLE kalam;
@@ -364,8 +392,9 @@ VALUES ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000
 -- active version IS its standing. Count's predecessor lookup is a scalar subquery, so scoped by
 -- owner alone (as it was before this change) it raises "more than one row" the first time a second
 -- season opens, and the count clock dies with the whole ladder behind it.
-INSERT INTO seasons (id, game_id, number, engine_digest, submissions_open_at, submissions_close_at, closed_at)
-VALUES ('50000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-00000000000a', 2, 'sha256:e0',
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)
+VALUES ('50000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-00000000000a', 2,
+        'FireAnts 2026', 'fireants-2026', 'sha256:e0',
         now() - interval '2 days', now() - interval '1 day', now() - interval '1 day');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
@@ -382,7 +411,8 @@ SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_
          AS entry_and_season_scoped_rows;
 
 \echo '--- final state'
-SELECT seed, preset, status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
+SELECT seed, (SELECT map_id FROM season_maps sm WHERE sm.id = matches.season_map_id) AS map,
+       status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
 
 \echo '--- the manifest copy: stored as the exact text, accepted when it hashes to manifest_hash (expect INSERT 0 1); one byte changed (expect check violation)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
@@ -393,15 +423,18 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
    '1.8.1', '{"in": ["scatter"]}');
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
-\echo '--- docs/clocks.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on preset 1 (expect n 1, 2 seats)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
-  '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
-\echo '--- decision 14: the preset decides the seat count. Only one baseline exists here, so a 4-seat map is left unpaired rather than seated short (expect n 0)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3, '[{"name":"melee","players":4}]');
-\echo '--- and a bare-string preset still means two seats (expect n 1)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3, '["legacy"]');
+\echo '--- docs/clocks.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on the season''s first enabled board, `default` (expect n 1, 2 seats, map 70000000-...-001)'
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+\echo '--- decision 14: the board decides the seat count. Only one baseline exists here, so with the two-seat boards disabled the four-seat one is left unpaired rather than seated short (expect n 0)'
+BEGIN;
+UPDATE season_maps SET enabled = false WHERE players = 2;
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+\echo '    ... and a season with no board enabled offers nothing at all (expect n 0)'
+UPDATE season_maps SET enabled = false;
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+ROLLBACK;
 \echo '--- promotion in the reverse order: v4 activated before v2 is demoted, under the deferred one-active constraint (expect INSERT 0 2; v2 superseded, v4 active; epoch 3)'
-EXECUTE p_insert (2, 'ants', 60, 'default',
+EXECUTE p_insert (2, 'ants', 60, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
@@ -417,8 +450,7 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- docs/clocks.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
 \echo '    decision 28: the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight -- it used to read state baseline, want 0)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3,
-  '[{"name":"standard","players":2},{"name":"maze","players":2},{"name":"cell","players":2}]');
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 
 \echo '--- decision 28: pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
@@ -431,6 +463,51 @@ SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS wan
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
   FROM json_array_elements((:'body')::json -> 'owners') o ORDER BY 1;
 UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-0000-000000000001';
+
+\echo '===== season maps: the one part of a live season that changes (N28) ====='
+\echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
+EXECUTE p_demand_doc ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0, 64, 0.2) \gset
+SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
+  FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
+\echo '--- disable a board with one match queued on it and one running: the queued one is cancelled MAP_DISABLED and the running one plays on (expect two INSERT 0 2, the flip INSERT 0 1, then cancelled/MAP_DISABLED and running, and one event with cancelled 1)'
+BEGIN;
+SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
+EXECUTE p_insert (:ep, 'ants', 80, '70000000-0000-0000-0000-000000000002',
+  '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
+EXECUTE p_insert (:ep, 'ants', 81, '70000000-0000-0000-0000-000000000002',
+  '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
+UPDATE matches SET status = 'running', claim_token = gen_random_uuid(), lease_expires_at = now() + interval '5 minutes'
+ WHERE seed = 81;
+EXECUTE m_flip ('ants', 'summer-2026', 'other-map', false, '00000000-0000-0000-0000-0000000000ad');
+SELECT seed, status, withdrawn_reason FROM matches WHERE seed IN (80, 81) ORDER BY seed;
+SELECT enabled, cancelled FROM season_map_events ORDER BY at;
+\echo '    the same state again changes nothing (expect INSERT 0 0); enabled again, a second event (expect INSERT 0 1, events f then t)'
+EXECUTE m_flip ('ants', 'summer-2026', 'other-map', false, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE m_flip ('ants', 'summer-2026', 'other-map', true, '00000000-0000-0000-0000-0000000000ad');
+SELECT enabled, cancelled FROM season_map_events ORDER BY at;
+ROLLBACK;
+\echo '--- the upload insert stores a board disabled, its header read out of the file (expect INSERT 0 1, then basic-small-3p 3 36 36 f); the same board again writes nothing (expect INSERT 0 0)'
+BEGIN;
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296]}', '00000000-0000-0000-0000-0000000000ad');
+SELECT map_id, players, rows, cols, enabled FROM season_maps WHERE map_id = 'basic-small-3p';
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296]}', '00000000-0000-0000-0000-0000000000ad');
+\echo '    ... and nothing into a closed season (expect INSERT 0 0)'
+UPDATE seasons SET closed_at = now() WHERE slug = 'summer-2026';
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "another", "players": 2, "rows": 24, "cols": 24}', '00000000-0000-0000-0000-0000000000ad');
+ROLLBACK;
+\echo '--- the claim sends the board (expect the stand-in board of `default`)'
+SELECT m.seed, sm.map_id, sm.board FROM matches m JOIN season_maps sm ON sm.id = m.season_map_id WHERE m.seed = 43;
+\echo '--- a season''s slug is its name''s (expect check violation), fixed per game (expect unique violation), and never a route''s word (expect check violation)'
+INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)
+VALUES ('00000000-0000-0000-0000-00000000000a', 7, 'Winter 2026', 'winter', 'sha256:e1',
+        now() - interval '9 days', now() - interval '8 days', now() - interval '8 days');
+INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)
+VALUES ('00000000-0000-0000-0000-00000000000a', 7, 'Summer-2026', 'summer-2026', 'sha256:e1',
+        now() - interval '9 days', now() - interval '8 days', now() - interval '8 days');
+INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)
+VALUES ('00000000-0000-0000-0000-00000000000a', 7, 'Current', 'current', 'sha256:e1',
+        now() - interval '9 days', now() - interval '8 days', now() - interval '8 days');
+SELECT season_slug('FireAnts 2026') AS fireants, season_slug('  Summer   2026!! ') AS summer;
 
 \echo '===== the routes preserve the fences the statements carry ====='
 -- S2.1. The races below prove the STATEMENTS; these prove that a ROUTE in front of one cannot lose

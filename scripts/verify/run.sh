@@ -32,7 +32,7 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 # did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
 #
 # The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json,
-# and so are the five notification statements -- n_version against all three tasks that ship it.
+# and so are the five notification statements and the two season-map statements (N28) -- n_version against all three tasks that ship it.
 # Until the clocks moved into this repository nothing compared them at all, and three of the copies
 # (c_verdicts, c_decide, c_batch) had already outlived the statements they copied. The clock tasks
 # live inside TASK GROUPS, which is why the lookup below descends.
@@ -56,7 +56,9 @@ PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim"
          ("n_expired", "tb-admit-run", "notify_expired"),
          ("n_results", "tb-count-run", "notify_result"),
          ("n_ranks", "tb-count-run", "notify_rank"),
-         ("n_season", "tb-withdraw-run", "notify_closed")]
+         ("n_season", "tb-withdraw-run", "notify_closed"),
+         ("m_insert", "soma-season-maps-add", "insert"),
+         ("m_flip", "soma-season-maps-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
 def tasks(ts):
     for t in ts:

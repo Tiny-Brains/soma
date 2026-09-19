@@ -2,6 +2,11 @@
 
 > **These pages were `jodi/docs/` until 16 September 2026**, when the clocks and their repository
 > merged into Soma. A decision, a dated entry or a quoted log that says *Jodi* means these clocks.
+>
+> **Since 19 September 2026 (N28) a season has a name and is addressed by its slug**, never its
+> number, and **its boards are its own** -- uploaded, enabled and disabled by an admin, and the one
+> part of a season that may change while it is live. [`season-maps.md`](season-maps.md) is that
+> design; the statements quoted below predate it where they name a preset.
 
 What count does with a match once it has folded it, and the window that work happens inside. The
 rating is TrueSkill in a plugin; a season is an admin-created window per game that closes itself
@@ -79,7 +84,7 @@ pair never seats the old top against a challenger. That is real, and it is bound
 — a season is a fresh field, and a version's rating is only ever compared with the versions of its
 own season. Within a season it is not a rating problem but a **sampling** one, and it has one
 honest answer, which is pairing's: **one burst match against the ladder's top**, asked of the clocks
-in §9. A new version's placement burst is spread across presets on the same prior; spending one of
+in §9. A new version's placement burst is spread across the season's boards on the same prior; spending one of
 its matches on the current leader of its class ladder is the cheapest possible test of whether the
 top is where it belongs, and it costs no schema and no rating rule.
 
@@ -122,7 +127,7 @@ the statements enforce:
    An admin can also ask for a close, which is the backstop for a version that never settles.
 
 And the fifth, which is retention's: **a season's standings are kept in the database and are
-viewable forever** — `GET /v1/games/{game}/leaderboard?season=N` for any N, and the season list
+viewable forever** — `GET /v1/games/{game}/leaderboard?season=<slug>` for any season, and the season list
 beside it (§6.7, §7).
 
 ### 4.2 The four states
@@ -446,10 +451,10 @@ settle a few minutes later. Two runs overlapping cannot both close a season: the
 **A close that wrote is told.** `notify_closed` follows it in the same run, only when `rows_affected`
 was one: every competitor with a version in the season gets one `season` notification, keyed on the
 season, naming where they finished on the open ladder by `model_ratings()`'s order, and linking
-`/leaderboard?season=N`. It is `continue_on_error` and not part of this statement, so a notification
+`/leaderboard?season=<slug>`. It is `continue_on_error` and not part of this statement, so a notification
 can never be the reason a season stays open. [`schema.md`](schema.md) §3.11.
 
-**The admin's request** — Soma, `POST /v1/games/{game}/seasons/current/close`, admin only — is one
+**The admin's request** — Soma, `POST /v1/games/{game}/seasons/{slug}/close`, admin only — is one
 line, and it is an intent the close consumes within the minute rather than a copy of the close:
 
 ```sql
@@ -735,7 +740,7 @@ SELECT json_build_object(
 
 — the live season if there is one, else the latest closed. **The list**,
 `GET /v1/games/{game}/seasons`, is the same row for every season in `number` order; it is the
-UI's index of past seasons. **The leaderboard**, `?season=N` or the current by default:
+UI's index of past seasons. **The leaderboard**, `?season=<slug>` or the current by default:
 
 ```sql
 WITH season AS (
@@ -836,7 +841,7 @@ of five hand-placed fixtures, **99.8% of counted matches were draws**, which mak
   answer to §3's stale top. It costs one of `burst` and no schema; it is the clocks's call because
   it changes what a burst measures.
 - **Soma** — three endpoints: `POST /v1/games/{game}/seasons` and
-  `POST /v1/games/{game}/seasons/current/close`, both admin only — `users.role = 'admin'` exists
+  `POST /v1/games/{game}/seasons/{slug}/close`, both admin only — `users.role = 'admin'` exists
   and nothing reads it yet — and `GET /v1/games/{game}/seasons`; the create takes the window and the rules document, and
   resolves participant handles to ids; the submission insert of §6.6 with its four refusals; the leaderboard's `?season=`; the current season on `GET /v1/games`;
   `season` on the match object and the model read; `season_gap_days`, `prior_mu` and

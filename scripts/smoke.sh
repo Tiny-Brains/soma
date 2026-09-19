@@ -68,6 +68,8 @@ MODEL=$(psql -c "SELECT m.id FROM models m JOIN model_versions v ON v.model_id =
 # repository, and an entry is a name that never has to survive a URL.
 MODEL_ID=$(psql -c "SELECT m.id FROM models m JOIN model_versions v ON v.model_id = m.id WHERE v.status = 'active' AND m.retired_at IS NULL LIMIT 1;")
 MATCH=$(psql -c "SELECT id FROM matches WHERE status IN ('finished','rated') LIMIT 1;")
+# The season every season-scoped check names, by its slug (N28): the newest one.
+SEASON=$(psql -c "SELECT s.slug FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = '$GAME' ORDER BY s.number DESC LIMIT 1;")
 
 echo "==> public reads"
 check 200 "GET  /v1/games"                       "$BASE/v1/games"
@@ -76,9 +78,12 @@ check 404 "GET  /v1/games/{unknown}"             "$BASE/v1/games/no-such-game"
 check 200 "GET  /v1/status"                      "$BASE/v1/status"
 check 200 "GET  /v1/games/$GAME/seasons"         "$BASE/v1/games/$GAME/seasons"
 check 200 "GET  /v1/games/$GAME/leaderboard"     "$BASE/v1/games/$GAME/leaderboard?limit=3"
-check 200 "GET  /v1/games/../leaderboard?ladder" "$BASE/v1/games/$GAME/leaderboard?ladder=nano&season=1"
+check 200 "GET  /v1/games/../leaderboard?ladder" "$BASE/v1/games/$GAME/leaderboard?ladder=nano&season=$SEASON"
+check 200 "GET  /v1/games/../seasons/{slug}/maps" "$BASE/v1/games/$GAME/seasons/$SEASON/maps?boards=true"
+check 404 "GET  ../seasons/{unknown}/maps"       "$BASE/v1/games/$GAME/seasons/no-such-season/maps"
+check 404 "GET  ../seasons/{slug}/maps/{unknown}" "$BASE/v1/games/$GAME/seasons/$SEASON/maps/no-such-map"
 check 200 "GET  /v1/matches?game="               "$BASE/v1/matches?game=$GAME&limit=3"
-check 200 "GET  /v1/matches (filtered)"          "$BASE/v1/matches?game=$GAME&preset=maze-2&outcome=drawn&ladder=open&limit=2"
+check 200 "GET  /v1/matches (filtered)"          "$BASE/v1/matches?game=$GAME&map=basic-tiny-2p&outcome=drawn&ladder=open&limit=2"
 check 200 "GET  /v1/matches?players_min=&max="    "$BASE/v1/matches?game=$GAME&players_min=2&players_max=2&limit=2"
 check 400 "GET  /v1/matches?players_min=abc"     "$BASE/v1/matches?game=$GAME&players_min=abc"
 check 200 "GET  /v1/matches?model="              "$BASE/v1/matches?model=$MODEL&limit=3"
@@ -91,13 +96,15 @@ check 404 "GET  /v1/profiles/{unknown}"          "$BASE/v1/profiles/no-such-comp
 printf '  '; curl -sS "$BASE/v1/games/$GAME" | python3 -c '
 import json,sys
 d=json.load(sys.stdin); a=d.get("about")
-ok = bool(a and a.get("tagline") and a.get("story") and a.get("links") and d.get("presets"))
-print(("ok   " if ok else "FAIL ") + "GET  /v1/games/{game} carries about+presets".ljust(46),
-      ("%d paragraphs, %d links, %d presets" % (len(a["story"]), len(a["links"]), len(d["presets"]))) if ok else "missing")
+b=(d.get("limits") or {}).get("boards") or {}
+ok = bool(a and a.get("tagline") and a.get("story") and a.get("links") and b.get("players") and b.get("cells_max"))
+print(("ok   " if ok else "FAIL ") + "GET  /v1/games/{game} carries about+limits.boards".ljust(46),
+      ("%d paragraphs, %d links, uploads %s seats" % (len(a["story"]), len(a["links"]), b["players"])) if ok else "missing")
 sys.exit(0 if ok else 1)' && pass=$((pass+1)) || fail=$((fail+1))
 
 echo "==> anonymous callers are refused the session routes"
 check 401 "GET  /v1/me"                          "$BASE/v1/me"
+check 401 "POST ../seasons/{slug}/maps (anon)"   -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
 check 401 "GET  /v1/me/matches"                  "$BASE/v1/me/matches"
 check 401 "GET  /v1/sessions"                    "$BASE/v1/sessions"
 check 401 "GET  /v1/me/notifications"            "$BASE/v1/me/notifications"
@@ -159,9 +166,15 @@ check 400 "PATCH ../notification-settings (type)" -X PATCH "${C[@]}" -H 'content
 echo "==> admin routes reach their own checks"
 ROLE=$(psql -c "SELECT role FROM users WHERE handle='$HANDLE';")
 if [ "$ROLE" = "admin" ]; then
-  check 404 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
-  check 409 "POST /v1/games/../seasons"          -X POST "${C[@]}" -H 'content-type: application/json' \
+  check 404 "PATCH /v1/games/../seasons/{unknown}" -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/no-such-season"
+  check 400 "PATCH ../seasons/{slug} (rename)"   -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"name":"Other"}' "$BASE/v1/games/$GAME/seasons/$SEASON"
+  check 400 "POST /v1/games/../seasons (no name)" -X POST "${C[@]}" -H 'content-type: application/json' \
             -d '{"submissions_open_at":"2030-01-01T00:00:00Z","submissions_close_at":"2030-03-01T00:00:00Z"}' "$BASE/v1/games/$GAME/seasons"
+  check 409 "POST /v1/games/../seasons"          -X POST "${C[@]}" -H 'content-type: application/json' \
+            -d '{"name":"Smoke 2030","submissions_open_at":"2030-01-01T00:00:00Z","submissions_close_at":"2030-03-01T00:00:00Z"}' "$BASE/v1/games/$GAME/seasons"
+  check 400 "POST ../seasons/{slug}/maps (header)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{"id":"x"}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
+  check 400 "PATCH ../maps/{id} (no state)"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps/no-such-map"
+  check 404 "PATCH ../maps/{unknown}"            -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"enabled":false}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps/no-such-map"
   check 200 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 200 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
   check 200 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
@@ -204,7 +217,8 @@ if [ "$ROLE" = "admin" ]; then
     fail=$((fail+1)); printf '  FAIL %-46s %s\n' "POST /v1/runner-keys" "no key in the response"
   fi
 else
-  check 403 "PATCH /v1/games/../seasons/99"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/99"
+  check 403 "PATCH /v1/games/../seasons/{slug}"  -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON"
+  check 403 "POST ../seasons/{slug}/maps"        -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
   check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 403 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
   check 403 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \

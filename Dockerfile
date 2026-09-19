@@ -29,7 +29,8 @@ ARG CURL_VERSION=8.22.0
 ARG DEBIAN_VERSION=bookworm-slim
 # The ants release whose cartridge this node registers. Unset or empty is the LATEST, whenever this
 # image builds -- the same default kalam's runner takes, so a Soma and a runner built together agree
-# on the engine. A deployment under a live season pins a tag.
+# on the engine. A deployment under a live season pins a tag. `--build-context ants=../ants/dist`
+# registers an ants checkout's own build instead, as kalam's and web's images take one.
 ARG ANTS_RELEASE=
 
 # ---- the two plugin components -----------------------------------------------
@@ -76,33 +77,49 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # ---- the cartridge this node registers ----------------------------------------
 #
-# Soma plays no match, so it takes three things from the ants release and not the component: the
-# manifest (presets, limits, the adapter budget), the reference observations admission validates an
-# adapter against, and the engine digest `bootstrap` declares -- the digest every pending row is
-# stamped with and every runner's claim filters on.
+# Soma plays no match, but it takes four things from the ants release: the manifest (the basic
+# boards, `limits.boards` -- what a season's upload may be -- and the adapter budget), the reference
+# observations admission validates an adapter against, the engine digest `bootstrap` declares --
+# the digest every pending row is stamped with and every runner's claim filters on -- and, since
+# N28, THE COMPONENT ITSELF: an uploaded season map is judged by the engine's own `worldgen` on this
+# node, so a board that cannot be played is refused at upload rather than failing every match.
+#
+# The release unpacked and checked, as kalam's and web's images take it: the viewer inside it must
+# have been transpiled from the component beside it, or the archive is not one build. `ants` is the
+# tree alone, laid out as ants' dist/, so `--build-context ants=../ants/dist` replaces this stage
+# with a local build -- an engine not released yet -- and nothing below can tell.
 #
 # The releases feed changes exactly when a release is published or edited, so ADDing it keys this
 # stage's cache. The archive is fetched by curl, which moves on to the next address when one of
 # GitHub's download hosts is unreachable, where ADD times out.
-FROM --platform=$BUILDPLATFORM curlimages/curl:${CURL_VERSION} AS cartridge
+FROM --platform=$BUILDPLATFORM curlimages/curl:${CURL_VERSION} AS ants-release
 USER root
 ARG ANTS_RELEASE
 ADD https://github.com/Tiny-Brains/ants/releases.atom /tmp/ants-releases.atom
 RUN set -eu; \
-    base="https://github.com/Tiny-Brains/ants/releases"; \
-    if [ -n "${ANTS_RELEASE}" ]; then tag="${ANTS_RELEASE}"; \
-    else tag=$(curl -fsSL --retry 5 --retry-all-errors -o /dev/null -w '%{url_effective}' "$base/latest"); tag="${tag##*/}"; fi; \
-    curl -fsSL --connect-timeout 20 --retry 5 --retry-all-errors -o /tmp/ants.tar.gz "$base/download/$tag/ants-artifacts.tar.gz"; \
-    mkdir -p /tmp/ants /cartridge/reference; \
-    tar -xzf /tmp/ants.tar.gz -C /tmp/ants; \
+    url="https://github.com/Tiny-Brains/ants/releases/${ANTS_RELEASE:+download/}${ANTS_RELEASE:-latest/download}/ants-artifacts.tar.gz"; \
+    curl -fsSL --connect-timeout 20 --retry 5 --retry-all-errors -o /tmp/ants.tar.gz "$url"; \
+    mkdir /artifacts; \
+    tar -xzf /tmp/ants.tar.gz -C /artifacts
+
+FROM scratch AS ants
+COPY --from=ants-release /artifacts/ /
+
+FROM --platform=$BUILDPLATFORM curlimages/curl:${CURL_VERSION} AS cartridge
+USER root
+COPY --from=ants / /tmp/ants/
+# A release is tagged `engine-<12 hex>` after its component, so that is the name a local build gets
+# too: the same engine, whoever built it.
+RUN set -eu; \
     engine="sha256:$(sha256sum /tmp/ants/tb-ants.wasm | cut -d' ' -f1)"; \
     grep -q "\"engine_digest\": \"${engine}\"" /tmp/ants/viz/engine.json \
-      || { echo "ants $tag: viz/ was not transpiled from the component beside it" >&2; exit 1; }; \
+      || { echo "ants: viz/ was not transpiled from the component beside it" >&2; exit 1; }; \
+    mkdir -p /cartridge/reference; \
     cp /tmp/ants/cartridge.json /cartridge/; \
     cp /tmp/ants/reference/observations.json /cartridge/reference/; \
     printf '%s\n' "$engine" > /cartridge/engine-digest; \
-    printf '%s\n' "$tag" > /cartridge/release; \
-    echo "ants $tag: engine $engine"
+    printf 'engine-%s\n' "$(printf '%s' "${engine#sha256:}" | cut -c1-12)" > /cartridge/release; \
+    echo "ants: engine $engine"
 
 # ---- orion-server, for the target platform -----------------------------------
 #
@@ -147,6 +164,9 @@ RUN apt-get update \
 COPY --from=orion /usr/local/bin/orion-server /usr/local/bin/orion-server
 COPY docker/entrypoint.sh  /usr/local/bin/soma
 COPY docker/soma.toml.tmpl /etc/orion/soma.toml.tmpl
+# `bootstrap`'s baselines step, and the roster it seeds when none is mounted at /config/baselines.toml.
+COPY docker/baselines.py   /usr/local/lib/soma/baselines.py
+COPY docker/baselines.toml /pkg/soma/baselines.toml
 
 COPY channels/   /pkg/soma/channels/
 COPY workflows/  /pkg/soma/workflows/
@@ -161,10 +181,10 @@ COPY plugins/tb-rating/plugin.toml  /pkg/soma/plugins/tb-rating/
 COPY --from=plugins /src/plugins/tb-pairing/plugin.json /src/plugins/tb-pairing/tb-pairing.wasm /pkg/soma/plugins/tb-pairing/
 COPY --from=plugins /src/plugins/tb-rating/plugin.json  /src/plugins/tb-rating/tb-rating.wasm  /pkg/soma/plugins/tb-rating/
 COPY --from=cartridge /cartridge/ /pkg/cartridge/
+# The engine, which the map upload calls (N28), as a plugin of this package -- the same component and
+# the same two manifests Kalam's runner loads, so one signature verifies on both.
+COPY --from=ants /tb-ants.wasm /plugin.json /plugin.toml /pkg/soma/plugins/tb-ants/
 
-# `bootstrap`'s baselines step, and the roster it seeds when none is mounted at /config/baselines.toml.
-COPY docker/baselines.py   /usr/local/lib/soma/baselines.py
-COPY docker/baselines.toml /pkg/soma/baselines.toml
 USER orion
 EXPOSE 8080
 
