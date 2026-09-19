@@ -9,8 +9,8 @@ Postgres migrations shared by the platform. It ships definitions and no server c
 **Until 16 September 2026 the clocks were a repository of their own, `jodi`.** It always loaded into
 this package's Orion and read this package's `[vars]`, so the boundary bought nothing and cost a copy
 of every loader and check script -- one of which had stopped seeing 14 of its 23 statements. Its
-history is at [Tiny-Brains/jodi](https://github.com/Tiny-Brains/jodi), and its Status entries are
-kept below under **Before the merge**.
+repository has since been deleted from GitHub; its Status entries are kept below under **Before
+the merge**.
 
 ## The name
 
@@ -295,6 +295,8 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | SOMA_NODE_ADMIN | Loader substitution for soma-node-admin, the admin API admission registers a model on | Defaults to ORION_ADMIN, which is right on a node and wrong anywhere else |
 | ORION_ADMIN_BEARER | The whole `Bearer <key>` header value soma-node-admin sends | Every admin call is 401: a connector resolves `env://` only when the reference is the entire string |
 | PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating and tb.pairing | A node with trust keys quarantines the clocks that call an unsigned plugin |
+| /config/baselines.toml, or BASELINES_CONFIG | `bootstrap`: the baselines' roster -- `[models.*]` artifacts by URL or path, `[[baselines]]` with a permanent `id`, a `name` and a `model` (`docker/baselines.py`) | The image's own roster seeds `nano-bc`, `micro-bc` and `micro-percell`; `none` skips the step, and a season with no baselines admits nothing |
+| MODELS_ENDPOINT, MODELS_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY (bootstrap) | The models bucket as a node reaches it, with a credential that may PUT: the baselines step uploads what the roster names and restores what a season carry left out | `bootstrap` refuses at the baselines step, and names the four |
 | game, presets | Ladder and map selection | Pairing has no valid selection context |
 | count_batch, pair_depth_target, burst, steady_cap | Batch and demand controls | Defaults are not supplied by this package |
 | cross_class_fraction, repair_cap | Pairing policy | Incorrect values alter coverage and demand |
@@ -377,6 +379,41 @@ LICENSE                       repository licence
 - **Every channel but one is metered twice.** `rate_limit` is the outer guard and runs *before* authentication, keyed on the caller's address; `principal_rate_limit` is the quota and runs after, keyed on `auth.sub`. A channel with only the second one meters nobody until they have signed in, which is the wrong order for an anonymous flood. The exception is `soma-admin-check`, whose caller is a proxy rather than a browser — its address is one container's, so an address-keyed bucket there could only ever lock the console out of itself. **The address is only as good as the deployment's `[rate_limit] trusted_proxies`**: with that list empty Orion keys on nginx and the whole internet shares one bucket.
 
 ## Status
+
+**18 September 2026 — the baselines are a roster `bootstrap` applies.** They were a block of
+`web/compose/seed.sql` with placeholder hashes and `web/scripts/dev/seed-baselines.sh`, which
+`docker exec`ed into one container and read a sibling checkout -- so no deployment but the laptop
+stack could have any. `docker/baselines.py` runs as bootstrap's last step over a TOML roster:
+`[models.<key>]` names an artifact directory (`model.onnx`, `manifest.json`, `metrics.json`) by URL or
+path, and each `[[baselines]]` gives a permanent `id` (the account `baseline.<id>`), a `name` -- the
+entry's name, which is what a ladder draws, and the display name -- and the `model` it plays, so ten
+baselines can share one artifact. The roster is a mounted `/config/baselines.toml` (web's compose
+hands one in as a Docker config), else `BASELINES_CONFIG`, else `docker/baselines.toml` in the image,
+which pins the three to the ants commit ants-starter fetches `nano-bc` from.
+
+It converges: a rename is an UPDATE; a new id is an account, an entry, a version in the live
+season, two ratings at the season's prior with their seq-0 events and one roster-epoch bump, in one
+transaction, with the bytes uploaded to the version's key **before** the row exists. An id pointed
+at other weights is refused (its ratings describe the bytes it played), a baseline the roster drops
+is reported and left alone, and with no season live the versions wait for the first bootstrap after
+one opens. Both hashes are checked against the bytes, and `weights_hash` pins a source.
+
+**What building it found.** Season create carries each baseline forward as a new version row, and
+`artifact_key` is generated from the id, so **every carried baseline's key is empty**: from season 2
+on, every runner would refuse every baseline and no trial could run. Reproduced on a template copy
+of the local database with the workflow's own statement (13 carried, every key 404). The step
+restores a live version's missing objects on every run (26 restored there), so a bootstrap after a
+season opens repairs it -- but nothing repairs it at the moment of the carry, which stays **open**.
+Also: the image's curl (7.88) neither sends nor signs `x-amz-content-sha256`, so a signed PUT from
+it is `SignatureDoesNotMatch` unless the header is given explicitly, which the step does.
+
+**Verified** on a template copy of the local database: thirteen baselines (ten sharing `micro-bc`'s
+bytes, one renamed) -> 10 versions, 20 ratings, 20 events, one epoch bump, objects re-hashed from the
+bucket; a second run changed nothing; an id pointed at `micro-percell`'s weights, a duplicate name,
+an unknown key, an unknown model, a bad id and a wrong pin each refused by name; a dropped baseline
+reported; a closed season deferred the versions. Through web's compose, the live stack's bootstrap
+was a no-op and a fresh database got its three baselines with their objects. Not yet exercised: a
+runner playing a baseline this step created (the bytes and rows match what the old seeder wrote).
 
 **17 September 2026 (night) — Soma is a node image, and a tag releases it.** `Dockerfile` builds
 orion-server, `docker/soma.toml.tmpl` (from devops' `compose/orion/`), the package and the cartridge
@@ -997,5 +1034,5 @@ against a competitive roster remain open.
 - Local references: the [clock generator](scripts/gen-clocks.py) and the plugin manifests linked above.
 - Design docs: [`docs/schema.md`](docs/schema.md) — the match table, its fences, and every statement the packages run against it; [`docs/clocks.md`](docs/clocks.md) — the clocks; [`docs/admission.md`](docs/admission.md); [`docs/rating-and-seasons.md`](docs/rating-and-seasons.md); [`docs/config.md`](docs/config.md) — every number, and what measures it.
 - [The competitor guide](https://github.com/Tiny-Brains/web/tree/main/docs) — the reader-facing half: the rules, the model format, the manifest, submitting, ranking and seasons. The platform section is the high-level design for someone new to the codebase.
-- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Kalam](https://github.com/Tiny-Brains/kalam). [Jodi](https://github.com/Tiny-Brains/jodi) is history only.
+- Related repositories: [Web](https://github.com/Tiny-Brains/web), [Kalam](https://github.com/Tiny-Brains/kalam).
 - Apache-2.0: see [LICENSE](LICENSE).

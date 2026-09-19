@@ -1,0 +1,46 @@
+# The platform's baselines: the roster `soma bootstrap` seeds when no other is mounted.
+#
+# Replace it by mounting your own at /config/baselines.toml (a Docker `configs:` entry, or a bind
+# mount), or name another path with BASELINES_CONFIG; `BASELINES_CONFIG=none` skips the step.
+# docker/baselines.py has the rules, and the short of them is:
+#
+#   [models.<key>]   an artifact directory -- model.onnx, manifest.json, metrics.json -- by `source`,
+#                    a URL or a path relative to this file. Declared once, played by any number of
+#                    baselines. `weights_hash = "sha256:..."` pins it.
+#   [[baselines]]    `id` is PERMANENT (the account is baseline.<id>, and its ratings hang off it);
+#                    `name` is what every ladder shows and can change whenever you like; `model`
+#                    names a [models.*] above. Pointing an existing id at other weights is refused:
+#                    a different model is a new id.
+#
+# The sources are pinned to one commit of Tiny-Brains/ants -- the one ants-starter's match files
+# fetch nano-bc from -- so what this roster names cannot move under a deployment. A retrained
+# baseline is a new commit here, and a new id.
+
+[models.nano-bc]
+source = "https://raw.githubusercontent.com/Tiny-Brains/ants/032232b85a326db0b4d67d9644e384008a28d4c0/baselines/models/nano-bc"
+weights_hash = "sha256:53f3255790c361180b996655aeb2d0d81dda5cc215413051a6f5e62acc17987b"
+
+[models.micro-bc]
+source = "https://raw.githubusercontent.com/Tiny-Brains/ants/032232b85a326db0b4d67d9644e384008a28d4c0/baselines/models/micro-bc"
+weights_hash = "sha256:1e51646a3987eb7844a7cd8e9c3f12f36d2a5d5a678286d856ac1c1be9801268"
+
+[models.micro-percell]
+source = "https://raw.githubusercontent.com/Tiny-Brains/ants/032232b85a326db0b4d67d9644e384008a28d4c0/baselines/models/micro-percell"
+weights_hash = "sha256:85713895274b6d1040ab14205c6f9e00eaf3657c6ed61c10444d6acabfcae193"
+
+[[baselines]]
+id = "nano-bc"
+name = "nano-bc"
+model = "nano-bc"
+
+[[baselines]]
+id = "micro-bc"
+name = "micro-bc"
+model = "micro-bc"
+
+# The method column's control: same class, same data and the same parameter count as micro-bc, and
+# no receptive field at all. It is a weak player on purpose.
+[[baselines]]
+id = "micro-percell"
+name = "micro-percell"
+model = "micro-percell"

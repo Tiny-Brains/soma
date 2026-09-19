@@ -3,7 +3,7 @@
 #
 #   soma serve        (the default) migrate Orion's state, load this image's package, run orion-server
 #   soma bootstrap    one-shot, BEFORE any node starts: orion_state, the schema, the seed, the
-#                     runner_gate role, the engine digest and the cartridge
+#                     runner_gate role, the engine digest, the cartridge and the baselines
 #
 # THE PACKAGE IS IN THE IMAGE, AND THE NODE LOADS IT. There is no loader service: `serve` forks the
 # load before it execs, so the exec still happens and SIGTERM still reaches Orion directly, and the
@@ -118,6 +118,12 @@ serve() {
 #                 patch (the live season takes it) or, with ENGINE_RELEASE=1, a release (refused
 #                 while a season is live). A runner whose digest differs claims nothing, for ever.
 #   the cartridge games.manifest and games.reference_observations, what admission validates against
+#   the baselines the roster's accounts, entries and live-season versions, and their bytes in the
+#                 models bucket -- /usr/local/lib/soma/baselines.py, which says what it will and will
+#                 not change. The roster is $BASELINES_CONFIG, else a mounted /config/baselines.toml,
+#                 else the one this image ships; BASELINES_CONFIG=none skips it. It needs the models
+#                 bucket as a node reaches it: MODELS_ENDPOINT, MODELS_BUCKET, R2_ACCESS_KEY and
+#                 R2_SECRET_KEY, the same four soma-models-internal is configured with
 DB="${SOMA_DB_URL:-}"
 ADMIN_DB="${SOMA_ADMIN_DB_URL:-}"
 MIGRATIONS="$PKG/migrations"
@@ -269,6 +275,10 @@ UPDATE games SET manifest = :'m'::jsonb, reference_observations = :'o'::jsonb WH
 SQL
   rm -f "$obs_file"
   psql -X "$DB" -At -c "SELECT '    ' || slug || ': engine ' || left(active_engine_digest, 19) || '..., adapter_ops_max=' || (manifest -> 'budgets' ->> 'adapter_ops_max') || ', ' || jsonb_array_length(reference_observations) || ' observation(s)' FROM games"
+
+  # After the cartridge, because a baseline's weight class is the live season's and its game row
+  # must exist. Python rather than sh: the roster is TOML, and tomllib is in the standard library.
+  SOMA_DB_URL="$DB" GAME="$GAME" python3 /usr/local/lib/soma/baselines.py
   echo "==> done"
 }
 

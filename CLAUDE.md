@@ -114,9 +114,12 @@ orion-server; the fork asserts both plugins are loaded and no channel is quarant
 node if not. `docker/entrypoint.sh bootstrap` is what devops' loader used to do to the database —
 `orion_state`, the migrations under a recorded digest (a rewrite is refused by name), a mounted
 seed, the `runner_gate` password, the engine digest (a patch, or with `ENGINE_RELEASE=1` a release
-refused while a season is live) and `games.manifest` + `reference_observations` from the cartridge
-the image was built with. **That cartridge is an ants release chosen at build** — the latest, or
-`ANTS_RELEASE` — and a runner built from another release claims nothing.
+refused while a season is live), `games.manifest` + `reference_observations` from the cartridge
+the image was built with, and the **baselines** a roster names (`docker/baselines.py`: accounts,
+entries, live-season versions and their bytes in the models bucket; the roster is a mounted
+`/config/baselines.toml` or the image's `docker/baselines.toml`). **That cartridge is an ants
+release chosen at build** — the latest, or `ANTS_RELEASE` — and a runner built from another release
+claims nothing.
 
 **`clippy` is not optional, and the reason is on the record.** `channel_call` IGNORES an input key
 it does not know, so the admit walk's probe call — written `body` where the field is `data` — ran
