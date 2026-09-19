@@ -323,7 +323,12 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
   seat count from an enabled board of the live season, and refuses self-pairing unless the season
   allows it. A stale plan inserts nothing.
 - **Admission writes only under its `admit_token`**, and a failure that is ours gives the attempt
-  back. Otherwise an outage spends a competitor's tries.
+  back. Otherwise an outage spends a competitor's tries. The one exception is a probe that failed
+  on a model the node admitted and activated: it keeps the attempt, so one that never answers
+  expires `TIMED_OUT` instead of retrying every tick.
+- **The admission node keeps nothing between walks.** The walk deletes what it registered, and a
+  `register` that 409s on a dead walk's leftover deletes it and registers again. Orion activates
+  only a `draft`, so an archived leftover could never be probed again.
 - **Trials feed no ladder**, and a loss alone never rejects a candidate.
 - **A trial is live until count decides it**, `finished` included, in pair's read exactly as in
   `matches_one_live_trial_uniq`. A pair run that offered a second trial would die on the index.
@@ -368,8 +373,15 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
   before its roster catches up. A refused row is claimed after the fresh rows of its kind, which
   spreads the refusals; trials still come before every ranked match.
 - A `failed` match notifies nobody. The gate writes it as `runner_gate`, which must not gain the grant.
-- The admit re-walk is not idempotent: a second attempt 409s on `register` and 404s on `activate`
-  for a model this node already archived, and since the attempt is given back it never expires.
+- The probe cannot reject a broken adapter. `channel_call` fails whole on any error recorded in the
+  child, `continue_on_error` included, so an inference that fails outright arrives as no probe at
+  all. The version keeps the attempt and expires `TIMED_OUT` rather than `ADAPTER_INVALID`.
+- The probe runs the first 64 reference observations (`loop.max`), not the game's whole set, inside
+  a fixed `admit_deadline_ms` that is not sized from their count or the season's `turn_ms`. A model
+  that is legal at play but slow can time out here, three times, and expire.
+- A registration the node refuses (400) reads as `ADMISSION_UNREACHABLE` and is retried with the
+  attempt given back, for ever: `http_call` writes nothing on a 4xx, so the walk cannot tell a
+  refusal from an outage. A missing artifact no longer reaches it (`head` decides `ARTIFACT_MISSING`).
 - The OAuth callback cannot say which failure happened: `oauth2_login` answers a fixed 401.
 - No API tokens for an SDK or CLI.
 - `finish` has no `turns <= max_turns` gate (`max_turns` is a season rule, so it needs the claim's coalesce).

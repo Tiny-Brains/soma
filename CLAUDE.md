@@ -100,7 +100,14 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   missing parameter rather than defaulting one, and its output is the fold's `$4` exactly.
 - **Admission branches on whose fault it is, not on the reason word.** A node verdict of `failed` is
   the competitor's and rejects the version. No verdict at all is ours: the claim is released and the
-  attempt given back.
+  attempt given back, except a probe that failed on a model the node activated, which keeps it.
+  Every "ours" that can recur for one submission is a retry every tick for ever, so a new branch
+  into `retry` needs a reason it cannot be the submission.
+- **The admission node keeps nothing between walks**: the walk deletes what it registered, and a
+  409 on `register` clears a dead walk's leftover. Never archive there instead.
+- **No large document rides a clock's message.** Every write keeps deep copies of the old and new
+  value in the audit trail, and an errored run keeps its whole trace, so the reference set carried
+  per item held ~3 GB for ten submissions. Read it where it is used, a piece at a time (`PR_OBS`).
 - **The manifest is fetched twice, deliberately**: as text (the exact bytes, which the declared
   hash and the stored copy are over) and parsed (to build the registration). What is registered is
   rebuilt field by field with `name` forced to `tb.v<uuid>`, so a `reference` to someone else's key
@@ -201,6 +208,15 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `tb-probe`'s `{"length": [{"shape": ...}]}` is meant as a call.
 - Archive and delete are not refused for a model an active workflow names by a computed id. Model
   `stats` are written at admission and never recomputed.
+- **Orion activates only a `draft` version.** An archived model 404s on `status: active` and 409s on
+  a second `register`, so it cannot be walked again. A delete answers 204 with no body, which
+  `http_call`'s default `json` fails to parse: set `response_format: "text"`.
+- **`storage_head` answers a missing object with `{"exists": false}`**, not a failure, and an object
+  is truthy. Test `.exists`.
+- **`channel_call` fails whole on any error the child recorded**, `continue_on_error` tasks
+  included, and writes no output. A child cannot report a failed step as its answer.
+- orion-server allocates through glibc, whose per-thread arenas keep freed memory: the image sets
+  `MALLOC_ARENA_MAX=2`, which took an idle node from ~910 MB to ~70 MB.
 - `models.max_timeout_ms` clamps a longer `model_infer` timeout **silently**.
 - A cron channel always writes a trace row per occurrence: `errors_only` drops only the result, and
   `tracing.mode = "off"` is upgraded to sync. Only the schedule and `[trace_queue] retention_hours`

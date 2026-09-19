@@ -183,6 +183,12 @@ COPY --from=ants /tb-ants.wasm /plugin.json /plugin.toml /pkg/soma/plugins/tb-an
 USER orion
 EXPOSE 8080
 
+# TWO MALLOC ARENAS, NOT glibc's 8 PER CORE. orion-server allocates through glibc, which gives each
+# busy thread its own 64 MB arena and returns almost nothing from one: on a 10-core host a fresh
+# node sat at ~910 MB after its package load, nearly all of it arenas full of freed memory, and
+# idles at ~70 MB with this. Measured on the local stack; a deployment may override it.
+ENV MALLOC_ARENA_MAX=2
+
 # 200 once startup has finished and the state database answers. A package that failed to load does
 # not fail this; the entrypoint's self-load stops the node instead.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \

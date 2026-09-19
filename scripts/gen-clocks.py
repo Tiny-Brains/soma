@@ -106,8 +106,25 @@ IS_REJECT = {"==": [var("temp_data.it.decision"), "reject"]}
 # it and left this read behind. Nothing errored: `verify` is the only task gated on this, its
 # condition was simply never true, and every submission walked the whole admission, passed every
 # gate, and sat in `testing` until it ran out of attempts and was rejected TIMED_OUT.
-STILL_GOOD = [var("temp_data.head"), {"!": var("temp_data.reason")},
+#
+# `.exists`, NEVER THE OBJECT. `storage_head` answers a missing object with `{"exists": false}`
+# rather than failing, and an object is truthy -- so read bare, an upload that never happened
+# passed as present, `register` 400'd on Orion's own HEAD, and the walk called it
+# ADMISSION_UNREACHABLE: ours, refunded, and walked again every tick for ever.
+STILL_GOOD = [var("temp_data.head.exists"), {"!": var("temp_data.reason")},
               {"!": var("temp_data.retry")}]
+
+# A registration was built and nothing has been decided yet: the node may be touched.
+REGISTERABLE = [{"!!": var("temp_data.reg")}, {"!": var("temp_data.reason")},
+                {"!": var("temp_data.retry")}]
+
+# What the walk registers, by reference and digest -- sent by `register` and, after a dead walk's
+# leftovers are cleared, by `reregister`.
+REGISTRATION = {"manifest": var("temp_data.reg"),
+                "artifact": {"connector": "soma-models-internal",
+                             "key": var("temp_data.it.artifact_key"),
+                             "digest": var("temp_data.it.weights_hash")},
+                "tags": ["admission"]}
 
 
 # ======================================================================= statements
@@ -1417,7 +1434,15 @@ SELECT json_build_object(
                     'attempt', v.admit_attempts,
                     'budget_ops', coalesce((se.rules -> 'graph' ->> 'adapter_ops_max')::bigint,
                                            (g.manifest -> 'budgets' ->> 'adapter_ops_max')::bigint),
-                    'observations', g.reference_observations,
+                    -- THE GAME AND HOW MANY, NEVER THE SET. The reference set is ~500 KB of JSON
+                    -- and ~150k nodes parsed, and every copy a workflow makes of it is kept twice
+                    -- over (the audit trail's old and new values, then the trace's). Carried per
+                    -- item it rode the batch, `temp_data.it`, the probe's payload and the probe's
+                    -- reply: a burst of ten submissions held ~3 GB. The probe reads one at a time.
+                    'game_id', g.id,
+                    'observations_n', CASE WHEN jsonb_typeof(g.reference_observations) = 'array'
+                                           THEN jsonb_array_length(g.reference_observations)
+                                           ELSE 0 END,
                     -- THE SEASON'S GRAPH RULES, CARRIED PER ITEM. Every one of these was a
                     -- metadata.vars read inside the judge task, which is one value for a whole run;
                     -- an item's own rules are the item's, and they come from THE VERSION'S OWN
@@ -1530,10 +1555,18 @@ UPDATE model_versions
 # --- a fault that is OURS releases the claim and GIVES THE ATTEMPT BACK.
 # Decrementing keeps admit_attempts_max a count of real attempts: a store that is down for an hour
 # must not consume a competitor's three tries.
+#
+# EXCEPT A PROBE THAT FAILED ON A MODEL THIS NODE ADMITTED AND ACTIVATED ($3). By then the store,
+# the node and the admission all answered, so what is left is mostly the submission: a
+# `channel_call` fails whole on any task error in the child, `continue_on_error` or not (Orion
+# 1.8.1's RunOutcome::WorkflowErrors), so an adapter that fails one observation arrives here as
+# no probe at all, exactly as a timeout does. Refunded, that was a retry every tick for ever; kept,
+# a load spike costs one of three tries and a broken adapter expires TIMED_OUT.
 A_RELEASE = """
 UPDATE model_versions
    SET admit_started_at = NULL, admit_token = NULL,
-       admit_attempts = greatest(admit_attempts - 1, 0)
+       admit_attempts = CASE WHEN ($3)::boolean THEN admit_attempts
+                             ELSE greatest(admit_attempts - 1, 0) END
  WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($2)::uuid
 """
 
@@ -1557,7 +1590,10 @@ ADMIT = {
         "admin enables it. The claim is the fence -- there is no run fence, because admission writes "
         "one row per item and a per-row claim is already the mutual exclusion. The branch that "
         "matters is on `fault`: a competitor's mistake rejects the version and OUR failure "
-        "releases the claim and gives the attempt back. Every verdict, and every expiry this run "
+        "releases the claim and gives the attempt back -- except a probe that failed on a model "
+        "this node activated, which keeps it, so a probe that never answers expires rather than "
+        "retrying for ever. What the walk registered it deletes again, so every walk starts from "
+        "nothing on the node. Every verdict, and every expiry this run "
         "stamped with its token, is then told to the owner by a keyed statement that may fail "
         "without failing the walk."
     ),
@@ -1616,6 +1652,8 @@ ADMIT = {
              {"path": "temp_data.pd", "logic": False},
              {"path": "temp_data.manok", "logic": False},
              {"path": "temp_data.reg", "logic": False},
+             {"path": "temp_data.created", "logic": False},
+             {"path": "temp_data.charge", "logic": False},
              {"path": "temp_data.adm", "logic": False},
              {"path": "temp_data.act", "logic": False},
              {"path": "temp_data.probe", "logic": False},
@@ -1640,7 +1678,7 @@ ADMIT = {
              # stops for everyone, with every clock healthy and every row looking merely slow.
              {"path": "temp_data.retry",
               "logic": {"if": [{"!": var("temp_data.it.budget_ops")}, "MANIFEST_INCOMPLETE",
-                               {"!": var("temp_data.it.observations")}, "MANIFEST_INCOMPLETE",
+                               {"!": var("temp_data.it.observations_n")}, "MANIFEST_INCOMPLETE",
                                {"!": var("temp_data.it.artifact_key")}, "MANIFEST_INCOMPLETE",
                                False]}}]}}},
 
@@ -1654,7 +1692,7 @@ ADMIT = {
              "output": "temp_data.head"}}},
 
         {"id": "sign", "name": "Sign a GET for the manifest",
-         "condition": {"and": [{"!": var("temp_data.retry")}, {"!!": var("temp_data.head")}]},
+         "condition": {"and": [{"!": var("temp_data.retry")}, var("temp_data.head.exists")]},
          "continue_on_error": True,
          "function": {"name": "storage_presign", "input": {
              "connector": "soma-models-internal", "method": "GET",
@@ -1719,15 +1757,26 @@ ADMIT = {
              {"path": "temp_data.reason", "logic": "RESULT_NOT_ALLOWED"}]}}},
 
         {"id": "register", "name": "Register it on this node, by reference and digest",
-         "condition": {"and": [{"!!": var("temp_data.reg")}, {"!": var("temp_data.reason")},
-                               {"!": var("temp_data.retry")}]},
+         "condition": {"and": REGISTERABLE},
          "continue_on_error": True,
          "function": http("soma-node-admin", "POST", "/models", "temp_data.created",
-                          {"manifest": var("temp_data.reg"),
-                           "artifact": {"connector": "soma-models-internal",
-                                        "key": var("temp_data.it.artifact_key"),
-                                        "digest": var("temp_data.it.weights_hash")},
-                           "tags": ["admission"]})},
+                          REGISTRATION)},
+
+        # A 409 IS A WALK THAT DIED BEFORE `drop`: the claim lapsed and this run holds the row now.
+        # What it left cannot be walked again -- Orion activates only a `draft` version, so one
+        # left `archived` 404s on `activate` for ever -- so it goes, whole, and is registered
+        # afresh. `created` is written only on a 2xx, which is what makes it the test.
+        {"id": "clear", "name": "Remove what a dead walk left here",
+         "condition": {"and": REGISTERABLE + [{"!": var("temp_data.created")}]},
+         "continue_on_error": True,
+         "function": http("soma-node-admin", "DELETE",
+                          {"cat": ["/models/", var("temp_data.it.model")]},
+                          "temp_data.cleared", response_format="text")},
+        {"id": "reregister", "name": "Register it again, from nothing",
+         "condition": {"and": REGISTERABLE + [{"!": var("temp_data.created")}]},
+         "continue_on_error": True,
+         "function": http("soma-node-admin", "POST", "/models", "temp_data.created",
+                          REGISTRATION)},
 
         # Admission, synchronously. `?wait=true` is what makes this a walk rather than a state
         # machine: the verdict is recorded on the row before the call returns, so there is no poll
@@ -1755,7 +1804,7 @@ ADMIT = {
               "logic": {"if": [var("temp_data.reason"), var("temp_data.reason"),
                                var("temp_data.admitted"), None,
                                # The upload never arrived, or arrived at the wrong key.
-                               {"!": var("temp_data.head")}, "ARTIFACT_MISSING",
+                               {"!": var("temp_data.head.exists")}, "ARTIFACT_MISSING",
                                {"!": var("temp_data.man")}, "MANIFEST_MISSING",
                                {"!==": [var("temp_data.manok.0.ok"), True]}, "MANIFEST_MISMATCH",
                                # A verdict of `failed` names its own stage and reason; the stage is
@@ -1796,7 +1845,8 @@ ADMIT = {
              # probe without one observation being evaluated. `continue_on_error` hid it, and
              # `orion-server clippy` is what names it: correctness.unknown_input_key.
              "data": {"model": var("temp_data.it.model"),
-                      "observations": var("temp_data.it.observations"),
+                      "game_id": var("temp_data.it.game_id"),
+                      "n": var("temp_data.it.observations_n"),
                       "budget_ops": var("temp_data.it.budget_ops")},
              "timeout_ms": var("metadata.vars.admit_deadline_ms"),
              "output": "temp_data.probe"}}},
@@ -1898,17 +1948,30 @@ ADMIT = {
                                # every submission passes every gate in silence.
                                {"!": var("temp_data.it.rules_ok")}, "SEASON_RULES_INCOMPLETE",
                                {"!": var("temp_data.probe")}, "PROBE_UNREACHABLE",
-                               None]}}]}}},
+                               None]}},
+             # Whether `giveback` keeps the attempt: a probe that failed on a model this node
+             # activated. See A_RELEASE. `act` is written only on a 2xx.
+             {"path": "temp_data.charge",
+              "logic": {"and": [{"===": [var("temp_data.retry"), "PROBE_UNREACHABLE"]},
+                                {"!!": var("temp_data.act")}]}}]}}},
 
         # Whatever the verdict, and whatever this node decided: the admission node is not a player,
         # so a model left active here would be recompiled into every generation it never serves.
         # The replicas' own roster clocks are what make a version playable.
-        {"id": "archive", "name": "Leave the admission node's active set empty",
-         "condition": var("temp_data.admitted"),
+        #
+        # DELETED, NOT ARCHIVED, so that every walk starts from nothing. An archived model cannot
+        # be walked again: `register` 409s on the id and Orion activates only a `draft`, so a retry
+        # after a probe that timed out 404'd on `activate`, probed a model that was not active, was
+        # given back as PROBE_UNREACHABLE, and did it again every tick for ever -- 68 ERROR lines a
+        # tick, with the attempt refunded each time so it never expired.
+        # `text`, here and on `clear`: a delete answers 204 with no body, and the default `json`
+        # fails to parse nothing -- an ERROR on every walk, and a kept trace for every admission.
+        {"id": "drop", "name": "Leave nothing of it on the admission node",
+         "condition": {"!!": var("temp_data.created")},
          "continue_on_error": True,
-         "function": http("soma-node-admin", "PATCH",
-                          {"cat": ["/models/", var("temp_data.it.model"), "/status"]},
-                          "temp_data.archived", {"status": "archived"})},
+         "function": http("soma-node-admin", "DELETE",
+                          {"cat": ["/models/", var("temp_data.it.model")]},
+                          "temp_data.dropped", response_format="text")},
 
         # The class is required rather than merely written: it is the one field that only exists if
         # admission answered, so requiring it here is what stops a half-verified row reaching the
@@ -1932,7 +1995,8 @@ ADMIT = {
         {"id": "giveback", "name": "Our fault: release the claim and the attempt",
          "condition": {"!!": var("temp_data.retry")},
          "function": db_write("soma-db", A_RELEASE, [
-             var("temp_data.it.model_id"), var("temp_data.token")], "temp_data.released")},
+             var("temp_data.it.model_id"), var("temp_data.token"), var("temp_data.charge")],
+             "temp_data.released")},
 
         # The verdict, told to its owner -- whichever of `verify` and `reject` wrote it, read off
         # the row. A claim that lapsed mid-walk wrote nothing, so this inserts nothing for it and
@@ -1944,6 +2008,15 @@ ADMIT = {
                               "temp_data.notified")},
     ],
 }
+
+
+# --- observation i of a game's reference set. `->` on a jsonb array is null past its end, which the
+# probe never reaches: its `more` filter stops at the count the batch read.
+PR_OBS = """
+SELECT g.reference_observations -> ($2)::int AS obs
+  FROM games g
+ WHERE g.id = ($1)::uuid
+"""
 
 
 # --- the probe channel. One `model_infer` per reference observation, looped, because the number of
@@ -1970,13 +2043,18 @@ PROBE = {
         # parses it. Without this task every read below resolved to nothing: `length` of a missing
         # value FAILED the `init` task with a 500, the caller's `continue_on_error` swallowed it,
         # and the admit walk saw no probe at all -- PROBE_UNREACHABLE on every submission, for ever.
-        # Unconditional rather than first_sweep: it costs one parse and guarantees `data.in` is
-        # there on every sweep, whatever a future edit does to the order.
-        {"id": "parse", "name": "Read the request",
-         "function": {"name": "parse_json", "input": {"source": "payload", "target": "in"}}},
+        #
+        # ONCE, ON SWEEP 0, because `data` survives a sweep exactly as `temp_data` does, and every
+        # write keeps a deep copy of the old value and the new one in the message's audit trail
+        # (dataflow-rs's `capture_changes`, which Orion leaves on). The request is small now -- the
+        # reference set is read one observation a sweep, below -- but it was the whole set once,
+        # and a parse a sweep then held ~128 copies of it.
+        first_sweep({"id": "parse", "name": "Read the request",
+                     "function": {"name": "parse_json",
+                                  "input": {"source": "payload", "target": "in"}}}),
         first_sweep({"id": "init", "name": "Open the walk",
                      "function": {"name": "map", "input": {"mappings": [
-                         {"path": "temp_data.n", "logic": {"length": [var("data.in.observations")]}},
+                         {"path": "temp_data.n", "logic": var("data.in.n")},
                          {"path": "data.ok", "logic": True},
                          {"path": "data.over_budget", "logic": False},
                          {"path": "data.reason", "logic": None},
@@ -1985,19 +2063,24 @@ PROBE = {
                          {"path": "data.checked", "logic": 0}]}}}),
         {"id": "more", "name": "Stop when the observations run out",
          "function": halt_unless({"<": [var("temp_data.i"), var("temp_data.n")]})},
-        {"id": "pick", "name": "Take observation i, and clear the last one",
+        # ONE OBSERVATION A SWEEP, FROM THE DATABASE, so neither this message nor the caller's ever
+        # holds the set: what a sweep keeps is one observation, and the audit trail's copy of it.
+        {"id": "pick", "name": "Take observation i",
+         "function": db_read("soma-db", PR_OBS, [var("data.in.game_id"), var("temp_data.i")],
+                             "temp_data.picked")},
+        {"id": "reset", "name": "Clear the last inference",
          "function": {"name": "map", "input": {"mappings": [
-             {"path": "temp_data.obs",
-              "logic": {"val": ["data", "in", "observations", {"val": ["temp_data", "i"]}]}},
              {"path": "temp_data.out", "logic": False},
              {"path": "temp_data.st", "logic": False}]}}},
-        # `continue_on_error`, because a failing adapter is the ANSWER here rather than an
-        # accident: an absent output is what "this submission cannot play this game" looks like.
+        # `continue_on_error`, so an inference that answers with the wrong head is tallied below
+        # as ADAPTER_INVALID or HEAD_UNREADABLE. AN INFERENCE THAT FAILS OUTRIGHT IS NOT: the
+        # error is still recorded on the message, and `channel_call` fails whole on any recorded
+        # error, so the caller sees no probe at all -- which is why A_RELEASE charges the attempt.
         {"id": "infer", "name": "One inference",
          "continue_on_error": True,
          "function": {"name": "model_infer", "input": {
              "model": var("data.in.model"),
-             "input": var("temp_data.obs"),
+             "input": var("temp_data.picked.0.obs"),
              "output": "temp_data.out",
              "raw": True,
              "stats_output": "temp_data.st"}}},

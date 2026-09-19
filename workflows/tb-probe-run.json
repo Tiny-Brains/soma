@@ -7,28 +7,33 @@
   "loop": { "counter": "i", "max": 64 },
   "tasks": [
     {
-      "id": "parse",
-      "name": "Read the request",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "in" } }
-    },
-    {
-      "id": "init",
-      "name": "Open the walk",
+      "id": "when_parse",
       "condition": { "==": [{ "var": "temp_data.i" }, 0] },
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "temp_data.n", "logic": { "length": [{ "var": "data.in.observations" }] } },
-            { "path": "data.ok", "logic": true },
-            { "path": "data.over_budget", "logic": false },
-            { "path": "data.reason", "logic": null },
-            { "path": "data.ops_max", "logic": 0 },
-            { "path": "data.infer_us_max", "logic": 0 },
-            { "path": "data.checked", "logic": 0 }
-          ]
+      "tasks": [
+        {
+          "id": "parse",
+          "name": "Read the request",
+          "function": { "name": "parse_json", "input": { "source": "payload", "target": "in" } }
+        },
+        {
+          "id": "init",
+          "name": "Open the walk",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "temp_data.n", "logic": { "var": "data.in.n" } },
+                { "path": "data.ok", "logic": true },
+                { "path": "data.over_budget", "logic": false },
+                { "path": "data.reason", "logic": null },
+                { "path": "data.ops_max", "logic": 0 },
+                { "path": "data.infer_us_max", "logic": 0 },
+                { "path": "data.checked", "logic": 0 }
+              ]
+            }
+          }
         }
-      }
+      ]
     },
     {
       "id": "more",
@@ -43,15 +48,24 @@
     },
     {
       "id": "pick",
-      "name": "Take observation i, and clear the last one",
+      "name": "Take observation i",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT g.reference_observations -> ($2)::int AS obs FROM games g WHERE g.id = ($1)::uuid",
+          "params": [{ "var": "data.in.game_id" }, { "var": "temp_data.i" }],
+          "output": "temp_data.picked"
+        }
+      }
+    },
+    {
+      "id": "reset",
+      "name": "Clear the last inference",
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            {
-              "path": "temp_data.obs",
-              "logic": { "val": ["data", "in", "observations", { "val": ["temp_data", "i"] }] }
-            },
             { "path": "temp_data.out", "logic": false },
             { "path": "temp_data.st", "logic": false }
           ]
@@ -66,7 +80,7 @@
         "name": "model_infer",
         "input": {
           "model": { "var": "data.in.model" },
-          "input": { "var": "temp_data.obs" },
+          "input": { "var": "temp_data.picked.0.obs" },
           "output": "temp_data.out",
           "raw": true,
           "stats_output": "temp_data.st"
