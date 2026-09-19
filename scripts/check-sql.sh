@@ -74,5 +74,11 @@ PY
 echo "==> preparing every query in workflows/*.json"
 psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1 < "$SQL"
 
+# Not shipped in the package, but generated from pair's demand statement for an autoscaler to run,
+# so it is held to the same schema.
+echo "==> preparing scripts/autoscaler.sql"
+{ printf 'PREPARE chk_autoscaler AS\n'; cat scripts/autoscaler.sql; printf ';\n'; } \
+    | psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1
+
 psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH"
 echo "==> all shipped SQL parses and plans against the current schema"

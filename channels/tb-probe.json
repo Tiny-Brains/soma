@@ -10,6 +10,7 @@
   "config": {
     "response": { "mode": "shaped" },
     "timeout_ms": 120000,
+    "auth": { "$from": "constants.probe_auth" },
     "tracing": { "$from": "constants.clock_tracing" }
   }
 }

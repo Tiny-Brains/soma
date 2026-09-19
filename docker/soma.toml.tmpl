@@ -232,8 +232,9 @@ max_loaded_bytes = 2147483648
 # Nothing is warmed here: an admission node touches each model once.
 preload = "none"
 
-# The node refuses an object past this (SIZE_FAILED) before any class is considered. NOTE: the
-# default `large` class allows 128 MiB, so a large model between the two is refused here.
+# The node refuses an object past this (SIZE_FAILED) before any class is considered. It is also the
+# ceiling on every class cap: weight_classes_ok() refuses one above 64 MiB. web's configs.sh holds
+# the two together, and the runner's template to the same value.
 max_artifact_bytes = 67108864
 max_input_elements  = 1048576
 max_output_elements = 1048576

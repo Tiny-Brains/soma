@@ -70,6 +70,11 @@ CREATE TABLE games (
 -- ASCENDING AND STRICT is the load-bearing clause: admission takes the first class whose cap the
 -- size fits, so an out-of-order table silently makes a class unreachable and equal caps make the
 -- landing an accident of array order. Neither is an error the database could otherwise notice.
+--
+-- NO CAP ABOVE 64 MiB. Every node refuses an artifact past `[models] max_artifact_bytes` (64 MiB in
+-- both soma's and the runner's template) before any class is considered, and a runner's model
+-- memory is sized for it: 4 lanes x 8 seats x 64 MiB is its 2 GiB `max_loaded_bytes`. A larger cap
+-- would name a class nothing could ever be admitted into.
 CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     SELECT jsonb_typeof(wc) = 'array'
        AND jsonb_array_length(wc) >= 1
@@ -81,6 +86,7 @@ CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTAB
               OR jsonb_typeof(e -> 'max_bytes') IS DISTINCT FROM 'number'
               OR (e ->> 'class') NOT IN ('nano', 'micro', 'mini', 'small', 'large')
               OR (e ->> 'max_bytes')::numeric <= 0
+              OR (e ->> 'max_bytes')::numeric > 67108864
               OR (e ->> 'max_bytes')::numeric <> trunc((e ->> 'max_bytes')::numeric))
        -- no class named twice
        AND (SELECT count(DISTINCT e ->> 'class') FROM jsonb_array_elements(wc) AS e)
@@ -180,8 +186,10 @@ LANGUAGE sql IMMUTABLE AS $$
       -- How long a model has to answer one turn. THE constraint that decides how large a model can
       -- be and still play, so it is the one number a season changes to change the contest.
       ('execution', 'turn_ms',         'int',     1, 60000, NULL),
-      -- Match length: the strategy horizon, and the compute a match costs.
-      ('execution', 'max_turns',       'int',     1, 100000, NULL),
+      -- Match length: the strategy horizon, and the compute a match costs. At most 1000, because a
+      -- runner plays a match in one workflow run whose loop stops at 1010 sweeps (max_turns plus a
+      -- tail); a longer match could never finish. web's configs.sh holds the two together.
+      ('execution', 'max_turns',       'int',     1,   1000, NULL),
       -- How often a row may be refused for want of a model before it fails MODEL_UNAVAILABLE.
       -- The operational sibling of pairing.forfeit_strikes.
       ('execution', 'refusal_ceiling', 'int',     1,   100, NULL),
@@ -354,7 +362,7 @@ CREATE TABLE seasons (
           {"class": "micro", "max_bytes": 131072},
           {"class": "mini",  "max_bytes": 1048576},
           {"class": "small", "max_bytes": 8388608},
-          {"class": "large", "max_bytes": 134217728}]'::jsonb,
+          {"class": "large", "max_bytes": 67108864}]'::jsonb,
 
     created_at           timestamptz NOT NULL DEFAULT now(),
 

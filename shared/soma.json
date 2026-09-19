@@ -15,6 +15,14 @@
       "audience": "runner",
       "source": { "header": "Authorization", "scheme": "Bearer " }
     },
+    "probe_auth": {
+      "mode": "jwt",
+      "algorithms": ["HS256"],
+      "jwt_keys": [{ "algorithm": "HS256", "key": "env://RUNNER_TOKEN_SECRET" }],
+      "issuer": "soma",
+      "audience": "tb-probe",
+      "source": { "header": "Authorization", "scheme": "Bearer " }
+    },
     "shaped": { "mode": "shaped" },
     "public_rate": { "requests_per_second": 30, "burst": 60 },
     "session_rate": { "requests_per_second": 20, "burst": 40 },

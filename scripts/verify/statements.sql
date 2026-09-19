@@ -12,7 +12,7 @@
 --
 -- HARNESS-ONLY, and nothing ships them: c_pass_reversed (the promotion with its two updates in
 -- the opposite order, which the deferred one-active rule must still commit), a_chain (the audit
--- of the rating chain), d_demand (the demand view on its own, the shape scripts/measure/autoscaler.sql
+-- of the rating chain), d_demand (the demand view on its own, the shape scripts/autoscaler.sql
 -- reads) and the two s_* reads.
 
 -- reap -- the cron channel's only task, every five seconds in one place.

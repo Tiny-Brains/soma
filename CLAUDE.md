@@ -75,6 +75,13 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   the JSON.
 - `group_runs()` folds consecutive tasks sharing a condition into a task group. **Anything that
   walks a clock workflow must descend into groups**, or it silently skips most of the statements.
+- **`scripts/autoscaler.sql` is generated from `P_DEMAND_DOC`**, pair's CTEs up to its final
+  `SELECT json_build_object(`, so keep that split point and the CTE names `wants` and `depth`.
+  The CTEs bind `$1`–`$4` and `$6`; pair's `$5` (the depth target) is only in its final SELECT,
+  which is why the autoscaler can take `$5` for itself. A new CTE parameter changes both.
+- **`tb-probe` is closed to HTTP by `probe_auth`**, an audience no route mints. Orion checks a
+  channel's `auth` for HTTP callers and never for `channel_call`, which is the only way the admit
+  walk reaches it. Never give it a rate limit: that one does apply to `channel_call`.
 - The loop shape: `loop: {counter: "i", max: N}` replays the whole task list every sweep.
   `first_sweep()` tasks run on sweep 0, a `more` filter with `on_reject: "halt"` is the real
   terminator, and `temp_data` survives a sweep, so every per-item slot is cleared as the item is
@@ -124,7 +131,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   and the admin routes and the token exchange run on `soma-db`. A runner statement that needs a new
   grant is argued on the grant block, and `kalam` is never widened.
 - A season's `weight_classes` are validated strictly ascending, because admission takes the first
-  class a size fits. Never reintroduce a class table in a workflow, the generator or config.
+  class a size fits, and no cap above 64 MiB, because every node's `max_artifact_bytes` refuses a
+  larger artifact first. Never reintroduce a class table in a workflow, the generator or config.
+- **Season rule ceilings are what a node can honour.** `execution.max_turns` stops at 1000 (Kalam's
+  match loop is 1010 sweeps) and `execution.turn_ms` at 60000 (every template's
+  `models.max_timeout_ms`). web's `configs.sh` reads both bounds out of the migration; raise one
+  only with the thing it protects.
 - Every placeholder is cast explicitly, `($n)::type`.
 - **Never hand-transcribe a statement into `scripts/verify/`.** Copy it from the shipped workflow.
   `run.sh` compares the flattened text and refuses to run on a difference.
