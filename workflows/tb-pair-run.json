@@ -1,7 +1,7 @@
 {
   "workflow_id": "tb-pair-run",
   "name": "Clock: pair",
-  "description": "Inserts the matches the ladder wants. Reads the roster epoch, the demand document and the waiting trials at sweep 0, asks the pairing plugin to fill the room, and puts the trial pairings first in the plan so a candidate waiting on its trial is never crowded out by the queue. Every insert checks the epoch FOR SHARE and halts the run if it has moved -- that, not a run fence, is pair's guarantee: a stale run can overfill by at most one run's worth, which the depth target bounds and the next run absorbs, but it can never pair a version that has left. The trial pairings are chosen in SQL, not by the plugin: the choice is mechanical and must not depend on the plugin's state. soma/docs/schema.md §6, docs/design.md §6.",
+  "description": "Inserts the matches the ladder wants. Reads the roster epoch, the demand document and the waiting trials at sweep 0, asks the pairing plugin to fill the room, and puts the trial pairings first in the plan so a candidate waiting on its trial is never crowded out by the queue. Every insert checks the epoch FOR SHARE and halts the run if it has moved -- that, not a run fence, is pair's guarantee: a stale run can overfill by at most one run's worth, which the depth target bounds and the next run absorbs, but it can never pair a version that has left. The trial pairings are chosen in SQL, not by the plugin: the choice is mechanical and must not depend on the plugin's state.",
   "tags": ["pkg:soma"],
   "condition": true,
   "loop": { "counter": "i", "max": 200 },

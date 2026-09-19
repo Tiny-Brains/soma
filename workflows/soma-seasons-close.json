@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-seasons-close",
   "name": "Ask for a live season to close",
-  "description": "Admin only. Writes an INTENT -- close_requested_at on the season the slug names, if it is the live one -- which the withdraw clock consumes within the minute: it rejects the versions still waiting, cancels the queue, leaves in-flight matches to finish and count, and sets closed_at. An intent rather than the close itself keeps one copy of the close, in the package whose check-sql.sh checks it. 202 with the season as it stands; 409 when that season is not live or the request was already made. The slug is in the path (N28) so a close names the season it ends: an admin reading last week's tab cannot close this week's by accident.",
+  "description": "Admin only. Writes an INTENT -- close_requested_at on the season the slug names, if it is the live one -- which the withdraw clock consumes within the minute: it rejects the versions still waiting, cancels the queue, leaves in-flight matches to finish and count, and sets closed_at. An intent rather than the close itself keeps one copy of the close, in the package whose check-sql.sh checks it. 202 with the season as it stands; 409 when that season is not live or the request was already made. The slug is in the path so a close names the season it ends: an admin reading last week's tab cannot close this week's by accident.",
   "tags": ["pkg:soma"],
   "tasks": [
     {

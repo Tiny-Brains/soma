@@ -1,9 +1,9 @@
 # tb.rating -- the TrueSkill update, and the only arithmetic in TinyBrains that writes a ladder.
 #
 # `./build.sh` rebuilds the component beside this manifest, running the host tests first; both it
-# and the plugin.json generated from this file are committed, so the package loads without a wasm
-# toolchain. Count calls this once per finished match, between reading the seats' priors
-# (soma/docs/schema.md §5.2) and writing the fold. The contract is docs/design.md §8.
+# and the plugin.json generated from this file are build output, never committed: the image builds
+# them. Count calls this once per finished match, between reading the seats' priors (count's
+# `priors` statement) and writing the fold. src/lib.rs documents the input and output.
 abi = "orion:plugin@1.0.0"
 name = "tb.rating"
 version = "0.1.0"
@@ -14,7 +14,7 @@ name = "tb.rating.trueskill"
 description = "One TrueSkill update per ladder a match feeds, over its seats' priors, by rank"
 category = "transform"
 
-# The priors document soma/docs/schema.md §5.2 builds. An expression, because the workflow points
+# The priors document count's `priors` statement builds. An expression, because the workflow points
 # it at whatever the read task wrote rather than restating its shape.
 #
 # The output is the fold statement's fourth parameter exactly, so the task passes it straight on
@@ -27,8 +27,8 @@ kind = "object"
 required = true
 template_at = true
 
-# The three TrueSkill parameters, passed rather than compiled in: they are policy (docs/design.md
-# §9) and live in [vars]. None is defaulted -- a missing one is a refusal, because defaulting would
+# The three TrueSkill parameters, passed rather than compiled in: they are policy (the season's
+# `rating` rules, else [vars]). None is defaulted -- a missing one is a refusal, because defaulting would
 # silently rate a whole ladder on numbers nobody chose.
 [[functions.input_fields]]
 name = "beta"

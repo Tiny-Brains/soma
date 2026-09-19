@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-season-maps-get",
   "name": "One season map",
-  "description": "PUBLIC (N28): one board of a season, with the board itself and every time it was enabled or disabled -- which is the record of when it was in play, since a live season's standings were earned on whatever was enabled at the time. The board is returned exactly as stored, for the viewer's own component to draw; nothing here reads inside it.",
+  "description": "PUBLIC: one board of a season, with the board itself and every time it was enabled or disabled -- which is the record of when it was in play, since a live season's standings were earned on whatever was enabled at the time. The board is returned exactly as stored, for the viewer's own component to draw; nothing here reads inside it.",
   "tags": ["pkg:soma"],
   "tasks": [
     {

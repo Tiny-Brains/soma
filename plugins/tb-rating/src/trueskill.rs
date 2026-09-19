@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn ranks_numbering_is_immaterial() {
-        // docs/design.md §8: equal means drew, and the numbering is the engine's business. Any
+        // Equal ranks draw, and the numbering is the engine's business. Any
         // order-preserving relabelling must reach the same update.
         let p = default_params();
         let dense = rate(&players(&[(26.0, 5.0, 1), (24.0, 7.0, 1), (25.0, 6.0, 3)]), &p).unwrap();

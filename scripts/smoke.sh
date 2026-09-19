@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Call every route the package ships and check the status code.
 #
-#   soma/scripts/smoke.sh            # needs the DevOps stack up and the package loaded
+#   soma/scripts/smoke.sh            # needs web's local stack up and the package loaded
 #
 # check-sql.sh proves every statement parses and plans; this proves the workflows around them
 # answer, which a package load alone does not. It is a status-code suite, not a behaviour one:

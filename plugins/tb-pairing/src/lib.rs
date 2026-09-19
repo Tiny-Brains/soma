@@ -5,11 +5,11 @@
 //!
 //! It decides *quality*, never correctness. Every rule here could be replaced by "pick uniformly"
 //! and the ladder would still be right, only slower to learn — the correctness lives in the insert
-//! statement (soma/docs/schema.md §6.2), which derives the hashes, the ladders and the contesting
+//! statement (pair's `insert`), which derives the hashes, the ladders and the contesting
 //! check itself and refuses anything paired against a roster that has since moved. That division
 //! is what lets this plugin be tuned freely.
 //!
-//! **Input** is the demand document (docs/design.md §6.1) plus the policy knobs:
+//! **Input** is the demand document (pair's `demand` read) plus the policy knobs:
 //!
 //! ```json
 //! { "demand": { "room": 12, "wants": [...], "pool": [...], "played": [...],
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! **The map decides the seat count**, not the game — so the map is chosen first and the opponents
-//! drawn afterwards. The maps are the season's ENABLED boards (decision N28), read by pair on every
+//! drawn afterwards. The maps are the season's ENABLED boards, read by pair on every
 //! run, because an admin may change them while the season is live; there is no deploy list to fall
 //! back to, so a season with none enabled is refused here and pairs nothing.
 //!
@@ -29,7 +29,7 @@
 //! { "n": 2, "pairings": [ { "seats": ["<a>", "<b>", "<c>", "<d>"], "map": "<id>", "seed": 12 } ] }
 //! ```
 //!
-//! Trials are not here: pair prepends them from SQL (docs/design.md §6.4), so a waiting candidate
+//! Trials are not here: pair prepends them from SQL (its `trials` read), so a waiting candidate
 //! is never crowded out by the queue and the choice cannot depend on this plugin's state.
 
 mod choose;
@@ -265,7 +265,7 @@ mod tests {
                           model("base", "nano", "baseline", 25.0, 3.0) ],
                 "played": [],
                 // The season's pairing policy travels INSIDE the demand document, and so do its
-                // boards: the season's enabled maps, which are the only source there is (N28).
+                // boards: the season's enabled maps, which are the only source there is.
                 "limits": { "self_pairing": false, "cross_class_fraction": 0.20,
                             "maps": two_seats(&["standard", "maze", "cell"]) },
                 "owners": []

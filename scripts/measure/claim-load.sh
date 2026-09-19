@@ -182,27 +182,27 @@ echo
 # 214 tokens for 214 authenticated calls: exactly one per call, which is the doubling.
 #
 # AND THE TOKEN ROUTE IS RATE LIMITED ON THE CALLER'S ADDRESS. `soma-runner-token` declares
-# {requests_per_second: 5, burst: 10} and CANNOT have a principal limit -- it is the route that
+# `runner_token_rate` (shared/soma.json) and CANNOT have a principal limit -- it is the route that
 # establishes the principal. So the ceiling is per SOURCE ADDRESS, and several machines in one
 # office are one source address.
-TOKEN_RPS="${TOKEN_RPS:-5}"      # soma/channels/soma-runner-token.json rate_limit
+TOKEN_RPS="${TOKEN_RPS:-30}"     # shared/soma.json runner_token_rate
 PER_RUNNER="${PER_RUNNER:-0.89}" # measured above
 echo "==> the bound that actually binds: the token route, per SOURCE ADDRESS"
-printf '    %-34s %s\n' "token route limit" "$TOKEN_RPS rps (address-keyed, burst 10)"
+printf '    %-34s %s\n' "token route limit" "$TOKEN_RPS rps (address-keyed)"
 printf '    %-34s %s\n' "an idle runner costs" "$PER_RUNNER token/s -- one per authenticated call"
 runners=$(awk -v t="$TOKEN_RPS" -v p="$PER_RUNNER" 'BEGIN{printf "%.1f", t/p}')
 printf '    %-34s %s\n' "runners behind one NAT" "$runners"
 pct=$(awk -v r="$runners" -v f="$FLOOR" 'BEGIN{printf "%.2f%%", 100*(r*0.83)/f}')
 printf '    %-34s %s\n' "…and the database at that point" "$pct of the floor measured above"
 echo
-echo "    So the database is ~200x clear of the limit that bites first, and the limit that bites"
+echo "    So the database is far clear of the limit that bites first, and the limit that bites"
 echo "    first is SILENT: a 429 on the token leaves data.tok.token unset, the run ends at the"
 echo "    \`noauth\` task with outcome no_token, and the channel traces errors_only -- so nothing"
 echo "    is written anywhere. The one visible symptom is that last_seen_at stops moving, because"
 echo "    the token exchange is what stamps it, which is why the admin Runners screen separates"
 echo "    \"calling in\" from \"authorised\"."
 echo
-echo "    N9, answered: do not lengthen the poll. Stop minting a ten-minute token for one call --"
+echo "    So: do not lengthen the poll. Stop minting a ten-minute token for one call --"
 echo "    then one runner costs 0.83 calls/s instead of 1.78, and the same limit holds twice the"
 echo "    machines. Raising TOKEN_RPS instead buys the same room and keeps the doubling."
 

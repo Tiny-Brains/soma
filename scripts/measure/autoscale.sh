@@ -5,7 +5,7 @@
 #
 #   1. it reads DEMAND, and demand LEADS the queue -- a replica is asked for before the rows it
 #      will claim exist;
-#   2. it must NEVER read queue depth (decision 43). `pair_depth_target` caps the queue at 64, so a
+#   2. it must NEVER read queue depth. `pair_depth_target` caps the queue at 64, so a
 #      scaler reading depth would cap the fleet at 64/K and look correct doing it;
 #   3. the latency guard is a NUDGE -- exactly one replica above the computed target, never a jump;
 #   4. `engine_digest = s.engine_digest` keeps a rolling deploy from oscillating: the old engine's

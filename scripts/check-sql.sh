@@ -10,8 +10,7 @@
 # still selecting `matches.model_ids`.
 #
 # It walks INTO TASK GROUPS. The clocks' generator folds each run of tasks sharing a condition into
-# a group, and a walker that reads only the top-level list sees 9 of the clocks' 23 statements --
-# which is what jodi/scripts/check-sql.sh did from 15 September 2026 until the merge.
+# a group, and a walker that reads only the top-level list misses most of the clocks' statements.
 #
 # What each statement DOES is scripts/verify/run.sh's walk; that a workflow answers at all is
 # scripts/smoke.sh.

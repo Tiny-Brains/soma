@@ -21,10 +21,10 @@
 #   SOMA_ALLOW_PRIVATE_DB   1 to set allow_private_urls on the database, models, node-admin and
 #                           object-store HTTP connectors
 #   SOMA_CACHE_REDIS_URL    the response cache's Redis; empty keeps the committed literal
-#   GITHUB_API_BASE         stand-in for api.github.com, to exercise the ownership check offline
+#   GITHUB_API_BASE         stand-in for api.github.com, which sign-in alone calls
 #   SOMA_NODE_ADMIN         the admin API the admit clock registers a model on (default: this node)
 #   R2_ENDPOINT             the models bucket at its INTERNAL address -- soma-models-http's base
-#   PLUGIN_SIG_DIR          detached Ed25519 signatures for tb.rating and tb.pairing, named <component>.sig
+#   PLUGIN_SIG_DIR          detached Ed25519 signatures for tb.rating, tb.pairing and tb.ants, named <component>.sig
 #
 # Everything else that varies by environment is read by the definitions themselves: the GitHub
 # client id and secret as env:// from the sign-in channel, and the app URL, callback and cookie

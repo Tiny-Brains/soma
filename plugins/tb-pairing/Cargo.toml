@@ -1,6 +1,6 @@
 # `tb.pairing` -- the plugin pair calls once a run to choose who plays whom. Built for
 # wasm32-unknown-unknown and turned into a component by `wasm-tools` (see build.sh); the built
-# bytes are committed beside the manifest so the package loads without a wasm toolchain.
+# bytes are build output, never committed: the image builds them under a pinned toolchain.
 [package]
 name = "tb-pairing"
 version.workspace = true

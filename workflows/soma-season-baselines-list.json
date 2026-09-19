@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-season-baselines-list",
   "name": "A season's baselines",
-  "description": "Admin only: every baseline uploaded into a season (N29), oldest first -- in play, admitted and out of play, still being admitted, and the uploads admission refused with the word it refused them for, because an admin re-uploading a baseline needs to know why the last one did not take. A baseline is a `baseline.` account, its entry and its version in this season, and its STATUS is whether it is in play: `active` is, `disabled` is not, `testing` is being admitted and `rejected` was refused. The ladder already shows the ones in play to everyone, under the baseline mark; this list is the admin's, because an upload still being admitted, or refused, is nobody else's business.",
+  "description": "Admin only: every baseline uploaded into a season, oldest first -- in play, admitted and out of play, still being admitted, and the uploads admission refused with the word it refused them for, because an admin re-uploading a baseline needs to know why the last one did not take. A baseline is a `baseline.` account, its entry and its version in this season, and its STATUS is whether it is in play: `active` is, `disabled` is not, `testing` is being admitted and `rejected` was refused. The ladder already shows the ones in play to everyone, under the baseline mark; this list is the admin's, because an upload still being admitted, or refused, is nobody else's business.",
   "tags": ["pkg:soma"],
   "tasks": [
     {

@@ -3,7 +3,7 @@
 //! Called once per finished match, between reading the seats' priors and writing the fold. Pure:
 //! the same match, priors and parameters give the same posteriors for ever, whoever runs them.
 //!
-//! **Input** is soma/docs/schema.md §5.2's priors document under `match`, plus the three TrueSkill
+//! **Input** is count's priors document under `match`, plus the three TrueSkill
 //! parameters:
 //!
 //! ```json

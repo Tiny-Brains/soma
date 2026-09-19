@@ -80,8 +80,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # Soma plays no match, but it takes four things from the ants release: the manifest (the basic
 # boards, `limits.boards` -- what a season's upload may be -- and the adapter budget), the reference
 # observations admission validates an adapter against, the engine digest `bootstrap` declares --
-# the digest every pending row is stamped with and every runner's claim filters on -- and, since
-# N28, THE COMPONENT ITSELF: an uploaded season map is judged by the engine's own `worldgen` on this
+# the digest every pending row is stamped with and every runner's claim filters on -- and THE
+# COMPONENT ITSELF: an uploaded season map is judged by the engine's own `worldgen` on this
 # node, so a board that cannot be played is refused at upload rather than failing every match.
 #
 # The release unpacked and checked, as kalam's and web's images take it: the viewer inside it must
@@ -169,14 +169,14 @@ COPY connectors/ /pkg/soma/connectors/
 COPY migrations/ /pkg/soma/migrations/
 COPY shared/     /pkg/soma/shared/
 COPY scripts/load-package.sh scripts/stage-set.py /pkg/soma/scripts/
-# plugin.toml is what `orion-server compile` reads a set's plugins from; plugin.json is the
-# generated twin a signing script reads.
+# plugin.toml is what `orion-server compile` reads a set's plugins from, and what web's
+# sign-plugins.sh reads; plugin.json is its generated JSON twin.
 COPY plugins/tb-pairing/plugin.toml /pkg/soma/plugins/tb-pairing/
 COPY plugins/tb-rating/plugin.toml  /pkg/soma/plugins/tb-rating/
 COPY --from=plugins /src/plugins/tb-pairing/plugin.json /src/plugins/tb-pairing/tb-pairing.wasm /pkg/soma/plugins/tb-pairing/
 COPY --from=plugins /src/plugins/tb-rating/plugin.json  /src/plugins/tb-rating/tb-rating.wasm  /pkg/soma/plugins/tb-rating/
 COPY --from=cartridge /cartridge/ /pkg/cartridge/
-# The engine, which the map upload calls (N28), as a plugin of this package -- the same component and
+# The engine, which the map upload calls, as a plugin of this package -- the same component and
 # the same two manifests Kalam's runner loads, so one signature verifies on both.
 COPY --from=ants /tb-ants.wasm /plugin.json /plugin.toml /pkg/soma/plugins/tb-ants/
 

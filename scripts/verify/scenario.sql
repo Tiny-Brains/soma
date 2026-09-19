@@ -1,4 +1,4 @@
--- docs/schema.md draft 3 — the walk, end to end, on the prepared statements.
+-- The walk, end to end, on the prepared statements.
 -- Runs after statements.sql in the same session. Each EXECUTE is its own
 -- transaction, as it would be from an Orion task. Match ids are captured with
 -- \gset because EXECUTE parameters may not contain subqueries.
@@ -56,7 +56,7 @@ INSERT INTO runners (id, key_id, label, engine_digest, max_in_flight) VALUES
 UPDATE runners SET revoked_at = now() WHERE id = 'c1000000-0000-0000-0000-000000000003';
 SELECT label, max_in_flight FROM live_runners ORDER BY label;
 
-\echo '--- season maps (N28): three boards uploaded and enabled -- two of two seats, one of four'
+\echo '--- season maps: three boards uploaded and enabled -- two of two seats, one of four'
 -- What soma-season-maps-add leaves behind, less the engine's judgement, which needs a node. The
 -- boards are stand-ins: nothing in the schema reads inside one, which is the point.
 INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
@@ -110,7 +110,7 @@ SELECT id AS m46 FROM matches WHERE seed = 46 \gset
 \echo '--- kalam: reap (expect 0); claim ONE row, trials first (expect 1)'
 EXECUTE k_reap;
 EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001');
--- Eight parameters since N18: the read-back also builds the execution contract, so it carries
+-- Eight parameters: the read-back also builds the execution contract, so it carries
 -- the deploy fallbacks the coalesce lands on when a season declares nothing and the game's
 -- manifest has no limits -- which is this fixture, so `turn_ms` here is the 1000 below.
 EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v', 'replays', 30, 300, 1000, 1000, 5);
@@ -160,7 +160,7 @@ EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
   'all_food', 120, now() - interval '4 seconds', 'sha256:SOMETHING-ELSE', '1.8.1', 'replays/x.json',
   'c1000000-0000-0000-0000-000000000002');
--- STRIKES ABOVE THE CEILING THE ROW WAS QUEUED UNDER. Decision 54 pinned strike_ceiling on the row
+-- STRIKES ABOVE THE CEILING THE ROW WAS QUEUED UNDER. Pair pins strike_ceiling on the row
 -- so a trial is judged by the rule it was played under; this is that rule read back.
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":1,"score":10,"strikes":99},{"seat":1,"rank":2,"score":3,"strikes":0}]',
@@ -252,8 +252,7 @@ EXECUTE p_insert (1, 'ants', 50, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
--- K_FAIL IS GONE. Kalam shipped a ninth statement that failed a whole wave by weights hash; the
--- wave went with R7 and the statement with it. A match now fails by the reap's third lapse or the
+-- No shipped statement fails a row directly: a match fails by the reap's third lapse or the
 -- release ceiling, and a fault on a seat is reported through the finish. So this UPDATE is SETUP,
 -- not a statement under test -- it puts the row in the state count's reject verdict reads.
 UPDATE matches SET status = 'failed', fault_reason = 'HASH_MISMATCH', fault_seat = 0,
@@ -423,9 +422,9 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
    '1.8.1', '{"in": ["scatter"]}');
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
-\echo '--- docs/clocks.md: the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on the season''s first enabled board, `default` (expect n 1, 2 seats, map 70000000-...-001)'
+\echo '--- the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on the season''s first enabled board, `default` (expect n 1, 2 seats, map 70000000-...-001)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
-\echo '--- decision 14: the board decides the seat count. Only one baseline exists here, so with the two-seat boards disabled the four-seat one is left unpaired rather than seated short (expect n 0)'
+\echo '--- the board decides the seat count. Only one baseline exists here, so with the two-seat boards disabled the four-seat one is left unpaired rather than seated short (expect n 0)'
 BEGIN;
 UPDATE season_maps SET enabled = false WHERE players = 2;
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
@@ -448,12 +447,12 @@ SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
-\echo '--- docs/clocks.md: the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
-\echo '    decision 28: the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight -- it used to read state baseline, want 0)'
+\echo '--- the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
+\echo '    the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 
-\echo '--- decision 28: pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
+\echo '--- pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
 SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
 UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
@@ -464,7 +463,7 @@ SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room
   FROM json_array_elements((:'body')::json -> 'owners') o ORDER BY 1;
 UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-0000-000000000001';
 
-\echo '===== season maps: the one part of a live season that changes (N28) ====='
+\echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
 EXECUTE p_demand_doc ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
@@ -497,7 +496,7 @@ EXECUTE m_insert ('ants', 'summer-2026', '{"id": "another", "players": 2, "rows"
 ROLLBACK;
 \echo '--- the claim sends the board (expect the stand-in board of `default`)'
 SELECT m.seed, sm.map_id, sm.board FROM matches m JOIN season_maps sm ON sm.id = m.season_map_id WHERE m.seed = 43;
-\echo '===== season baselines: uploaded, admitted, enabled and disabled (N29) ====='
+\echo '===== season baselines: uploaded, admitted, enabled and disabled ====='
 \echo '--- a name gives an account (expect baseline.scout, baseline.fire-ant, then null for a name with no slug and for 49 characters)'
 SELECT baseline_handle('Scout') AS scout, baseline_handle('  Fire Ant ') AS fire_ant,
        baseline_handle('🔥 🔥') IS NULL AS emoji_null, baseline_handle(repeat('a', 49)) IS NULL AS long_null;

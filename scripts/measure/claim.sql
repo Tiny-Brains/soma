@@ -1,11 +1,8 @@
 -- The claim, exactly as soma/workflows/soma-runner-claim.json issues it, for pgbench.
 --
--- REPLACED 16 SEPTEMBER 2026. This file used to hold the pre-R7 WAVE claim -- two MATERIALIZED
--- CTEs, a resident-weights affinity term in the ORDER BY, and `LIMIT 16` -- and its header named
--- `kalam/workflows/tb-wave-run.json`, a file R7 deleted. So every number this harness produced for
--- months was the cost of a statement the platform does not run. The shipped claim takes ONE row
--- (decision R7: every Ants map is two-player, so a wave of K existed to amortise a batch of two)
--- and now also carries the runner predicates the gate added.
+-- The shipped claim takes ONE row and carries the runner predicates the gate adds. Keep this copy
+-- equal to the workflow's, or every number this harness produces is the cost of a statement the
+-- platform does not run.
 --
 -- Bound values arrive as pgbench variables (`-D digest=...`), which substitute textually and carry
 -- their own quotes -- pgbench has no :'var' form and no bind protocol here. Nothing else changed.

@@ -1,9 +1,9 @@
-//! Who plays whom, and on which map: docs/design.md §6.2, in the order the rules are applied.
+//! Who plays whom, and on which map, in the order the rules are applied.
 //!
 //! It never seats a version against itself, never seats one twice in a pairing, and never seats
 //! anything that is not in the pool -- and the pool is `status = 'active'` only, which is what
 //! keeps a `verified`, `superseded` or `rejected` version out without this code knowing those
-//! words. Trials are chosen in SQL (§6.4), not here.
+//! words. Trials are chosen in SQL (pair's `trials` read), not here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -54,7 +54,7 @@ pub struct Rating {
 
 /// Deliberately no `role`, and the pool document carries none: a baseline is paced like every
 /// version, so there is nothing here to treat differently. The one thing a baseline does alone,
-/// sit opposite every trial, is chosen in SQL where this plugin never sees it (design §6.4).
+/// sit opposite every trial, is chosen in SQL where this plugin never sees it (the `trials` read).
 ///
 /// `owner_id` is here for the same class of reason it is NOT a role: two versions of one owner in
 /// one match is a free rating transfer between a competitor's own models, which became possible
@@ -124,7 +124,7 @@ pub struct Pairing {
 ///
 /// The wanting side drives: a version that wants a match is seated and an opponent is drawn for
 /// it. A version at its cap is never the wanting side, but a settled version or one whose want is
-/// spent may be seated opposite, limited only by its owner's room (docs/design.md §4).
+/// spent may be seated opposite, limited only by its owner's room.
 pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     let mut out = Vec::new();
     if input.room == 0 || input.pool.len() < 2 || input.maps.is_empty() {

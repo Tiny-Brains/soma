@@ -79,7 +79,7 @@ game = "ants"
 
 # THE ENGINE THIS NODE LOADS, from the image's own cartridge (the entrypoint exports it). A season map
 # upload refuses a season pinned to any other engine, because validating a board on one engine proves
-# nothing about the one that will play it (N28). There is no board list here any more: a season's
+# nothing about the one that will play it. There is no board list here: a season's
 # boards are season_maps, uploaded and enabled by an admin, and pair reads them from the database.
 engine_digest = "${SOMA_ENGINE_DIGEST:-}"
 
@@ -98,10 +98,11 @@ settled_sigma = 3.0
 cross_class_fraction = 0.20
 repair_cap = 3
 
-# MUST EQUAL Kalam's strike_ceiling, or count judges a trial by a rule the wave did not play by.
+# Pair's fallback strike ceiling for a season whose rules set no `pairing.forfeit_strikes`. Pair stamps
+# it on matches.strike_ceiling, and the runner and count both read it off the row: Kalam holds no copy.
 forfeit_strikes = 5
 
-# The rating prior: a promoted version's, and a baseline's the first time an admin enables it (N29),
+# The rating prior: a promoted version's, and a baseline's the first time an admin enables it,
 # unless the season's rules.rating says otherwise.
 prior_mu        = 25.0
 prior_sigma     = 8.333333333333334
@@ -119,13 +120,13 @@ ts_draw_probability = 0.10
 models_endpoint = "${MODELS_ENDPOINT:-http://minio:9000}"
 
 # An Orion model id is `[a-z][a-z0-9-]*` joined by `.`, so a bare uuid beginning with a digit is
-# refused: this is the prefix that makes a version id a model id (decision R9). It MUST equal the
+# refused: this is the prefix that makes a version id a model id. It MUST equal the
 # `model_prefix` every Kalam replica is configured with, or a replica registers models under names
 # no match row names.
 model_prefix = "tb.v"
 
 # What ran the adapters, recorded on every verdict and every finished match. A change in it is what
-# makes a re-validation sweep necessary (decision R10), so it is pinned here beside the binary
+# makes a re-validation sweep necessary, so it is pinned here beside the binary
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
 # a different thing that moves for different reasons.
 orion_version = "${ORION_VERSION:-1.8.1}"
@@ -151,19 +152,18 @@ op_allowlist = [
 ]
 
 # ------------------------------------------------------------------------------- RUNNER GATE
-# What `/v1/runner/*` serves a match on. These are read by the eight runner workflows and by
-# nothing else; a Kalam replica used to hold its own copy of each in kalam.toml.tmpl, asserted
-# equal across the two files by scripts/check/configs.sh -- WHICH CANNOT READ A MACHINE ON
-# SOMEBODY'S DESK. The claim response carries them instead, from the one place that owns them.
+# What `/v1/runner/*` serves a match on. These are read by the runner workflows and by nothing
+# else. The claim response carries them to the runner, from the one place that owns them, because
+# no config check can read a machine on somebody's desk.
 
 # THE BOTTOM OF A THREE-LEVEL COALESCE, and a real deployment never reaches them. A claim reads
-# `seasons.rules -> 'execution'` first (N18 -- a season owns the terms a model competes under), then
+# `seasons.rules -> 'execution'` first (a season owns the terms a model competes under), then
 # `games.manifest -> 'limits'`, which `soma bootstrap` writes from the cartridge's own cartridge.json and
 # is where these two numbers have always really lived. These are the last resort.
 #
-# That is exactly what makes a disagreement invisible, so check/configs.sh 1d asserts they equal the
-# cartridge's, and 1c asserts they equal kalam.toml.tmpl's for as long as a db-mode replica reads
-# its own copy. The second of those goes with the runner conversion; the first stays.
+# That is exactly what makes a disagreement invisible, so web's scripts/check/configs.sh asserts they
+# equal the cartridge's, and kalam's replica-db.toml.tmpl for as long as a db-mode replica reads its
+# own copy.
 turn_ms   = 1000
 max_turns = 1000
 
@@ -200,7 +200,7 @@ renew_every_n_turns = 30
 # SigV4 signs the host, so the gate must sign for the host the runner will actually dial. Signing
 # with R2_ENDPOINT because "that is the replay bucket's address" produces a URL the runner rewrites
 # onto its own endpoint, and MinIO answers `SignatureDoesNotMatch` -- a 403 that names a signature
-# problem and not the two variables behind it. Found the first time a runner finished a match.
+# problem and not the two variables behind it.
 #
 # `http_call` prefixes its connector's base URL onto `path`, so the runner subtracts this value
 # from the signed URL and re-prefixes with `kalam-blobs-put`'s own. THOSE TWO MUST BE THE SAME
@@ -217,7 +217,7 @@ blob_endpoint = "${RUNNER_BLOB_ENDPOINT:-http://minio:9000}"
 enabled = true
 api_keys = ["${ORION_ADMIN_KEY}"]
 
-# ONNX AS A GOVERNED ENTITY (decision R1), and on this node it is an ADMISSION instrument only.
+# ONNX AS A GOVERNED ENTITY, and on this node it is an ADMISSION instrument only.
 # The admit clock registers a submission here, runs admission synchronously, activates it long
 # enough to play it over the game's reference observations, and archives it again -- so the active
 # set is normally empty and a generation build recompiles no competitor's adapter. The replicas
@@ -232,14 +232,15 @@ max_loaded_bytes = 2147483648
 # Nothing is warmed here: an admission node touches each model once.
 preload = "none"
 
-# The largest artifact any weight class admits is `large` at 64 MiB.
+# The node refuses an object past this (SIZE_FAILED) before any class is considered. NOTE: the
+# default `large` class allows 128 MiB, so a large model between the two is refused here.
 max_artifact_bytes = 67108864
 max_input_elements  = 1048576
 max_output_elements = 1048576
 
 # The probe's ceiling, and the ONLY compute gate at admission -- five zero-filled inferences at the
 # manifest's `probe_dims`, median inside this. A season may set graph.infer_us_max on top; none
-# that the platform ships does (decision 46).
+# that the platform ships does: the turn deadline, not a compute cap, is what bounds a model.
 max_probe_ms = 250
 
 # The adapter's own deadline when the probe channel plays a reference observation.

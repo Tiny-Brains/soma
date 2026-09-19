@@ -20,22 +20,19 @@ DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
 SCRATCH=soma_verify
 SEEDCHK=soma_verify_seed
 MIGRATIONS=../../migrations
-# The seed is the local stack's, in web since devops stopped running anything (N25). Override SEED,
+# The seed is the local stack's, web's compose/seed.sql. Override SEED,
 # or check out web beside soma, or the seed half of this script is skipped with a notice.
 SEED="${SEED:-../../../web/compose/seed.sql}"
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 
-# The eight match statements in statements.sql are copies of what workflows/soma-runner-*.json ship,
-# and a copy nobody compares is a copy that drifts: this file carried the pre-R7 two-CTE wave claim
-# for months after a one-row claim shipped, so every race it "proved" was proving a statement that
-# did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
+# The match statements in statements.sql are copies of what workflows/soma-runner-*.json ship, and a
+# copy nobody compares is a copy that drifts: a race "proved" against a stale copy proves a statement
+# that does not exist. Comparing them costs a second and makes that impossible rather than unlikely.
 #
-# The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json,
-# and so are the five notification statements, the two season-map statements (N28), admission's verdict and the two season-baseline statements (N29) -- n_version against all three tasks that ship it.
-# Until the clocks moved into this repository nothing compared them at all, and three of the copies
-# (c_verdicts, c_decide, c_batch) had already outlived the statements they copied. The clock tasks
-# live inside TASK GROUPS, which is why the lookup below descends.
+# The clock, notification, season-map, season-baseline and admission-verdict statements are compared
+# the same way, against the workflows that ship them (n_version against all three tasks that ship
+# it). The clock tasks live inside TASK GROUPS, which is why the lookup below descends.
 echo "===== the statements under test are the statements that ship ====="
 python3 - <<'PY'
 import json, re, sys, pathlib
@@ -107,8 +104,8 @@ rm -f race1_hold.log race2_hold.log
 
 # The deployed shape: the migrations plus the seed the local stack's bootstrap applies, which is what
 # a fresh environment actually runs. Checks the seed writes no model -- a season's maps and
-# baselines are uploaded to it (N28, N29) -- and that the Kalam role's grants are exactly the columns
-# docs/schema.md §3.8 names -- the security track's assertion, run rather than asserted.
+# baselines are uploaded to it -- and that the Kalam role's grants are exactly its execution
+# columns, run rather than asserted.
 echo "===== the deployed schema: migrations + seed ====="
 if [ ! -f "$SEED" ]; then
   echo "SKIP: seed checks -- $SEED not found (needs a web checkout beside soma; set SEED= to point at it)"
@@ -123,7 +120,7 @@ psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
 DO $$
 DECLARE n int;
 BEGIN
-    -- NO MODEL IS SEEDED (N29). A season's baselines are uploaded into it and admitted like any
+    -- NO MODEL IS SEEDED. A season's baselines are uploaded into it and admitted like any
     -- submission; a seed that writes a version, a rating or a baseline account again is the roster
     -- this replaced coming back as SQL only this stack runs.
     SELECT count(*) INTO n FROM model_versions; ASSERT n = 0, format('the seed wrote %s versions', n);
@@ -135,7 +132,7 @@ BEGIN
     SELECT count(*) INTO n FROM games WHERE active_engine_digest IS NOT NULL;
     ASSERT n = 1, 'the game must carry an engine digest, placeholder or not';
 
-    -- docs/rating-and-seasons.md: exactly one live season, pinning the game's digest
+    -- exactly one live season, pinning the game's digest
     SELECT count(*) INTO n FROM seasons s JOIN games g ON g.id = s.game_id
       WHERE s.closed_at IS NULL AND s.engine_digest = g.active_engine_digest;
     ASSERT n = 1, 'the game must have exactly one live season, on its digest';

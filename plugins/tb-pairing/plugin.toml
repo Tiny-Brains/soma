@@ -1,9 +1,9 @@
 # tb.pairing -- who plays whom, and on which map.
 #
 # `./build.sh` rebuilds the component beside this manifest, running the host tests first; both it
-# and the plugin.json generated from this file are committed, so the package loads without a wasm
-# toolchain. Pair calls this once a run, after reading the demand document (docs/design.md §6.1)
-# and before its insert loop; the contract is docs/design.md §6.2.
+# and the plugin.json generated from this file are build output, never committed: the image builds
+# them. Pair calls this once a run, after reading the demand document and before its insert loop;
+# src/lib.rs documents the input and the plan it returns.
 #
 # It decides quality, never correctness: every rule in it could be replaced by "pick uniformly" and
 # the ladder would still be right, only slower to learn -- the correctness lives in the insert
@@ -29,8 +29,8 @@ required = true
 template_at = true
 
 # Not required, because pair no longer passes it: the season's value arrives in `demand.limits`, and
-# this input is only the fallback lib.rs reads when that is absent. Declared required, Orion 1.7
-# refuses the pair workflow at create -- which is what a fresh load hit on 11 September 2026.
+# this input is only the fallback lib.rs reads when that is absent. Declared required, Orion
+# refuses the pair workflow at create, and the package does not load on a fresh node.
 [[functions.input_fields]]
 name = "cross_class_fraction"
 description = "Fallback only: how often an opponent is drawn from another weight class, when demand.limits does not say"

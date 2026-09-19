@@ -4,7 +4,7 @@
 #   soma serve        (the default) migrate Orion's state, load this image's package, run orion-server
 #   soma bootstrap    one-shot, BEFORE any node starts: orion_state, the schema, the seed, the
 #                     runner_gate role, the engine digest and the cartridge. NOT the baselines: an
-#                     admin uploads those into a season (N29), and no image carries a model
+#                     admin uploads those into a season, and no image carries a model
 #
 # THE PACKAGE IS IN THE IMAGE, AND THE NODE LOADS IT. There is no loader service: `serve` forks the
 # load before it execs, so the exec still happens and SIGTERM still reaches Orion directly, and the
@@ -127,10 +127,8 @@ serve() {
 #                 while a season is live). A runner whose digest differs claims nothing, for ever.
 #   the cartridge games.manifest and games.reference_observations, what admission validates against
 #
-# The baselines were a seventh step until 19 September 2026: a roster file whose models bootstrap
-# downloaded, checked, uploaded and seeded as live-season versions. A season's baselines are
-# uploaded into it by an admin now and admitted like any submission (N29), so the platform ships no
-# model and this command touches no bucket.
+# No step here writes a model, a map or a bucket object: a season's baselines and boards are uploaded
+# into it by an admin, and baselines are admitted like any submission.
 DB="${SOMA_DB_URL:-}"
 ADMIN_DB="${SOMA_ADMIN_DB_URL:-}"
 MIGRATIONS="$PKG/migrations"

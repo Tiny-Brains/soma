@@ -15,10 +15,9 @@ THE OUTPUT IS FORMATTED BY `orion-server fmt`, because it is committed beside fi
 check-defs.sh holds the whole repository to the house style. So the generator needs the same
 1.8.x binary check-defs.sh does, and `--check` compares formatted text with formatted text.
 
-The clocks read and write through `soma-db`, the owner connector the routes use. Until 16 September
-2026 they were the separate `jodi` package, on a `jodi-db` connector over a `jodi` role with no
-DELETE and nothing on `sessions`; one package has one reload, so the reason for a connector of their
-own went with the repository, and the role went with it.
+The clocks read and write through `soma-db`, the owner connector the routes use. No grant stops a
+clock reading `sessions` or rewriting an entry: that boundary is review, and `soma-db`'s
+`operations.delete = false` is what stops one deleting a row.
 """
 
 import json
@@ -112,7 +111,7 @@ STILL_GOOD = [var("temp_data.head"), {"!": var("temp_data.reason")},
 
 # ======================================================================= statements
 
-# --- schema §5.1: count claims its run fence, monotonically, at its first task.
+# --- count claims its run fence, monotonically, at its first task.
 C_FENCE = """
 UPDATE clocks
    SET scheduled_for = ($1)::timestamptz, attempt = ($2)::int, updated_at = now()
@@ -120,7 +119,7 @@ UPDATE clocks
    AND (scheduled_for, attempt) < (($1)::timestamptz, ($2)::int)
 """
 
-# --- design §5.1: everything this run will do, as one document -- the matches to fold in finish
+# --- everything this run will do, as one document -- the matches to fold in finish
 # order, then the trials to decide. Folds first, so a trial is decided after every result that
 # arrived before it.
 C_BATCH_DOC = """
@@ -178,7 +177,7 @@ SELECT json_build_object('n', count(*),
   FROM (SELECT * FROM folds UNION ALL SELECT * FROM verdicts) x
 """
 
-# --- schema §5.2: the seats' priors on the ladders this match feeds, as the plugin's input.
+# --- the seats' priors on the ladders this match feeds, as the plugin's input.
 C_PRIORS = """
 SELECT json_build_object(
          -- The keys `trial_model_id` and `model_id` are the plugin's WIRE FORMAT and stay as they
@@ -208,7 +207,7 @@ SELECT json_build_object(
  WHERE m.id = ($1)::uuid AND m.status = 'finished'
 """
 
-# --- schema §5.2: mark the match rated and apply the posteriors, in one statement under the
+# --- mark the match rated and apply the posteriors, in one statement under the
 # fence. The mark and the writes being one statement is what stops a match being counted twice:
 # the second attempt finds status <> 'finished' and updates nothing.
 C_FOLD = """
@@ -248,7 +247,7 @@ SELECT a.version_id, a.ladder, a.seq, mark.id, a.seat,
   FROM applied a, mark
 """
 
-# --- schema §5.3: promotion. Mark the trial rated, bump the roster epoch, supersede the
+# --- promotion. Mark the trial rated, bump the roster epoch, supersede the
 # predecessor, activate the candidate, and seed both its rating rows from the predecessor's with
 # sigma inflated -- all in one statement, so a reader never sees half a promotion.
 C_PASS = """
@@ -257,7 +256,7 @@ WITH fence AS (
      WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int
        FOR SHARE
 ), live AS (
-    -- 06 §6.4: the candidate's season must be live, and the guard sits on the mark because a
+    -- The candidate's season must be live, and the guard sits on the mark because a
     -- data-modifying CTE runs whether or not the outer statement uses it. Never reached in
     -- practice -- a close rejects a waiting candidate in the same statement -- but never is a
     -- promise, and this is a predicate.
@@ -316,7 +315,7 @@ INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after)
 SELECT version_id, ladder, 0, mu, sigma FROM seeded
 """
 
-# --- schema §5.4: the promoted version's predecessor keeps no queue. Idempotent, and the
+# --- the promoted version's predecessor keeps no queue. Idempotent, and the
 # backstop sweep would catch these anyway -- this is what stops the successor waiting for it.
 C_WITHDRAW_PRED = """
 UPDATE matches m
@@ -326,7 +325,7 @@ UPDATE matches m
    AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.version_id = ($1)::uuid)
 """
 
-# --- schema §5.3: rejection. Also a roster write, so it bumps the epoch: a queued row naming
+# --- rejection. Also a roster write, so it bumps the epoch: a queued row naming
 # this candidate must not be paired against a roster that no longer contains it.
 C_REJECT = """
 WITH fence AS (
@@ -351,7 +350,7 @@ UPDATE model_versions v
  WHERE v.id = ($4)::uuid AND v.status = 'verified'
 """
 
-# --- schema §7.1, as rating-and-seasons §6.5 revised it: the backstop. Cancel every queued match
+# --- the backstop. Cancel every queued match
 # whose season has closed, whose engine has been retired, or whose seats stopped contesting.
 # "Contesting" is stated by inclusion -- active, or verified for the candidate seat of its own
 # trial -- so a status added later fails closed and is withdrawn. The digest is the ROW'S SEASON'S
@@ -398,10 +397,10 @@ UPDATE matches m
                          OR (v.status = 'verified' AND v.id = m.trial_version_id))))
 """
 
-# --- rating-and-seasons §5.2: the close. A live season closes when an admin asked
+# --- the close. A live season closes when an admin asked
 # (close_requested_at), or when its window has closed and everything has settled: no submission
 # undecided, nothing in flight or uncounted, and every active version -- baselines included, since
-# they are paced like any other (decision 28) -- at or below settled_sigma with at least burst
+# they are paced like any other -- at or below settled_sigma with at least burst
 # matches ON THE LADDERS IT CAN REACH.
 #
 # "Can reach" matters: a version alone in its class can never move its class ladder, so judged on
@@ -514,7 +513,7 @@ SELECT e.owner_id, 'submissions',
               WHEN v.reject_reason = 'SEASON_CLOSED' THEN ' was withdrawn when its season closed'
               WHEN v.weight_class IS NULL            THEN ' was rejected'
               ELSE                                        ' failed its trial' END,
-       -- The rejection's description IS its reason word, as admission.md §7 spells it; the page
+       -- The rejection's description IS its reason word, as the book spells it; the page
        -- that explains the words is the book's, and a second explanation here would drift from it.
        CASE WHEN v.status = 'verified'
             THEN 'Admitted as ' || v.weight_class || ' at '
@@ -718,15 +717,15 @@ ON CONFLICT (user_id, dedupe_key) DO NOTHING
 # seeded and is not knowable at config time.
 P_GAME = "SELECT id FROM games WHERE slug = ($1)::text"
 
-# --- schema §6.1: the roster epoch, read once at run start. Every insert then checks it.
+# --- the roster epoch, read once at run start. Every insert then checks it.
 P_EPOCH = "SELECT epoch FROM clocks WHERE key = 'roster'"
 
-# --- design §6.1: everything pair needs to choose, at one instant -- what each version wants,
+# --- everything pair needs to choose, at one instant -- what each version wants,
 # who may be seated opposite, which of the season's boards each has played, and how much room the
 # depth target leaves.
 P_DEMAND_DOC = """
 WITH live AS (
-    -- 06 §6.3: only the live season's versions want anything or may be seated. No live season,
+    -- Only the live season's versions want anything or may be seated. No live season,
     -- no demand, nothing paired -- the paused state. The season's rules come with it: every cap
     -- below is coalesce(rule, var), so a season that declares nothing paces exactly as the deploy.
     SELECT id, rules FROM seasons WHERE game_id = ($1)::uuid AND closed_at IS NULL
@@ -743,7 +742,7 @@ WITH live AS (
            (live.rules -> 'pairing' ->> 'queue_share_max')::int                          AS queue_share_max
       FROM live
 ), maps AS (
-    -- THE BOARDS IN PLAY, read on every run (N28): the season's ENABLED maps, which an admin may
+    -- THE BOARDS IN PLAY, read on every run: the season's ENABLED maps, which an admin may
     -- change while the season is live. The season is the only source -- there is no deploy list to
     -- fall back to -- so a season with none enabled pairs nothing, the same paused state as no
     -- season at all. A match already queued keeps the board it was paired on.
@@ -772,7 +771,7 @@ WITH live AS (
     -- In flight INCLUDES a finished row count has not yet folded: its result is what the next
     -- pairing's prior will move, which is the whole reason the cap exists. Without it, in the ten
     -- seconds between Kalam finishing a burst and count folding it, played is still 0 and in_flight
-    -- is 0, and pair inserted a second burst (found building docs/rating-and-seasons.md).
+    -- is 0, and pair would insert a second burst.
     SELECT s.version_id AS model_id, count(*) AS in_flight
       FROM match_seats s
       JOIN matches m ON m.id = s.match_id
@@ -780,8 +779,8 @@ WITH live AS (
        AND m.status IN ('pending', 'claimed', 'running', 'finished')
      GROUP BY s.version_id
 ), w AS (
-    -- No branch for a baseline, and none may come back: it is paced like every version (decision
-    -- 28). The one thing a baseline does alone is sit opposite every trial, which is P_TRIALS'.
+    -- No branch for a baseline, and none may come back: it is paced like every version.
+    -- The one thing a baseline does alone is sit opposite every trial, which is P_TRIALS'.
     SELECT v.model_id, v.owner_id, v.weight_class, v.sigma, v.played,
            coalesce(f.in_flight, 0) AS in_flight,
            CASE WHEN v.played < lim.burst         THEN 'placement'
@@ -866,12 +865,12 @@ SELECT json_build_object(
                      WHERE lim.queue_share_max IS NOT NULL)) AS body
 """
 
-# --- design §6.4: the trial pairings, chosen in SQL rather than by the plugin. The choice is
+# --- the trial pairings, chosen in SQL rather than by the plugin. The choice is
 # mechanical -- a waiting candidate, the board after its last trial's, and baselines to fill it --
 # and it must not depend on anything the plugin might be carrying.
 #
 # THE BOARD DECIDES THE SEAT COUNT, so the board is picked first and the baselines drawn to fill
-# it -- and it is picked only from the season's ENABLED boards its baselines CAN fill (N28). A trial
+# it -- and it is picked only from the season's ENABLED boards its baselines CAN fill. A trial
 # that does not land does not count, so the rotation (`trials % n`) would otherwise stop on an
 # eight-seat board against three baselines and offer that same board every run, for ever: the
 # candidate waits on a board it can never be seated on. With no board fillable at all -- or none
@@ -927,7 +926,7 @@ WITH cand AS (
                     FROM model_versions b
                     JOIN models be ON be.id = b.model_id
                     JOIN users ub  ON ub.id = be.owner_id AND ub.role = 'baseline'
-                   WHERE b.game_id = pick.game_id AND b.season_id = pick.season_id   -- 06 §6.2
+                   WHERE b.game_id = pick.game_id AND b.season_id = pick.season_id
                      AND b.status = 'active'
                      -- ONE SEAT PER OWNER among the opponents, and this is not cosmetic: a season
                      -- forbidding self-pairing makes P_INSERT refuse a match seating two versions
@@ -944,21 +943,21 @@ SELECT json_build_object('n', count(*), 'pairings', coalesce(json_agg(json_build
  WHERE jsonb_array_length(seats) = players
 """
 
-# --- schema §6.2: one pairing, inserted under the epoch read at run start. The statement derives
+# --- one pairing, inserted under the epoch read at run start. The statement derives
 # the hashes, the ladders, the seat count and the contesting check itself, so the plugin supplies
 # only ids, a board and a seed -- and a pairing decided against a roster that has moved, or on a
 # board an admin has since disabled, inserts nothing.
 P_INSERT = """
 WITH season AS (
-    -- 06 §6.1: the live season supplies the digest and is what every seat must belong to. No live
+    -- The live season supplies the digest and is what every seat must belong to. No live
     -- season, or a seat from another season, and nothing is inserted -- pair halts and re-reads.
     SELECT s.id, s.game_id, s.engine_digest, s.rules
       FROM seasons s
       JOIN games g ON g.id = s.game_id AND g.slug = ($2)::text
      WHERE s.closed_at IS NULL
 ), board AS (
-    -- THE BOARD DECIDES THE SEAT COUNT, and the statement reads it rather than trusting the plan
-    -- (N28): an enabled map of THIS season, or nothing is inserted. A board disabled between pair's
+    -- THE BOARD DECIDES THE SEAT COUNT, and the statement reads it rather than trusting the plan:
+    -- an enabled map of THIS season, or nothing is inserted. A board disabled between pair's
     -- read and this insert is how a stale plan would otherwise queue a match on it.
     SELECT sm.id, sm.players
       FROM season_maps sm JOIN season ON season.id = sm.season_id
@@ -1083,8 +1082,8 @@ WITHDRAW = {
         "undecided, nothing in flight, every active version at or below settled_sigma with at "
         "least burst matches. rows_affected is zero almost every minute in both, which is not a "
         "halt. Promotion does its own withdraw and the close cancels its own queue, so a "
-        "persistently non-zero sweep count is a signal, not routine. soma/docs/schema.md §7.1, "
-        "docs/rating-and-seasons.md §5.2 and §6.5. A close that wrote is followed by one "
+        "persistently non-zero sweep count is a signal, not routine. "
+        "A close that wrote is followed by one "
         "notification per entrant, keyed on the season, in a task that may fail without "
         "failing the close."
     ),
@@ -1126,8 +1125,7 @@ COUNT = {
         "idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. "
         "Each fold, pass and rejection is followed by its notification -- a separate, keyed, "
         "continue_on_error statement that reads the decision off the row, so a notification can be "
-        "lost to a crash between the two but never costs a fold or a verdict. "
-        "soma/docs/schema.md §5 and §3.11, docs/clocks.md §5."
+        "lost to a crash between the two but never costs a fold or a verdict."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -1152,7 +1150,7 @@ COUNT = {
         # The [vars] are the statement's FALLBACKS -- it coalesces each against the match's season
         # rule -- so they go in as $2..$4, and the rating reads what the row says. Passing the vars
         # straight to the rating instead would drop a season's rating rule on the floor; passing
-        # only $1 is what stopped count cold on 11 September 2026.
+        # only $1 fails every fold's validation, and nothing is ever rated.
         {"id": "priors", "name": "Read the seats' priors",
          "condition": IS_FOLD,
          "function": db_read("soma-db", C_PRIORS, [
@@ -1231,7 +1229,7 @@ PAIR = {
         "not a run fence, is pair's guarantee: a stale run can overfill by at most one run's worth, "
         "which the depth target bounds and the next run absorbs, but it can never pair a version "
         "that has left. The trial pairings are chosen in SQL, not by the plugin: the choice is "
-        "mechanical and must not depend on the plugin's state. soma/docs/schema.md §6, docs/design.md §6."
+        "mechanical and must not depend on the plugin's state."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -1257,7 +1255,7 @@ PAIR = {
         first_sweep({"id": "pair", "name": "Choose the room's pairings",
                      "function": {"name": "tb.pairing.pair", "input": {
                          # The boards and `cross_class_fraction` are inside demand.limits: the
-                         # boards are the season's enabled maps and nothing else (N28), the
+                         # boards are the season's enabled maps and nothing else, the
                          # fraction the season's with the deploy's [vars] as the fallback. One
                          # document, one source.
                          "demand": var("temp_data.demand.0.body"),
@@ -1291,14 +1289,14 @@ PAIR = {
 }
 
 
-# ====================================================================== admission -- docs/admission.md
+# ====================================================================== admission
 #
 # Admission writes one row per item and needs no run fence. Count claims one because it is the only
 # writer of a ladder and must prove a stale occurrence wrote nothing; admission's per-row claim is
 # already the mutual exclusion, and is better here -- a run that dies mid-batch releases what it
-# had not reached at once, and the row it was holding after admit_timeout_s. §4.1.
+# had not reached at once, and the row it was holding after admit_timeout_s.
 
-# --- admission §4.2: reject what has run out of attempts, before claiming anything. Separate
+# --- reject what has run out of attempts, before claiming anything. Separate
 # from the claim so the last attempt is recorded and the rejection can name it.
 #
 # The token it stamps is THIS RUN'S, not the lapsed claim's and not NULL. Nothing reads a token on a
@@ -1313,7 +1311,7 @@ UPDATE model_versions
         OR admit_started_at < now() - (($2)::int * interval '1 second'))
 """
 
-# --- admission §4.3: take up to $2 submissions, stamping this run's token on each. SKIP LOCKED
+# --- take up to $2 submissions, stamping this run's token on each. SKIP LOCKED
 # so two overlapping runs take disjoint sets rather than one blocking on the other. Oldest first,
 # so a submission that has already burned an attempt does not jump ahead of one that has not.
 A_CLAIM = """
@@ -1328,11 +1326,11 @@ UPDATE model_versions m
                  FOR UPDATE SKIP LOCKED)
 """
 
-# --- admission §5.1: everything the walk needs, in one read. The budget comes from the GAME'S
+# --- everything the walk needs, in one read. The budget comes from the GAME'S
 # MANIFEST, not from [vars]: adapter_ops_max is the cartridge's declaration and is per game by
 # construction, so a second cartridge is content and not a config change.
 #
-# `model`, `artifact_key` and `manifest_key` are DERIVED from the version id (decision R9): the id
+# `model`, `artifact_key` and `manifest_key` are DERIVED from the version id: the id
 # is the model id and the keys are where Soma's presigned PUTs told the competitor to upload. Two
 # rows can never disagree about where a version's bytes are, because neither row says.
 A_BATCH_DOC = """
@@ -1377,7 +1375,7 @@ SELECT json_build_object(
  WHERE v.admit_token = ($1)::uuid AND v.status = 'testing'
 """
 
-# --- admission §5.2: the manifest the competitor uploaded, hashed HERE rather than trusted. The
+# --- the manifest the competitor uploaded, hashed HERE rather than trusted. The
 # schema's CHECK recomputes the same sha256 over the stored text, so a mismatch that reached
 # `verify` would be a constraint violation -- a 500 and a burned attempt for what is an ordinary
 # competitor mistake. This turns it into a reason word.
@@ -1411,11 +1409,11 @@ SELECT (SELECT e ->> 'class'
  WHERE v.id = ($1)::uuid
 """
 
-# --- admission §5.6: testing -> verified, under the claim. `AND admit_token = $9` is the claim
+# --- testing -> verified, under the claim. `AND admit_token = $9` is the claim
 # honoured at the write: a run whose claim lapsed while it was verifying affects zero rows and
 # writes nothing, without halting -- the run that owns the item now redoes the work.
 #
-# A BASELINE LANDS `disabled`, NOT `verified` (N29). It is admitted by exactly this walk -- an admin
+# A BASELINE LANDS `disabled`, NOT `verified`. It is admitted by exactly this walk -- an admin
 # uploads it into a season the way a competitor submits -- but it has no trial, because it is what a
 # trial is played against, and it is out of play until an admin enables it, as an uploaded map is.
 # `verified` would put it in P_TRIALS' candidate set, where it would wait for a trial for ever.
@@ -1448,7 +1446,7 @@ UPDATE model_versions
  WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($8)::uuid
 """
 
-# --- admission §5.6: the twin. A rejection is terminal; the competitor submits again,
+# --- the twin. A rejection is terminal; the competitor submits again,
 # which is a new row.
 A_REJECT = """
 UPDATE model_versions
@@ -1457,7 +1455,7 @@ UPDATE model_versions
  WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($3)::uuid
 """
 
-# --- admission §6: a loader-class fault releases the claim and GIVES THE ATTEMPT BACK.
+# --- a fault that is OURS releases the claim and GIVES THE ATTEMPT BACK.
 # Decrementing keeps admit_attempts_max a count of real attempts: a store that is down for an hour
 # must not consume a competitor's three tries.
 A_RELEASE = """
@@ -1472,8 +1470,8 @@ ADMIT = {
     "workflow_id": "tb-admit-run",
     "name": "Clock: admit",
     "description": (
-        "What moves a submission off `testing`. Per item it asks GitHub for the release's "
-        "metadata, reads the manifest the competitor uploaded to the models bucket and checks it "
+        "What moves a submission off `testing`. Per item it "
+        "reads the manifest the competitor uploaded to the models bucket and checks it "
         "against the hash they declared, registers the model on THIS node by reference and digest "
         "-- the node fetches the object and re-hashes it, so a row that lies fails admission -- "
         "runs admission synchronously, activates it, plays it over the game's reference "
@@ -1482,14 +1480,14 @@ ADMIT = {
         "are in the bucket because the competitor PUT them there through a presigned URL Soma "
         "minted, and Orion's storage connector is what reads them. The weight class is the "
         "season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting "
-        "is TOO_LARGE. A baseline an admin uploaded into a season (N29) walks the same path and "
+        "is TOO_LARGE. A baseline an admin uploaded into a season walks the same path and "
         "lands `disabled` rather than `verified`: it has no trial, and it is out of play until an "
         "admin enables it. The claim is the fence -- there is no run fence, because admission writes "
         "one row per item and a per-row claim is already the mutual exclusion. The branch that "
         "matters is on `fault`: a competitor's mistake rejects the version and OUR failure "
         "releases the claim and gives the attempt back. Every verdict, and every expiry this run "
         "stamped with its token, is then told to the owner by a keyed statement that may fail "
-        "without failing the walk. docs/admission.md §4-§7 and §10."
+        "without failing the walk."
     ),
     "tags": ["pkg:soma"],
     "condition": True,
@@ -1538,8 +1536,7 @@ ADMIT = {
              # so `{"logic": null}` writes NOTHING and the slot silently keeps the last sweep's
              # value -- the exact bug this block exists to prevent. False is falsy to every
              # condition here and reads through as null, so the intent survives and the write
-             # happens. Found 15 September 2026 via tb-roster (kalam), which stopped registering
-             # any model on a node that already had one.
+             # happens.
              {"path": "temp_data.head", "logic": False},
              {"path": "temp_data.man", "logic": False},
              {"path": "temp_data.mtext", "logic": False},
@@ -1569,8 +1566,6 @@ ADMIT = {
              # `giveback` hands the attempt BACK, so the poisoned row is re-claimed first on every
              # tick, for ever, and never reaches `admit_attempts_max` to be expired. Admission
              # stops for everyone, with every clock healthy and every row looking merely slow.
-             # Found 15 September 2026 by the second submission-storm run, where 24 submissions sat
-             # at `admit_attempts` 0 behind one whose probe had timed out under load.
              {"path": "temp_data.retry",
               "logic": {"if": [{"!": var("temp_data.it.budget_ops")}, "MANIFEST_INCOMPLETE",
                                {"!": var("temp_data.it.observations")}, "MANIFEST_INCOMPLETE",
@@ -1622,7 +1617,7 @@ ADMIT = {
 
         # WHAT THE PLATFORM REGISTERS IS NOT WHAT WAS UPLOADED. The fields are copied one by one
         # rather than the document being passed through: `name` becomes the platform's model id
-        # (R9), and a `reference` naming somebody else's bucket key -- the one field of a manifest
+        # (`tb.v<uuid>`), and a `reference` naming somebody else's bucket key -- the one field of a manifest
         # that could reach outside this version -- has nowhere to survive. `artifact` is offline
         # tooling's and is dropped with it.
         {"id": "shape", "name": "The registration, rebuilt field by field",
@@ -1643,7 +1638,7 @@ ADMIT = {
                                {"!": var("temp_data.man.outputs")}, "MANIFEST_INVALID",
                                None]}}]}}},
 
-        # A RESULT EXPRESSION IS REFUSED, and this is where. The platform reads the head (R3), so a
+        # A RESULT EXPRESSION IS REFUSED, and this is where. The platform decodes the head itself, so a
         # manifest carrying one is not merely ignored -- it is a competitor believing something
         # about the contract that is not true, and the cheapest moment to say so is now.
         {"id": "reject_result", "name": "A manifest may not decode its own head",
@@ -1735,7 +1730,7 @@ ADMIT = {
              "output": "temp_data.probe"}}},
 
         # S' = the bytes the node measured against a digest it re-hashed, plus the document this
-        # walk forwarded (decision R4). Both terms are unforgeable, and the second still prices
+        # walk forwarded. Both terms are unforgeable, and the second still prices
         # knowledge packed into the adapter -- which is what the old `S`'s adapter term was for.
         {"id": "pd", "name": "What the probe measured at, as a document",
          "condition": var("temp_data.admitted"),
@@ -1814,7 +1809,7 @@ ADMIT = {
                                         {"!": var("temp_data.probe.ok")}]},
                                {"??": [var("temp_data.probe.reason"), "ADAPTER_INVALID"]},
                                # graph.infer_us_max, and NULL IN EVERY SEASON THE PLATFORM SHIPS.
-                               # Decision 46 removed the compute cap on measurement: wall clock
+                               # There is no platform compute cap on purpose: wall clock
                                # belongs to the admission host, so a season that sets this is
                                # choosing admission whose verdicts depend on a noisy neighbour.
                                {"and": [{"!!": var("temp_data.it.infer_us_max")},
@@ -1835,7 +1830,7 @@ ADMIT = {
 
         # Whatever the verdict, and whatever this node decided: the admission node is not a player,
         # so a model left active here would be recompiled into every generation it never serves.
-        # The replicas' own roster clocks are what make a version playable (R8).
+        # The replicas' own roster clocks are what make a version playable.
         {"id": "archive", "name": "Leave the admission node's active set empty",
          "condition": var("temp_data.admitted"),
          "continue_on_error": True,
@@ -1946,7 +1941,7 @@ PROBE = {
                                       var("data.infer_us_max")]},
                                {"*": [1000, var("temp_data.st.inference_ms")]},
                                var("data.infer_us_max")]}},
-             # The head has to be readable by the platform (R3), so the probe checks the shape it
+             # The platform decodes the head, not the manifest, so the probe checks the shape it
              # will gather from rather than merely that something came back.
              {"path": "temp_data.rank",
               "logic": {"if": [{"!": var("temp_data.out.policy")}, 0,

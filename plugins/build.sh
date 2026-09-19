@@ -7,8 +7,8 @@
 # indistinguishable from building the right one until the component is loaded.
 #
 # Needs the wasm32-unknown-unknown target (`rustup target add wasm32-unknown-unknown`) and
-# `wasm-tools` (`cargo install wasm-tools`). The outputs are committed, so the package loads on a
-# machine with no wasm toolchain; run this after changing src/ and commit them with it.
+# `wasm-tools` (`cargo install wasm-tools`). The outputs are gitignored: the image builds its own
+# under a pinned toolchain, and this is how a change is tried locally.
 #
 # The host tests are the gate and run first: these two plugins are the only arithmetic that writes
 # a ladder and the only thing that decides who plays whom.
@@ -28,9 +28,9 @@ wasm-tools component new \
   -o "$dir/$plugin.wasm"
 wasm-tools validate "$dir/$plugin.wasm" --features component-model
 
-# plugin.toml is the authored manifest -- what `orion-cli plugins create -f` reads -- but the admin
-# API takes JSON, and load-package.sh runs inside an image with jq and no TOML parser. So the JSON
-# is a generated, committed artifact exactly like the component: never hand-edited.
+# plugin.toml is the authored manifest -- what `orion-server compile` and web's signing script
+# read -- and plugin.json is its generated JSON twin. Build output like the component: never
+# hand-edited, never committed.
 python3 - "$dir/plugin.toml" "$dir/plugin.json" <<'PYEOF'
 import json, sys, tomllib
 src, dst = sys.argv[1], sys.argv[2]
