@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-runner-release",
   "name": "Release a claimed match",
-  "description": "NOT A FAULT AND NOT A LAPSE. A runner calls this when it cannot play a row -- the usual cause is a model its own roster clock has not registered yet -- and the row goes back to the queue with a refusal spent rather than a strike. The ceiling is what stops a runner that is permanently behind passing one row round the fleet for ever: at the third refusal the row fails as MODEL_UNAVAILABLE and says so, which is a diagnosable end. refusals and lapses are counted apart because they mean different things about the fleet.",
+  "description": "NOT A FAULT AND NOT A LAPSE. A runner calls this when it cannot play a row -- the usual cause is a model its own roster clock has not registered yet -- and the row goes back to the queue with a refusal spent rather than a strike. The ceiling is what stops a runner that is permanently behind passing one row round the fleet for ever: once the ceiling is spent -- the season's execution.refusal_ceiling, else [vars], the same value the claim sends the runner -- AND the row has waited refusal_grace_secs since it was paired, it fails as MODEL_UNAVAILABLE and says so, which is a diagnosable end. THE GRACE MAKES THE CEILING A MEASURE OF TIME, NOT OF CLAIMS. A new version's first trial is paired before any roster has registered and activated it (two roster ticks at best), trials are claimed first, and a runner's lanes polling every five seconds spend five refusals in seconds -- so a count alone failed rows a roster was about to serve, and charged the failure to the candidate. refusals and lapses are counted apart because they mean different things about the fleet.",
   "tags": ["pkg:soma"],
   "tasks": [
     {
@@ -16,13 +16,14 @@
         "name": "db_write",
         "input": {
           "connector": "soma-runner-db",
-          "query": "UPDATE matches SET status = CASE WHEN refusals + 1 >= ($3)::int THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN refusals + 1 >= ($3)::int THEN 'MODEL_UNAVAILABLE' END, closed_at = CASE WHEN refusals + 1 >= ($3)::int THEN now() END WHERE id = ($5)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND ($2)::boolean AND played_by = ($4)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid)",
+          "query": "WITH c AS (SELECT m.id, m.refusals + 1 >= coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'refusal_ceiling')::int END, ($3)::int) AND m.created_at <= now() - ($6)::int * interval '1 second' AS spent FROM matches m JOIN seasons se ON se.id = m.season_id WHERE m.id = ($5)::uuid) UPDATE matches SET status = CASE WHEN c.spent THEN 'failed' ELSE 'pending' END::match_status, refusals = refusals + 1, claim_token = NULL, lease_expires_at = NULL, fault_reason = CASE WHEN c.spent THEN 'MODEL_UNAVAILABLE' END, closed_at = CASE WHEN c.spent THEN now() END FROM c WHERE matches.id = c.id AND matches.claim_token = ($1)::uuid AND matches.status = 'claimed' AND ($2)::boolean AND matches.played_by = ($4)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($4)::uuid)",
           "params": [
             { "var": "data.req.claim_token" },
             true,
             { "var": "metadata.vars.refusal_ceiling" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.params.id" }
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.refusal_grace_secs" }
           ],
           "output": "temp_data.released"
         }

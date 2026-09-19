@@ -11,6 +11,6 @@
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.public_rate" },
-    "cache": { "$from": "constants.catalog_cache" }
+    "cache": { "$from": "constants.season_cache" }
   }
 }

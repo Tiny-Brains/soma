@@ -148,15 +148,21 @@ WITH folds AS (
              -- the number the wave actually played by, so count now judges a trial by the rule that
              -- was applied to it by construction, rather than because two [vars] in two repositories
              -- were asserted equal.
+             -- A REFUSED TRIAL (MODEL_UNAVAILABLE: no runner could serve a seat's model within the
+             -- gate's grace) was never played, so it is not the candidate's attempt: `trials`
+             -- leaves it out and `refused` counts it against a ceiling of its own, whose reason
+             -- names the fleet rather than the model.
              'decision', CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN 'pass'
                               WHEN t.status = 'finished'                           THEN 'reject'
                               WHEN t.status = 'failed' AND t.fault_seat = cs.seat   THEN 'reject'
                               WHEN n.trials >= tm.trials_max                        THEN 'reject'
+                              WHEN n.refused >= tm.trials_max                       THEN 'reject'
                               ELSE 'repair' END,
              'reason',   CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN NULL
                               WHEN t.status = 'finished'                           THEN 'FORFEIT'
                               WHEN t.status = 'failed' AND t.fault_seat = cs.seat   THEN 'FAULT:' || t.fault_reason
                               WHEN n.trials >= tm.trials_max                        THEN 'UNPLAYABLE'
+                              WHEN n.refused >= tm.trials_max                       THEN 'RUNNER_UNAVAILABLE'
                               ELSE NULL END) AS item,
            1 AS grp, t.played_at AS ord, c.id
       FROM model_versions c
@@ -168,7 +174,9 @@ WITH folds AS (
                        AND t.status IN ('finished', 'failed', 'cancelled')
                      ORDER BY t.created_at DESC LIMIT 1) t ON true
       JOIN match_seats cs ON cs.match_id = t.id AND cs.version_id = c.id
-      JOIN LATERAL (SELECT count(*) AS trials FROM matches x WHERE x.trial_version_id = c.id) n ON true
+      JOIN LATERAL (SELECT count(*) FILTER (WHERE x.fault_reason IS DISTINCT FROM 'MODEL_UNAVAILABLE') AS trials,
+                           count(*) FILTER (WHERE x.fault_reason = 'MODEL_UNAVAILABLE') AS refused
+                      FROM matches x WHERE x.trial_version_id = c.id) n ON true
      WHERE c.status = 'verified'
        AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id
                           AND l.status IN ('pending', 'claimed', 'running'))
@@ -912,16 +920,29 @@ SELECT total.want, q.depth, q.outstanding, round(q.oldest_pending_s)::int AS old
 # eight-seat board against three baselines and offer that same board every run, for ever: the
 # candidate waits on a board it can never be seated on. With no board fillable at all -- or none
 # enabled -- it waits, which is the honest reading of an empty roster or an empty season.
+#
+# A LIVE TRIAL INCLUDES A FINISHED ONE, exactly as `matches_one_live_trial_uniq` counts it: played
+# but not yet decided by count. Leave `finished` out and a pair run that lands in that window picks
+# the candidate again, the insert breaks the unique index, and the run dies with every pairing
+# after it in the plan.
+#
+# A REFUSED TRIAL IS NOT THE CANDIDATE'S ATTEMPT. A row that failed MODEL_UNAVAILABLE was never
+# played: no runner could serve some seat's model within the gate's grace. It spends no repair and
+# does not rotate the board, and has a budget of its own (`refused`, the same ceiling), which
+# count turns into RUNNER_UNAVAILABLE rather than blaming the model with UNPLAYABLE.
 P_TRIALS = """
 WITH cand AS (
     SELECT c.id, c.game_id, c.season_id, c.model_id, c.weight_class, e.owner_id, s.rules,
-           (SELECT count(*) FROM matches x WHERE x.trial_version_id = c.id) AS trials
+           (SELECT count(*) FROM matches x WHERE x.trial_version_id = c.id
+               AND x.fault_reason IS DISTINCT FROM 'MODEL_UNAVAILABLE') AS trials,
+           (SELECT count(*) FROM matches x WHERE x.trial_version_id = c.id
+               AND x.fault_reason = 'MODEL_UNAVAILABLE') AS refused
       FROM model_versions c
       JOIN models e  ON e.id = c.model_id
       JOIN seasons s ON s.id = c.season_id
      WHERE c.game_id = ($1)::uuid AND c.status = 'verified'
        AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id
-                          AND l.status IN ('pending', 'claimed', 'running'))
+                          AND l.status IN ('pending', 'claimed', 'running', 'finished'))
 ), pick AS (
     SELECT cand.*, p.id AS map, p.players
       FROM cand
@@ -946,6 +967,7 @@ WITH cand AS (
            WHERE b.k = cand.trials % b.n
       ) p ON true
      WHERE cand.trials < coalesce((cand.rules -> 'pairing' ->> 'trials_max')::int, ($2)::int)
+       AND cand.refused < coalesce((cand.rules -> 'pairing' ->> 'trials_max')::int, ($2)::int)
 ), seated AS (
     SELECT pick.id AS trial_version_id, pick.map, pick.players,
            jsonb_build_array(pick.id) || coalesce(opp.ids, '[]'::jsonb) AS seats
@@ -1290,6 +1312,14 @@ PAIR = {
                          var("metadata.vars.settled_sigma"),
                          var("metadata.vars.pair_depth_target"),
                          var("metadata.vars.cross_class_fraction")], "temp_data.demand")}),
+        # NO BOARD IN PLAY IS A DESIGNED HALT, not an error. `tb.pairing` refuses an empty board
+        # list (NO_MAPS), rightly, so without this every tick of a fresh platform -- and of any
+        # season whose boards an admin has all switched off -- logged an ERROR until a board was
+        # enabled. A trial needs a board too, so nothing is lost by stopping here. The test is on a
+        # map's `id`, a string, because a bare object is not a boolean to a filter.
+        first_sweep({"id": "boards", "name": "Halt while no board is in play",
+                     "function": halt_unless(
+                         {"!!": [var("temp_data.demand.0.body.limits.maps.0.id")]})}),
         first_sweep({"id": "trials", "name": "Find candidates waiting for a trial",
                      "function": db_read("soma-db", P_TRIALS, [
                          var("temp_data.game.0.id"),

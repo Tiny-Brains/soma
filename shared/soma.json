@@ -49,7 +49,7 @@
       "key_logic": { "var": "auth.sub" }
     },
     "hot_cache": { "enabled": true, "ttl_secs": 10, "connector": "soma-cache" },
-    "catalog_cache": { "enabled": true, "ttl_secs": 300, "connector": "soma-cache" },
+    "season_cache": { "enabled": true, "ttl_secs": 60, "connector": "soma-cache" },
     "ok": { "status": 200, "body_path": "data.body" },
     "created": { "status": 201, "body_path": "data.body" },
     "no_content": { "status": 204 },

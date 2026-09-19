@@ -116,7 +116,7 @@ the singleton buys order, and the SQL fences buy correctness.
 | Channel | Every | Timeout | Does | Fence |
 |---|---|---|---|---|
 | `tb-admit` | 20 s | 600 s | Expire, claim `testing` versions, run the admit walk, write one verdict each | per-row `admit_token` claim |
-| `tb-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first | roster epoch, checked `FOR SHARE` per insert |
+| `tb-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
 | `tb-count` | 10 s | 60 s | Fold finished matches in finish order, decide trials, promote | run fence on `clocks.count` |
 | `tb-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season | none: idempotent |
 | `soma-runner-reap` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
@@ -325,6 +325,12 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
 - **Admission writes only under its `admit_token`**, and a failure that is ours gives the attempt
   back. Otherwise an outage spends a competitor's tries.
 - **Trials feed no ladder**, and a loss alone never rejects a candidate.
+- **A trial is live until count decides it**, `finished` included, in pair's read exactly as in
+  `matches_one_live_trial_uniq`. A pair run that offered a second trial would die on the index.
+- **A refusal is the fleet's, never the candidate's.** The gate fails a row `MODEL_UNAVAILABLE` only
+  once the ceiling is spent and the row has waited `refusal_grace_secs` since it was paired, and a
+  refused trial spends no repair: it has a ceiling of its own, which rejects `RUNNER_UNAVAILABLE`,
+  never `UNPLAYABLE`.
 - **The generated clock files equal the generator.** `check-defs.sh` and `check-sql.sh` both fail on
   drift.
 - **A shape many routes return is defined once, in the migration** (`season_json`, `season_state`,
@@ -346,7 +352,9 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
   healthy runner.
 - **Every definition carries `"tags": ["pkg:soma"]`**, or a deleted route keeps its path after
   the load.
-- **Only caller-invariant routes cache.** The cache key has no caller in it.
+- **Only caller-invariant routes cache.** The cache key has no caller in it. A route that carries
+  the live season (`/v1/games`, `/v1/games/{game}`, the seasons list) takes `season_cache`, 60 s,
+  so an admin's change reaches every reader within a minute and the three never disagree.
 - **Something private gets its own path** (`/v1/me/matches`), never a parameter on a public route.
 - **The board and the terms of play ride the claim.** A runner fetches no board and holds no copy of
   `turn_ms`.
@@ -354,10 +362,11 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
 ## Known gaps
 
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
-- Pair errors on every tick (`NO_MAPS`) while no season has an enabled board, a fresh platform
-  included: `tb.pairing` refuses an empty board list and nothing skips the call. Harmless, but it
-  logs an ERROR every 15 s until an admin enables a board.
 - Push notification settings are stored, but nothing delivers them.
+- The refusal grace runs from when a row was paired, not from when a runner arrived: a runner that
+  starts cold against rows older than `refusal_grace_secs` can still fail them `MODEL_UNAVAILABLE`
+  before its roster catches up. A refused row is claimed after the fresh rows of its kind, which
+  spreads the refusals; trials still come before every ranked match.
 - A `failed` match notifies nobody. The gate writes it as `runner_gate`, which must not gain the grant.
 - The admit re-walk is not idempotent: a second attempt 409s on `register` and 404s on `activate`
   for a model this node already archived, and since the attempt is given back it never expires.

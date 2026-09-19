@@ -180,6 +180,15 @@ max_turns = 1000
 # a row, so unlike turn_ms and max_turns this falls straight from the season to here.
 refusal_ceiling = 5
 
+# HOW LONG A ROW MUST HAVE WAITED, SINCE IT WAS PAIRED, BEFORE ITS REFUSALS CAN FAIL IT. The ceiling
+# alone counts claims, and claims are cheap: a runner's lanes, each polling every five seconds,
+# spend five refusals on a new trial in seconds, long before a roster has registered and activated
+# its model (two roster ticks at best). The row keeps counting refusals inside the grace and fails
+# at the first refusal after it, so this is the fleet's allowance for catching up with a new
+# version, not a retry budget. A deployment fact, like the lease: it is about the fleet, not the
+# season.
+refusal_grace_secs = 120
+
 # THE LEASE IS A DEPLOYMENT FACT AND NOT A SEASON'S, because it is about the network between the
 # fleet and this node rather than about the terms a model competes under. Off-site a lapse means a
 # host slept or a home link dropped, so this is the number that gets tuned by where the runners

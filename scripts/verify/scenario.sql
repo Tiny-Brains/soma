@@ -335,15 +335,28 @@ EXECUTE n_season ('00000000-0000-0000-0000-00000000000a');
 SELECT subject, description, link, season, data FROM notifications WHERE category = 'season';
 ROLLBACK;
 
-\echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0); at the ceiling (expect failed MODEL_UNAVAILABLE)'
+\echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0)'
 EXECUTE p_insert (2, 'ants', 51, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001');
-EXECUTE k_release ('30000000-0000-0000-0000-000000000006', true, 5, 'c1000000-0000-0000-0000-000000000001', :'m51');
+EXECUTE k_release ('30000000-0000-0000-0000-000000000006', true, 5, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, lapses FROM matches WHERE seed = 51;
+\echo '    ... the ceiling spent INSIDE the grace does not fail it: the row was paired a moment ago (expect 1; pending, refusals 2, no fault)'
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 4, 'c1000000-0000-0000-0000-000000000001');
-EXECUTE k_release ('30000000-0000-0000-0000-000000000007', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51');
+EXECUTE k_release ('30000000-0000-0000-0000-000000000007', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 3600);
+SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
+\echo '    ... past the grace, a season ceiling above the fallback still holds it: the release reads the value the claim sent (expect 1; pending, refusals 3), rolled back'
+BEGIN;
+UPDATE seasons SET rules = rules || '{"execution": {"enabled": true, "refusal_ceiling": 10}}'
+ WHERE id = '50000000-0000-0000-0000-000000000001';
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000b', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_release ('30000000-0000-0000-0000-00000000000b', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
+SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
+ROLLBACK;
+\echo '    ... past the grace at the ceiling (expect 1; failed, refusals 3, MODEL_UNAVAILABLE)'
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_release ('30000000-0000-0000-0000-00000000000c', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 
 \echo '--- soma: a version''s history is one join (expect the rated row 43 for alice v1; the cancelled row 46 is not listed)'
@@ -432,6 +445,21 @@ EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
 UPDATE season_maps SET enabled = false;
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
 ROLLBACK;
+\echo '--- a refused trial is not the candidate''s attempt: v4''s trial fails MODEL_UNAVAILABLE (expect failed), yet v4 is offered again on the same first board (expect n 1, map 70000000-...-001), and count reads the refusal as a repair with 0 trials spent, not UNPLAYABLE (expect decision repair, trials 0), rolled back'
+BEGIN;
+EXECUTE p_insert (2, 'ants', 59, '70000000-0000-0000-0000-000000000001',
+  '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
+  '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
+SELECT id AS m59 FROM matches WHERE seed = 59 \gset
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_release ('30000000-0000-0000-0000-00000000000d', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m59', 0);
+SELECT seed, status, fault_reason FROM matches WHERE seed = 59;
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE c_batch_doc (10, 3) \gset
+SELECT i ->> 'decision' AS decision, i ->> 'reason' AS reason, i ->> 'trials' AS trials
+  FROM json_array_elements((:'body')::json -> 'items') i
+ WHERE i ->> 'kind' = 'verdict' AND i ->> 'model_id' = '20000000-0000-0000-0000-000000000004';
+ROLLBACK;
 \echo '--- promotion in the reverse order: v4 activated before v2 is demoted, under the deferred one-active constraint (expect INSERT 0 2; v2 superseded, v4 active; epoch 3)'
 EXECUTE p_insert (2, 'ants', 60, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
@@ -442,6 +470,8 @@ EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-000
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
   'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001');
+\echo '--- a trial played but not yet decided is still live, as matches_one_live_trial_uniq counts it: the trial read does not offer v4 a second one (expect n 0)'
+EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
