@@ -353,6 +353,9 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
 ## Known gaps
 
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
+- Pair errors on every tick (`NO_MAPS`) while no season has an enabled board, a fresh platform
+  included: `tb.pairing` refuses an empty board list and nothing skips the call. Harmless, but it
+  logs an ERROR every 15 s until an admin enables a board.
 - Push notification settings are stored, but nothing delivers them.
 - A `failed` match notifies nobody. The gate writes it as `runner_gate`, which must not gain the grant.
 - The admit re-walk is not idempotent: a second attempt 409s on `register` and 404s on `activate`

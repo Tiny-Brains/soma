@@ -100,6 +100,17 @@ CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTAB
            WHERE z.prev IS NOT NULL AND z.cap <= z.prev);
 $$;
 
+-- The classes a season gets when its admin names none and no earlier season has any to inherit:
+-- the column's default and season create's fallback, so the table exists once and cannot drift
+-- past what weight_classes_ok() allows.
+CREATE FUNCTION default_weight_classes() RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT '[{"class": "nano",  "max_bytes": 16384},
+             {"class": "micro", "max_bytes": 131072},
+             {"class": "mini",  "max_bytes": 1048576},
+             {"class": "small", "max_bytes": 8388608},
+             {"class": "large", "max_bytes": 67108864}]'::jsonb;
+$$;
+
 -- ------------------------------------------------------- the season rules document
 
 -- WHAT A SEASON'S RULES DOCUMENT MAY SAY: one row per key, and the reason every predicate further
@@ -357,12 +368,7 @@ CREATE TABLE seasons (
     -- ones for these artifacts, so every cap doubled: the table still means the parameter budget
     -- it always meant. PROVISIONAL, and the open question is whether a class should cap
     -- `stats.parameters` instead, which Orion 1.8.1 made honest enough to gate on.
-    weight_classes       jsonb       NOT NULL DEFAULT
-        '[{"class": "nano",  "max_bytes": 16384},
-          {"class": "micro", "max_bytes": 131072},
-          {"class": "mini",  "max_bytes": 1048576},
-          {"class": "small", "max_bytes": 8388608},
-          {"class": "large", "max_bytes": 67108864}]'::jsonb,
+    weight_classes       jsonb       NOT NULL DEFAULT default_weight_classes(),
 
     created_at           timestamptz NOT NULL DEFAULT now(),
 
