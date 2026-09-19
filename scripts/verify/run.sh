@@ -6,8 +6,8 @@
 #
 # Creates a scratch database beside `soma`, applies the shipped migrations, PREPAREs every statement
 # in statements.sql, walks scenario.sql, runs the two fence races with concurrent sessions, then
-# applies the local stack's seed (web's compose/seed.sql) to a second scratch database and checks what it produced. Both databases
-# are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
+# applies the migrations alone to a second scratch database, checks they seed nothing an admin makes,
+# and exercises the `kalam` role there. Both databases are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
 # `soma` or `orion_state` is touched.
 #
 # check-sql.sh checks that what Soma ships PARSES; this checks what the SCHEMA promises -- the
@@ -18,11 +18,8 @@ cd "$(dirname "$0")"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
 SCRATCH=soma_verify
-SEEDCHK=soma_verify_seed
+DEPLOYED=soma_verify_deployed
 MIGRATIONS=../../migrations
-# The seed is the local stack's, web's compose/seed.sql. Override SEED,
-# or check out web beside soma, or the seed half of this script is skipped with a notice.
-SEED="${SEED:-../../../web/compose/seed.sql}"
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 
@@ -102,40 +99,29 @@ wait; strip < race2_hold.log
 
 rm -f race1_hold.log race2_hold.log
 
-# The deployed shape: the migrations plus the seed the local stack's bootstrap applies, which is what
-# a fresh environment actually runs. Checks the seed writes no model -- a season's maps and
-# baselines are uploaded to it -- and that the Kalam role's grants are exactly its execution
-# columns, run rather than asserted.
-echo "===== the deployed schema: migrations + seed ====="
-if [ ! -f "$SEED" ]; then
-  echo "SKIP: seed checks -- $SEED not found (needs a web checkout beside soma; set SEED= to point at it)"
-  psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH"
-  exit 0
-fi
-psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $SEEDCHK" -c "CREATE DATABASE $SEEDCHK"
-cat "$MIGRATIONS/0001_init.sql" "$MIGRATIONS/0002_sessions.sql" "$SEED" \
-  | psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1
-psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
+# The deployed shape: the migrations alone, which is all a fresh platform database holds before its
+# first bootstrap. Checks they seed nothing an admin makes -- seasons, their boards and baselines,
+# runner keys and accounts are made on the admin pages -- and that the Kalam role's grants are
+# exactly its execution columns, run rather than asserted.
+echo "===== the deployed schema: migrations alone ====="
+psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $DEPLOYED" -c "CREATE DATABASE $DEPLOYED"
+cat "$MIGRATIONS/0001_init.sql" "$MIGRATIONS/0002_sessions.sql" \
+  | psql -d "$DEPLOYED" -q -v ON_ERROR_STOP=1
+psql -d "$DEPLOYED" -q -v ON_ERROR_STOP=1 <<'SQL'
 \pset footer off
 DO $$
 DECLARE n int;
 BEGIN
-    -- NO MODEL IS SEEDED. A season's baselines are uploaded into it and admitted like any
-    -- submission; a seed that writes a version, a rating or a baseline account again is the roster
-    -- this replaced coming back as SQL only this stack runs.
-    SELECT count(*) INTO n FROM model_versions; ASSERT n = 0, format('the seed wrote %s versions', n);
-    SELECT count(*) INTO n FROM ratings;        ASSERT n = 0, format('the seed wrote %s ratings', n);
-    SELECT count(*) INTO n FROM users WHERE role = 'baseline';
-    ASSERT n = 0, format('the seed made %s baseline accounts', n);
-    SELECT count(*) INTO n FROM season_maps;    ASSERT n = 0, format('the seed wrote %s season maps', n);
-
-    SELECT count(*) INTO n FROM games WHERE active_engine_digest IS NOT NULL;
-    ASSERT n = 1, 'the game must carry an engine digest, placeholder or not';
-
-    -- exactly one live season, pinning the game's digest
-    SELECT count(*) INTO n FROM seasons s JOIN games g ON g.id = s.game_id
-      WHERE s.closed_at IS NULL AND s.engine_digest = g.active_engine_digest;
-    ASSERT n = 1, 'the game must have exactly one live season, on its digest';
+    -- NOTHING AN ADMIN MAKES IS SEEDED. The clock rows are the only data the migrations write; the
+    -- game is bootstrap's, and everything else is made through the routes an admin page calls.
+    SELECT count(*) INTO n FROM games;          ASSERT n = 0, format('the migrations wrote %s games', n);
+    SELECT count(*) INTO n FROM seasons;        ASSERT n = 0, format('the migrations wrote %s seasons', n);
+    SELECT count(*) INTO n FROM season_maps;    ASSERT n = 0, format('the migrations wrote %s season maps', n);
+    SELECT count(*) INTO n FROM users;          ASSERT n = 0, format('the migrations made %s accounts', n);
+    SELECT count(*) INTO n FROM models;         ASSERT n = 0, format('the migrations wrote %s models', n);
+    SELECT count(*) INTO n FROM model_versions; ASSERT n = 0, format('the migrations wrote %s versions', n);
+    SELECT count(*) INTO n FROM ratings;        ASSERT n = 0, format('the migrations wrote %s ratings', n);
+    SELECT count(*) INTO n FROM runner_keys;    ASSERT n = 0, format('the migrations wrote %s runner keys', n);
 
     -- Kalam reads two tables and writes only its own columns of them.
     SELECT count(*) INTO n FROM information_schema.table_privileges
@@ -169,7 +155,7 @@ BEGIN
             ('match_seats','infer_turns'));
     ASSERT n = 0, format('kalam can write %s columns outside its grant', n);
 
-    RAISE NOTICE 'seed and grants: OK';
+    RAISE NOTICE 'nothing seeded, grants: OK';
 END $$;
 SQL
 
@@ -177,10 +163,15 @@ SQL
 # above say the right words; this proves they bite. `SET ROLE` rather than a login, because the
 # migration deliberately sets no password -- the credential is deployment configuration.
 echo "===== the Kalam role, exercised ====="
-psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
+psql -d "$DEPLOYED" -q -v ON_ERROR_STOP=1 <<'SQL'
 \pset footer off
--- Two baselines in play and one board, as an upload, an admission and two enables leave them (the
--- seed has neither), then one claimable match, written as Soma (pair) would write it.
+-- The game as bootstrap registers it and a live season as an admin creates it; two baselines in play
+-- and one board, as an upload, an admission and two enables leave them; then one claimable match,
+-- written as Soma (pair) would write it.
+INSERT INTO games (slug, name, active_engine_digest) VALUES ('ants', 'Ants', 'sha256:fixture');
+INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at)
+SELECT g.id, 1, 'Fixture', 'fixture', g.active_engine_digest, now(), now() + interval '1 day'
+  FROM games g WHERE g.slug = 'ants';
 INSERT INTO users (handle, role) VALUES ('baseline.fixture-a', 'baseline'), ('baseline.fixture-b', 'baseline');
 INSERT INTO models (owner_id, game_id, name)
 SELECT u.id, g.id, substr(u.handle, 10) FROM users u, games g WHERE u.role = 'baseline' AND g.slug = 'ants';
@@ -261,7 +252,7 @@ BEGIN
 END $$;
 SQL
 
-psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH" -c "DROP DATABASE $SEEDCHK"
+psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH" -c "DROP DATABASE $DEPLOYED"
 # Roles are cluster-global, so this only succeeds when no *other* database grants to kalam. Once
 # the stack's own soma database has been initialised with 0001, it does -- and the role must
 # survive. Dropping it is a courtesy to a cluster this script was the first thing to touch, never

@@ -2,9 +2,10 @@
 # The Soma node: one image that serves the platform and prepares the database it serves from.
 #
 #   soma serve        (the default) migrate Orion's state, load this image's package, run orion-server
-#   soma bootstrap    one-shot, BEFORE any node starts: orion_state, the schema, the seed, the
-#                     runner_gate role, the engine digest and the cartridge. NOT the baselines: an
-#                     admin uploads those into a season, and no image carries a model
+#   soma bootstrap    one-shot, BEFORE any node starts: orion_state, the schema, the game, the
+#                     runner_gate role, the engine digest and the cartridge. Nothing an admin makes:
+#                     seasons, their boards and baselines, and runner keys are made on the admin
+#                     pages, and no image carries a model
 #
 # THE PACKAGE IS IN THE IMAGE, AND THE NODE LOADS IT. There is no loader service: `serve` forks the
 # load before it execs, so the exec still happens and SIGTERM still reaches Orion directly, and the
@@ -36,6 +37,20 @@ serve() {
     *)          SOMA_COOKIE_SECURE=true ;;
   esac
   export SOMA_COOKIE_SECURE
+
+  # [vars] admin_github_ids: GitHub numeric user ids, comma-separated. Spaces are dropped; anything
+  # else is refused, because a login here would match nobody and say nothing -- and a login is the
+  # wrong key anyway, since GitHub frees a renamed one for anyone to register.
+  SOMA_ADMIN_GITHUB_IDS=$(printf '%s' "${SOMA_ADMIN_GITHUB_IDS:-}" | tr -d ' \t\r\n')
+  case "$SOMA_ADMIN_GITHUB_IDS" in
+    "") echo "==> SOMA_ADMIN_GITHUB_IDS is empty: sign-in makes nobody an admin" ;;
+    *[!0-9,]*|,*|*,|*,,*)
+      echo "SOMA_ADMIN_GITHUB_IDS must be GitHub numeric user ids, comma-separated, not logins" >&2
+      echo "    web's scripts/setup/admin-user.sh <github-login> looks one up" >&2
+      exit 1 ;;
+    *) echo "==> $(printf '%s' "$SOMA_ADMIN_GITHUB_IDS" | tr ',' '\n' | grep -c .) GitHub account(s) are admins by deployment" ;;
+  esac
+  export SOMA_ADMIN_GITHUB_IDS
 
   # The engine this node loads, which [vars] engine_digest names so a map upload can refuse a season
   # pinned to another one: validating a board on a different engine proves nothing about the one
@@ -119,7 +134,6 @@ serve() {
 #                 and not an upgrade. The digest of what was applied is kept as a per-database
 #                 setting, and a rewrite that has not reached this database is REFUSED by name
 #                 rather than surfacing as a missing relation on a clock tick hours later.
-#   the seed      SEED_SQL, when one is mounted -- a development fixture, guarded to converge
 #   the roles     runner_gate (and kalam, for a db-mode replica) created by the migration with LOGIN
 #                 and no password, so the committed schema ships no secret
 #   the engine    the digest of the cartridge component this image was built with, declared as a
@@ -132,7 +146,6 @@ serve() {
 DB="${SOMA_DB_URL:-}"
 ADMIN_DB="${SOMA_ADMIN_DB_URL:-}"
 MIGRATIONS="$PKG/migrations"
-SEED="${SEED_SQL:-/seed/seed.sql}"
 GAME="${GAME:-ants}"
 
 psql_db() { psql "$DB" -q -v ON_ERROR_STOP=1 "$@"; }
@@ -200,11 +213,6 @@ SQL
     echo "==> the schema is current (sha256:${want%${want#????????}}...)"
   fi
 
-  if [ -r "$SEED" ]; then
-    echo "==> seeding from $SEED"
-    psql_db -f "$SEED" > /dev/null
-  fi
-
   echo "==> role passwords"
   # Through stdin rather than -c: psql expands :'var' in a script, not in a -c string.
   psql_db -v pw="${RUNNER_GATE_DB_PASSWORD:?RUNNER_GATE_DB_PASSWORD is required -- the role the runner gate runs as}" <<'SQL'
@@ -221,7 +229,7 @@ SQL
   observations="$CARTRIDGE/reference/observations.json"
   echo "==> the cartridge: ants $(cat "$CARTRIDGE/release"), engine $digest"
 
-  # The game row, when no seed made it. The digest is declared below either way.
+  # The game row, when this database has none. The digest is declared below either way.
   psql_db -v g="$GAME" -v d="$digest" <<'SQL'
 INSERT INTO games (slug, name, active_engine_digest)
 VALUES (:'g', initcap(:'g'), :'d')

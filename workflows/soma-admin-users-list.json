@@ -1,0 +1,60 @@
+{
+  "workflow_id": "soma-admin-users-list",
+  "name": "List accounts for role changes",
+  "description": "Admin only: the page an admin promotes and demotes from. Two lists, because they answer two questions: `admins` is every admin, always whole, so the one to demote is never behind a search; `users` is the competitors matching `?q=` (a substring of the handle or display name), most recently seen first, at most 50, with `matching` saying how many there are. Baselines are left out: they are uploaded opponents and nobody signs in to one. `by_deployment` marks an account [vars] admin_github_ids lists: demoting one lasts only until its next sign-in, and the page says so rather than letting it look permanent. `you` marks the caller, whose own role PATCH refuses. live_sessions is the OUTER FROM, so a caller who is not a live admin gets no row at all rather than an empty list.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH me AS ( SELECT u.id FROM live_sessions ls JOIN users u ON u.id = ls.user_id AND u.role = 'admin' WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid ), deployment AS ( SELECT string_to_array(coalesce(($3)::text, ''), ',') AS ids ), q AS ( SELECT nullif(lower(btrim(coalesce(($4)::text, ''))), '') AS s ), seen AS ( SELECT s.user_id, max(s.last_seen_at) AS at FROM sessions s GROUP BY s.user_id ), rows AS ( SELECT u.role, u.handle, u.display_name, seen.at AS seen_at, json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'role', u.role, 'by_deployment', coalesce(u.github_id::text = ANY (d.ids), false), 'you', u.id = me.id, 'joined_at', u.created_at, 'last_seen_at', seen.at) AS j FROM users u CROSS JOIN me CROSS JOIN deployment d LEFT JOIN seen ON seen.user_id = u.id WHERE u.role <> 'baseline' ), matching AS ( SELECT r.* FROM rows r, q WHERE r.role <> 'admin' AND (q.s IS NULL OR strpos(lower(r.handle), q.s) > 0 OR strpos(lower(coalesce(r.display_name, '')), q.s) > 0) ), shown AS ( SELECT * FROM matching ORDER BY seen_at DESC NULLS LAST, lower(handle) LIMIT 50 ) SELECT json_build_object('admins', coalesce((SELECT json_agg(r.j ORDER BY lower(r.handle)) FROM rows r WHERE r.role = 'admin'), '[]'::json), 'users', coalesce((SELECT json_agg(s.j ORDER BY s.seen_at DESC NULLS LAST, lower(s.handle)) FROM shown s), '[]'::json), 'matching', (SELECT count(*) FROM matching)) AS body FROM me",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.vars.admin_github_ids" },
+            { "var": "metadata.query.q" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

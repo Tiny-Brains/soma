@@ -70,6 +70,8 @@ MODEL_ID=$(psql -c "SELECT m.id FROM models m JOIN model_versions v ON v.model_i
 MATCH=$(psql -c "SELECT id FROM matches WHERE status IN ('finished','rated') LIMIT 1;")
 # The season every season-scoped check names, by its slug (N28): the newest one.
 SEASON=$(psql -c "SELECT s.slug FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = '$GAME' ORDER BY s.number DESC LIMIT 1;")
+# Nothing seeds one: without it every season-scoped check would name `/seasons//...` and fail as a 404.
+[ -n "$SEASON" ] || { echo "no season for $GAME -- create one on the admin page, then re-run"; exit 1; }
 
 echo "==> public reads"
 check 200 "GET  /v1/games"                       "$BASE/v1/games"
@@ -117,6 +119,8 @@ check 401 "GET  /v1/games/$GAME/submission"      "$BASE/v1/games/$GAME/submissio
 check 401 "POST /v1/submissions"                 -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/submissions"
 check 401 "GET  /v1/runner-keys"                  "$BASE/v1/runner-keys"
 check 401 "GET  /v1/runners"                     "$BASE/v1/runners"
+check 401 "GET  /v1/admin/users"                 "$BASE/v1/admin/users"
+check 401 "PATCH /v1/admin/users/{id}"           -X PATCH -H 'content-type: application/json' -d '{"role":"admin"}' "$BASE/v1/admin/users/00000000-0000-0000-0000-000000000000"
 
 echo "==> the runner routes refuse an anonymous caller and a session cookie alike"
 # The runner family verifies a BEARER token with aud 'runner', signed with a different secret, so a
@@ -198,6 +202,12 @@ if [ "$ROLE" = "admin" ]; then
   check 400 "POST /v1/runner-keys (no label)"    -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner-keys"
   check 404 "DELETE /v1/runner-keys/{unknown}"   -X DELETE "${C[@]}" "$BASE/v1/runner-keys/00000000-0000-0000-0000-000000000000"
   check 404 "DELETE /v1/runners/{unknown}"       -X DELETE "${C[@]}" "$BASE/v1/runners/00000000-0000-0000-0000-000000000000"
+  # Role changes: every one of these is refused before it writes, so the run leaves no role changed.
+  check 200 "GET  /v1/admin/users"               "${C[@]}" "$BASE/v1/admin/users"
+  check 200 "GET  /v1/admin/users?q="            "${C[@]}" "$BASE/v1/admin/users?q=smoke"
+  check 400 "PATCH /v1/admin/users/{id} (role?)" -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"role":"owner"}' "$BASE/v1/admin/users/$UID_"
+  check 409 "PATCH /v1/admin/users/{yourself}"   -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"role":"competitor"}' "$BASE/v1/admin/users/$UID_"
+  check 404 "PATCH /v1/admin/users/{unknown}"    -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"role":"admin"}' "$BASE/v1/admin/users/00000000-0000-0000-0000-000000000000"
 
   # THE ROUND TRIP, and it is the only check here that proves the DEPLOYMENT rather than the
   # package: mint a key, exchange it, claim with the token. Every check above answers 401 or 404
@@ -242,6 +252,8 @@ else
   check 403 "POST ../seasons/{slug}/baselines"   -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
   check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 403 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
+  check 403 "GET  /v1/admin/users"               "${C[@]}" "$BASE/v1/admin/users"
+  check 403 "PATCH /v1/admin/users/{id}"         -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"role":"admin"}' "$BASE/v1/admin/users/$UID_"
   check 403 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
             -d '{"category":"admin"}' "$BASE/v1/me/notification-settings"
 fi

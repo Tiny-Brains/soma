@@ -1,0 +1,239 @@
+{
+  "workflow_id": "soma-admin-users-update",
+  "name": "Change an account's role",
+  "description": "Admin only. `{\"role\": \"admin\"}` promotes an account, `{\"role\": \"competitor\"}` demotes one. The target must have signed in once, because the row is written by the GitHub callback, and the grant is on that row -- its GitHub id -- never on the handle, so a login GitHub later frees and hands to someone else does not carry it. THE CALLER CANNOT CHANGE THEIR OWN ROLE: every change is made by an admin who stays one, so the platform can never be left without one. A baseline is refused: nobody signs in to one. Demotion takes effect on the demoted admin's next request, because every admin route reads `role` off the live session, and it stops the runners on their keys at their next call. An account [vars] admin_github_ids lists is restored by its next sign-in; that is the deployment's way back in, not a bug in this route. WRITE, THEN DIAGNOSE: the UPDATE joins the caller's live admin session inside the statement and changes nothing otherwise, and `why` names the reason. The same role again is a 200 with `changed: false`. Each change tells the account (`account`) and every other admin (`admin`), after the decision and allowed to fail.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "role_known",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "in": [{ "var": "data.req.role" }, ["admin", "competitor"]] } },
+        "status": 400,
+        "body": { "error": "role_invalid", "detail": "role is admin or competitor." },
+        "name": "A role, declared"
+      }
+    },
+    {
+      "id": "event",
+      "name": "Name this change",
+      "description": "One id per change, the dedupe key of both notifications, so a retried write cannot say it twice.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.event", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "change",
+      "name": "Change the role",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE users t SET role = ($3)::user_role FROM live_sessions ls JOIN users me ON me.id = ls.user_id AND me.role = 'admin' WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid AND t.id = ($4)::uuid AND t.id <> me.id AND t.role <> 'baseline' AND t.role <> ($3)::user_role",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.role" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.changed"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing changed",
+      "condition": { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('state', CASE WHEN t.id = ($1)::uuid THEN 'self' WHEN t.role = 'baseline' THEN 'baseline' WHEN t.role = ($3)::user_role THEN 'same' ELSE 'raced' END, 'role', t.role) AS body FROM users t WHERE t.id = ($2)::uuid",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.id" },
+            { "var": "data.req.role" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body" } }
+          ]
+        },
+        "status": 404,
+        "body": {
+          "error": "unknown_user",
+          "detail": "No account has this id. An account exists once its owner has signed in."
+        },
+        "name": "No such account"
+      }
+    },
+    {
+      "id": "self",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "==": [{ "var": "temp_data.why.0.body.state" }, "self"] }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "not_yourself",
+          "detail": "Another admin changes your role, so the platform is never left without one."
+        },
+        "name": "Not your own role"
+      }
+    },
+    {
+      "id": "baseline",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "==": [{ "var": "temp_data.why.0.body.state" }, "baseline"] }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "not_a_person",
+          "detail": "A baseline is an uploaded opponent that nobody signs in to."
+        },
+        "name": "Not a baseline"
+      }
+    },
+    {
+      "id": "same",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "==": [{ "var": "temp_data.why.0.body.state" }, "same"] }
+          ]
+        },
+        "status": 200,
+        "body": {
+          "changed": false,
+          "id": { "var": "metadata.params.id" },
+          "role": { "var": "temp_data.why.0.body.role" }
+        },
+        "name": "Already so"
+      }
+    },
+    {
+      "id": "refused",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "role_not_changed", "detail": { "var": "temp_data.why.0.body" } },
+        "name": "Refused"
+      }
+    },
+    {
+      "id": "notify",
+      "name": "Say so",
+      "condition": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "notify_target",
+          "name": "Tell the account",
+          "description": "Read off the row, not the request: only a role the row now holds is announced.",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, actor, data, dedupe_key) SELECT t.id, 'account', 'account', CASE WHEN t.role = 'admin' THEN 'ok' ELSE 'warn' END, CASE WHEN t.role = 'admin' THEN 'You are now an administrator' ELSE 'You are no longer an administrator' END, 'Changed by @' || left(me.handle, 64) || '.', CASE WHEN t.role = 'admin' THEN '/admin/seasons' ELSE '/me/account' END, me.handle, jsonb_build_object('role', t.role, 'by', me.handle), 'role:' || ($3)::uuid FROM users t JOIN users me ON me.id = ($2)::uuid WHERE t.id = ($1)::uuid AND t.role = ($4)::user_role AND notification_wanted(t.id, 'account') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [
+                { "var": "metadata.params.id" },
+                { "var": "metadata.auth.claims.sub" },
+                { "var": "temp_data.event" },
+                { "var": "data.req.role" }
+              ],
+              "output": "temp_data.notified_target"
+            }
+          }
+        },
+        {
+          "id": "notify_admins",
+          "name": "Tell the other admins",
+          "description": "Every admin but the one who made the change and the account it was made to: a grant of the platform's highest role is never silent.",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": "INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, actor, data, dedupe_key) SELECT a.id, 'admin', 'account', 'info', '@' || left(t.handle, 64) || CASE WHEN t.role = 'admin' THEN ' is now an administrator' ELSE ' is no longer an administrator' END, 'Changed by @' || left(me.handle, 64) || '.', '/admin/users', t.handle, jsonb_build_object('handle', t.handle, 'role', t.role, 'by', me.handle), 'role:' || ($3)::uuid FROM users t JOIN users me ON me.id = ($2)::uuid JOIN users a ON a.role = 'admin' AND a.id <> t.id AND a.id <> me.id WHERE t.id = ($1)::uuid AND t.role = ($4)::user_role AND notification_wanted(a.id, 'admin') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+              "params": [
+                { "var": "metadata.params.id" },
+                { "var": "metadata.auth.claims.sub" },
+                { "var": "temp_data.event" },
+                { "var": "data.req.role" }
+              ],
+              "output": "temp_data.notified_admins"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "changed": true,
+                "id": { "var": "metadata.params.id" },
+                "role": { "var": "data.req.role" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

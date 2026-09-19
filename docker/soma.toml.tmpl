@@ -70,6 +70,12 @@ console_return_url = "${CONSOLE_URL:-http://localhost:8081}"
 cookie_secure      = ${SOMA_COOKIE_SECURE:-true}
 # How soon after a season closes the next may open.
 season_gap_days    = ${SEASON_GAP_DAYS:-1}
+# WHO IS AN ADMIN BY DEPLOYMENT: GitHub numeric user ids, comma-separated, from the environment's
+# SOMA_ADMIN_GITHUB_IDS, and never committed. A listed account is made an admin at every sign-in;
+# empty lists nobody. An id and never a login, because GitHub frees a renamed login for anyone to
+# register. Everyone else is promoted and demoted by an admin through PATCH /v1/admin/users/{id}.
+# entrypoint.sh refuses anything but digits and commas, so a pasted login fails at boot.
+admin_github_ids   = "${SOMA_ADMIN_GITHUB_IDS:-}"
 
 # ------------------------------------------------------------------------------- CLOCKS
 # Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here

@@ -43,8 +43,9 @@ curl -fsS http://127.0.0.1:8080/v1/games
 
 The image has two commands. `bootstrap` runs once before any node: it creates `orion_state`,
 applies the migrations to an empty database (and refuses a database whose recorded schema digest
-differs), applies a mounted seed, sets the `runner_gate` password, declares the engine digest and
-registers the cartridge's manifest and reference observations. `serve` (the default) migrates
+differs), registers the game, sets the `runner_gate` password, declares the engine digest and
+registers the cartridge's manifest and reference observations. It seeds nothing an admin makes: a
+fresh platform has no season until an admin creates one. `serve` (the default) migrates
 Orion's state, loads the package into the node, and stops the node if a plugin failed to load or a
 channel is quarantined.
 
@@ -90,6 +91,8 @@ channels add a per-principal quota.
 | POST · GET | `/v1/runner-keys` | Admin | Mint a key (the only response that carries it) · the caller's keys |
 | DELETE | `/v1/runner-keys/{id}` | Admin | Revoke a key and every runner started from it |
 | GET · DELETE | `/v1/runners` · `/v1/runners/{id}` | Admin | The fleet · stop one machine, key untouched |
+| GET | `/v1/admin/users` | Admin | Every admin, and up to 50 competitors matching `?q=` (handle or display name) |
+| PATCH | `/v1/admin/users/{id}` | Admin | `{"role": "admin" \| "competitor"}`; 409 `not_yourself`, `not_a_person` |
 | POST | `/v1/runner/token` | Public, address-limited | Key → ten-minute token; the runner self-registers on `(key, label)`; 409 when its `ops_budget` disagrees with a live season |
 | POST | `/v1/runner/claim` | Runner | One match and its execution contract, or `200 {"idle": true}` |
 | POST | `/v1/runner/matches/{id}/start` · `/renew` · `/release` | Runner | claimed → running · extend the lease (`{applied, lease_expires_at}`) · requeue, spending a refusal |
@@ -145,12 +148,12 @@ judged by `worldgen`.
 | `cargo test --manifest-path plugins/Cargo.toml` | Rating and pairing host tests | stable Rust |
 | `plugins/build.sh tb-rating` (or `tb-pairing`) | Tests, then the wasm component and `plugin.json` beside the source (gitignored) | `wasm32-unknown-unknown`, `wasm-tools`, Python 3.11+ |
 | `./scripts/check-sql.sh` | `PREPARE` every shipped query, task groups included, against a scratch schema; fails a description over 2048 chars | `tinybrains-db-1` up |
-| `./scripts/verify/run.sh` | What the statements mean: the scenario walk, both fence races, the seed, the `kalam` grants; refuses if its statement copies drift from what ships | `tinybrains-db-1`; web beside soma for the seed |
-| `./scripts/smoke.sh` | Every route's status code with a minted session; an admin handle adds a runner-key → token → claim round trip | the running stack, package loaded |
+| `./scripts/verify/run.sh` | What the statements mean: the scenario walk, both fence races, that the migrations seed nothing an admin makes, the `kalam` grants; refuses if its statement copies drift from what ships | `tinybrains-db-1` |
+| `./scripts/smoke.sh` | Every route's status code with a minted session, against the newest season (create one first); an admin handle adds a runner-key → token → claim round trip | the running stack, package loaded |
 | `./scripts/load-package.sh` | Stage, compile, attach signatures, retire what is no longer shipped, `package apply` | `orion-server`, the admin API |
 | `docker build -t tinybrains/soma:dev .` | The node image | Docker |
 
-Script env: `DB_CONTAINER` (default `tinybrains-db-1`), `DB_USER`, `SEED` (verify), `BASE`,
+Script env: `DB_CONTAINER` (default `tinybrains-db-1`), `DB_USER`, `BASE`,
 `SMOKE_HANDLE`, `SOMA_ENV_FILE` (smoke; default `../web/.env`), `ORION_ADMIN`,
 `ORION_ADMIN_API_KEY` (load-package).
 
@@ -184,6 +187,7 @@ compose file sets every one of them for the local stack.
 | `SOMA_COOKIE_SECURE` | `1` | `0` only for a plain-http stack |
 | `SOMA_TRUSTED_PROXIES` | the RFC1918 ranges | TOML array of proxies whose `X-Forwarded-For` is believed |
 | `SEASON_GAP_DAYS` | `1` | Minimum days from a close to the next season's opening |
+| `SOMA_ADMIN_GITHUB_IDS` | empty | GitHub numeric user ids, comma-separated, made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
 | `ORION_VERSION` | `1.8.1` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
@@ -195,7 +199,7 @@ compose file sets every one of them for the local stack.
 | `SOMA_ADMIN_DB_URL` | bootstrap, required | The maintenance database (`.../postgres`), for `CREATE DATABASE orion_state` |
 | `RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD` | bootstrap; first required | Role passwords; the migration creates both roles with none |
 | `ENGINE_RELEASE` | bootstrap, `0` | `1` declares the engine as a release instead of a patch |
-| `SEED_SQL`, `GAME` | `/seed/seed.sql`, `ants` | Bootstrap's optional seed; the game it registers |
+| `GAME` | `ants` | The game bootstrap registers |
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
 engine digest and component come from it), `ORION_VERSION` (1.8.1), `RUST_VERSION`,
@@ -216,9 +220,8 @@ season through its `rules` document (`season_rule_spec()` in
    `PATCH` `{"enabled": true}` puts it in play and re-runs the engine check under this node's engine
    (refused `engine_mismatch` when the node and the season disagree). A baseline is
    `POST .../baselines` plus two uploads; the admit clock admits it like a submission and lands it
-   `disabled`; enabling seeds its ratings at the prior. Locally, web's `scripts/dev/upload-maps.sh`
-   and `upload-baselines.sh` do this. **Nothing pairs** until a board is enabled, and no trial
-   pairs until a baseline is enabled.
+   `disabled`; enabling seeds its ratings at the prior. The season's admin page does all of this.
+   **Nothing pairs** until a board is enabled, and no trial pairs until a baseline is enabled.
 4. **While it runs**, boards and baselines can be enabled and disabled. A disable cancels the
    pending matches on it, while claimed and running ones finish and count.
 5. **Close it.** The withdraw clock closes a season once its window has closed and every version has
@@ -232,7 +235,13 @@ season through its `rules` document (`season_rule_spec()` in
 7. **After the close**, push the season's boards and recipes from `tinybrains/maps/` to the backup
    repository. They are in no repository or release while the season runs.
 
-Admins are `users.role = 'admin'` (web's `scripts/dev/grant-admin.sh <handle>` locally).
+Admins are `users.role = 'admin'`. The first is the deployment's: `SOMA_ADMIN_GITHUB_IDS` lists GitHub
+numeric ids, and a listed account is made an admin each time it signs in (web's
+`scripts/setup/admin-user.sh <login>` looks an id up). An id, never a login: GitHub frees a renamed
+login for anyone to register. Every other admin is made and unmade by an admin on the Users admin
+page (`PATCH /v1/admin/users/{id}`), which refuses a caller's own role so there is always one left,
+and tells the account and every other admin. A demotion is immediate; a listed account is restored by
+its next sign-in, so removing someone for good means removing their id too.
 
 ## Production requirements
 
@@ -257,6 +266,8 @@ Admins are `users.role = 'admin'` (web's `scripts/dev/grant-admin.sh <handle>` l
 - **Narrow `SOMA_TRUSTED_PROXIES`** to the proxy actually in front. Empty, every browser shares one
   rate-limit bucket. Too wide, anyone inside the range can claim any address.
 - **Role passwords** (`RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD`) come from a secret store.
+- **`SOMA_ADMIN_GITHUB_IDS`** holds the owner's GitHub numeric id and nothing more. Empty, nobody
+  can reach an admin page; every other admin is granted on the Users page.
 - **Scale runners on demand, never on queue depth**: pair caps the queue at `pair_depth_target`.
   `scripts/autoscaler.sql` is pair's own demand statement plus the scaling arithmetic, generated by
   `gen-clocks.py` and prepared by `check-sql.sh`; its header lists the nine parameters.
