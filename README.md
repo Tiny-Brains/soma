@@ -102,8 +102,9 @@ channels add a per-principal quota.
 
 `/v1/admin-check` exists for nginx `auth_request` (web puts the Orion console behind it): 2xx allows,
 401 sends the caller to sign in, 403 refuses. Keep the 401/403 split. `tb-probe` also registers
-`POST /internal/probe/adapter`, but only for the admit walk's `channel_call`: its `probe_auth` names
-an audience nothing mints, so every HTTP caller gets 401, and `smoke.sh` asserts it. The port also
+`POST /internal/probe/adapter`, but only for the admit walk's `channel_call`: the route is outside
+`[server] data_mounts` (`/v1`), so every HTTP caller gets 404 before auth, and its `probe_auth` names
+an audience nothing mints as a second lock. `smoke.sh` asserts the 404. The port also
 serves Orion's admin API, `/health`, `/readyz` and `/metrics`. Only `/v1/` may be proxied.
 
 ## Clocks

@@ -26,7 +26,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   copy to tell a new error from an old one.
 - `check-sql.sh` echoes `workflow / task` before each `PREPARE`, so a failure names the task.
   `smoke.sh` has no filter: curl the one route instead. Script env: `DB_CONTAINER`, `DB_USER`,
-  `BASE`, `SMOKE_HANDLE`, `SOMA_ENV_FILE`, `SEED`.
+  `BASE`, `SMOKE_HANDLE`, `SOMA_ENV_FILE`.
 - **`orion-server` must be 1.8.x.** An older binary reports misleading schema errors on correct
   definitions (`unknown variant 'cron'`, unknown plugin functions), and `check-defs.sh` and the
   generator both refuse to run on one. The pinned source of truth is the Orion checkout at
@@ -79,9 +79,10 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `SELECT json_build_object(`, so keep that split point and the CTE names `wants` and `depth`.
   The CTEs bind `$1`–`$4` and `$6`; pair's `$5` (the depth target) is only in its final SELECT,
   which is why the autoscaler can take `$5` for itself. A new CTE parameter changes both.
-- **`tb-probe` is closed to HTTP by `probe_auth`**, an audience no route mints. Orion checks a
-  channel's `auth` for HTTP callers and never for `channel_call`, which is the only way the admit
-  walk reaches it. Never give it a rate limit: that one does apply to `channel_call`.
+- **`tb-probe` is closed to HTTP twice**: its route is outside `data_mounts = ["/v1"]`, so HTTP gets
+  404 before auth, and `probe_auth` names an audience no route mints. Orion checks a channel's
+  `auth` for HTTP callers and never for `channel_call`, which is the only way the admit walk
+  reaches it. Never give it a rate limit: that one does apply to `channel_call`.
 - The loop shape: `loop: {counter: "i", max: N}` replays the whole task list every sweep.
   `first_sweep()` tasks run on sweep 0, a `more` filter with `on_reject: "halt"` is the real
   terminator, and `temp_data` survives a sweep, so every per-item slot is cleared as the item is

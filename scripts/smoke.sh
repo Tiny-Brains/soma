@@ -134,10 +134,11 @@ check 401 "POST /v1/runner/token (bad key)"      -X POST -H 'content-type: appli
           -d '{"key":"tbr_nope_nope","label":"smoke"}' "$BASE/v1/runner/token"
 
 echo "==> the admit walk's probe is closed to HTTP"
-# The admit clock reaches tb-probe in-process, which Orion never holds to the channel's auth; an
-# HTTP caller always is, and nothing mints a token for the probe's audience.
-check 401 "POST /internal/probe/adapter (anon)"  -X POST -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
-check 401 "POST /internal/probe/adapter (session)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
+# The admit clock reaches tb-probe in-process. Over HTTP its route is outside [server] data_mounts
+# (`/v1`), so Orion answers 404 before auth is consulted; probe_auth, an audience nothing mints, is
+# the second lock.
+check 404 "POST /internal/probe/adapter (anon)"  -X POST -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
+check 404 "POST /internal/probe/adapter (session)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
 
 echo "==> session routes"
 check 200 "GET  /v1/me"                          "${C[@]}" "$BASE/v1/me"
@@ -235,7 +236,7 @@ if [ "$ROLE" = "admin" ]; then
         fail=$((fail+1)); printf '  FAIL %-46s got %s, wanted 200\n' "POST /v1/runner/claim (real token)" "$got"
       fi
       # A runner's token is signed with the probe's key but carries the runner's audience.
-      check 401 "POST /internal/probe/adapter (runner)" -X POST -H "authorization: Bearer $TOK" \
+      check 404 "POST /internal/probe/adapter (runner)" -X POST -H "authorization: Bearer $TOK" \
                 -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
     else
       fail=$((fail+1)); printf '  FAIL %-46s %s\n' "POST /v1/runner/token (real key)" "no token -- RUNNER_TOKEN_SECRET set?"
