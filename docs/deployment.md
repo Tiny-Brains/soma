@@ -104,7 +104,7 @@ places that must agree**:
 
 | Value | In both because | What a disagreement does |
 |---|---|---|
-| `prior_mu`, `prior_sigma` | Soma's season create seeds carried baselines; Soma's count clock seeds at promotion | two priors on one ladder. One `[vars]` value in one file, so this one is safe — noted because it stops being safe the day the routes and the clocks run on two servers |
+| `prior_mu`, `prior_sigma` | Soma's baseline enable seeds a baseline's first ratings (N29); Soma's count clock seeds at promotion | two priors on one ladder. One `[vars]` value in one file, so this one is safe — noted because it stops being safe the day the routes and the clocks run on two servers |
 | `engine_digest` (Kalam) = `games.active_engine_digest` (the deploy) | the claim filters on it | the match clock claims nothing, for ever. §9 |
 | `model_prefix` (both) | a replica registers `tb.v<uuid>`; a match row names one | the roster barrier never passes, and every row is released as `MODEL_UNAVAILABLE` |
 | `orion_version` (both) | admission records which Orion judged a version; a match records which one played it | the re-validation sweep either never fires or fires on everything |

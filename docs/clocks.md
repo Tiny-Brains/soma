@@ -112,7 +112,11 @@ depends on what the ladder still has to learn about it.
 **A baseline has no row of its own** (decision 28, 11 September 2026). It is paced by the four
 states above like any version — a new season plays its baselines' placement against each other —
 its owner is held to the season's queue share like anyone's, and it must settle before a season
-can close by settling. What sets it apart is its tag, and §6.4: every trial seats one.
+can close by settling. What sets it apart is its tag, and §6.4: every trial seats one. **Only an
+enabled one** (N29): a baseline is uploaded into a season by an admin and admitted to `disabled`,
+which no clock pairs, paces or waits on; `active` is in play, and switching one off cancels its
+queued matches in the route's own statement, with the withdraw sweep's `BASELINE_DISABLED` as the
+backstop.
 
 Rating and seasons's dynamics factor re-opens a settled version's sigma over time, which returns it to
 `unsettled` and gives it matches again; that is the whole of what v1's "cold fraction" wanted
@@ -310,7 +314,7 @@ dispatches; the rules are finding 6b's, as the table in §5.2 states them.
 | `finished` | strikes below the forfeit count | **pass** — promote (the schema §5.3), then withdraw the predecessor's queue (the schema §5.4) | — |
 | `finished` | forfeited: strikes at the count | **reject** | `FORFEIT` |
 | `failed` | `fault_seat` is its seat | **reject** | `FAULT:<fault_reason>` — `HASH_MISMATCH`, `GRAPH_INVALID`, `ADAPTER_INVALID`, or what Kalam adds |
-| `failed`, unattributed — `LEASE_LAPSED`, `UNLOADABLE`, an engine trap; or `cancelled` — its baseline superseded, or the engine retired, or its board disabled (N28) | — | **re-pair**: nothing written; pair inserts a fresh trial on the next board | — |
+| `failed`, unattributed — `LEASE_LAPSED`, `UNLOADABLE`, an engine trap; or `cancelled` — its baseline superseded or disabled (N29), or the engine retired, or its board disabled (N28) | — | **re-pair**: nothing written; pair inserts a fresh trial on the next board | — |
 | any of the above, once the candidate has had the cap's worth of trials with no pass | — | **reject** | `UNPLAYABLE` |
 
 A pass does not look at the rank: the trial is a playability check, and a candidate that lost

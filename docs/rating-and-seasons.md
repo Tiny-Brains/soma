@@ -25,7 +25,7 @@ is [the book](https://github.com/Tiny-Brains/web/tree/main/docs).
 | the dynamics factor: `tau` per update, and nothing per clock (§3) | pairing's answer to a stale top, which is a sampling question (§9) |
 | what a season is: admin-created, per game, with an opening date and a last submission date, closing itself when settled; its four states; one live season per game and the configurable gap between seasons (§4) | the admin screen that creates one — the web track |
 | the `seasons` table; `season_id` on `models` and `matches`; the one-active rule and the release-uniqueness rule scoped to the season (§4.5, §11) | the deploy step that declares the engine — deployment |
-| the create, the close, and the deploy step's patch and release (§5); what "settled" means, as a predicate (§4.6); the baselines carried into each new season (§4.7) | — |
+| the create, the close, and the deploy step's patch and release (§5); what "settled" means, as a predicate (§4.6); a season's baselines, uploaded to it (§4.7) | — |
 | the season's submission rules — a document on the season, each rule with an enable flag, two rules to begin with: unique weights across users, and a participant allowlist (§4.8) | further rules, as content in the same document |
 | the six statements a season touches — pair's insert, the trial insert, the demand view, the pass, withdraw's sweep, Soma's submission — and the leaderboard by season (§6) | Soma's three new endpoints and the additive fields — §9 |
 | retention as a policy table (decision 24, §7): standings forever, replays by a lifecycle rule | the bucket rule and Orion's trace retention — deployment |
@@ -281,22 +281,33 @@ version that never settles — one that faults on every match, say, so its sigma
 holds the season open; that is what the admin's close request is for, and the build's `retired` status is
 the longer answer.
 
-### 4.7 The baselines are carried into each new season
+### 4.7 A season's baselines are uploaded to it (N29)
+
+> **Until 19 September 2026 the create carried them**: for each active baseline version of the
+> previous season it inserted a new version row in the new season, `active` at once, at the prior.
+> The rows were right and their bytes were not: `artifact_key` is generated from the version id, so
+> every carried baseline pointed at an empty key and no runner could play one from season 2 on. The
+> carry is gone, and so is the bootstrap roster that seeded the first season's.
 
 Rule 2 puts every version in one season, baselines included, and a season with no baseline has no
-trial opponent. Rather than an admin re-submitting three baselines each season, **the create
-carries them**: for each active baseline version of the previous season it inserts a new `models`
-row in the new season — the next version number for that owner, the same release, hashes,
-manifest and `orion_version`, `active` at once — with its two rating rows at the prior and
-their `seq = 0` events. The bytes are already in the store and were already verified; nothing is
-fetched and nothing is re-admitted. An Orion upgrade between seasons is admission §9's
-re-validation sweep, which reads `model_versions.manifest` and does not care which season a row is
-in.
+trial opponent. **A season's baselines are uploaded into it by an admin**, from the season's admin
+view or `POST /v1/games/{game}/seasons/{slug}/baselines`: a name and the two hashes, answered with two
+presigned PUTs exactly as a submission is. The version is the account `baseline.<slug of the name>`'s
+-- made, with its one entry, the first time a name is used, and the same account in every later
+season that uses the name again -- and the admit clock admits it by the walk every submission takes,
+under the season's own graph and class rules. Its verdict lands **`disabled`**, not `verified`: a
+baseline has no trial, being what a trial is played against, and it is out of play until an admin
+enables it, as an uploaded map is.
 
-The first season of a game has no previous season to carry from; its baselines are placed as the
-seed places them today (`seed.sql`), or submitted by an admin through the ordinary path. A
-carried baseline is not a submission, so the season's rules (§4.8) do not apply to it. Once
-carried it is an ordinary version of the season: paced, rated and settled like any other (§4.6).
+**Enabling** (`PATCH .../baselines/{slug}`, `{"enabled": true}`) moves it `disabled -> active`, and
+the first enable seeds its two rating rows at the season's prior with their `seq = 0` events, so it
+starts in `placement` and is paced like any version (§4.6). **Disabling** moves it back: off the
+ladder and out of pairing, its `pending` matches cancelled `BASELINE_DISABLED` in the same statement,
+its claimed and running ones finished and counted, its ratings kept for the next enable. Both bump
+the roster epoch. One name holds one version a season; an upload admission rejected frees the name,
+and one set of weights may stand under several names, which is how a trial on an eight-seat board
+finds seven opponents of different owners. **A new season starts with none**, and until one is
+enabled no trial is seated: every candidate waits.
 
 ### 4.8 The season's rules
 
@@ -329,6 +340,12 @@ statement.
 ## 5. The three statements
 
 ### 5.1 The create — Soma, `POST /v1/games/{game}/seasons`, admin only
+
+> **As first designed, not as shipped.** The shipped statement is
+> `workflows/soma-seasons-create.json`, which names the season (N28) and **since N29 carries no
+> baselines**: the `carried`, `seeded` and `events` CTEs below are gone, and so is the roster bump,
+> because a new season changes no roster -- it has no versions until its baselines are uploaded
+> (§4.7). What stands is the one-statement create and its refusals.
 
 `$1` game · `$2` `submissions_open_at` · `$3` `submissions_close_at` · `$4` `season_gap_days` · `$5`,
 `$6` the prior `mu`, `sigma` · `$7` the rules document:

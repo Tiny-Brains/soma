@@ -32,7 +32,7 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 # did not exist. Comparing them costs a second and makes that impossible rather than unlikely.
 #
 # The thirteen clock statements are compared the same way, against the generated workflows/tb-*.json,
-# and so are the five notification statements and the two season-map statements (N28) -- n_version against all three tasks that ship it.
+# and so are the five notification statements, the two season-map statements (N28), admission's verdict and the two season-baseline statements (N29) -- n_version against all three tasks that ship it.
 # Until the clocks moved into this repository nothing compared them at all, and three of the copies
 # (c_verdicts, c_decide, c_batch) had already outlived the statements they copied. The clock tasks
 # live inside TASK GROUPS, which is why the lookup below descends.
@@ -58,7 +58,10 @@ PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim"
          ("n_ranks", "tb-count-run", "notify_rank"),
          ("n_season", "tb-withdraw-run", "notify_closed"),
          ("m_insert", "soma-season-maps-add", "insert"),
-         ("m_flip", "soma-season-maps-update", "flip")]
+         ("m_flip", "soma-season-maps-update", "flip"),
+         ("a_verify", "tb-admit-run", "verify"),
+         ("b_insert", "soma-season-baselines-add", "insert"),
+         ("b_flip", "soma-season-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
 def tasks(ts):
     for t in ts:
@@ -102,10 +105,10 @@ wait; strip < race2_hold.log
 
 rm -f race1_hold.log race2_hold.log
 
-# The deployed shape: the migrations plus the seed the volume gets on first initialisation, which
-# is what a fresh environment actually runs. Checks the three baselines are contestable opponents,
-# that every seeded rating has its seq-0 event, and that the Kalam role's grants are exactly the
-# columns docs/schema.md §3.8 names -- the security track's assertion, run rather than asserted.
+# The deployed shape: the migrations plus the seed the local stack's bootstrap applies, which is what
+# a fresh environment actually runs. Checks the seed writes no model -- a season's maps and
+# baselines are uploaded to it (N28, N29) -- and that the Kalam role's grants are exactly the columns
+# docs/schema.md §3.8 names -- the security track's assertion, run rather than asserted.
 echo "===== the deployed schema: migrations + seed ====="
 if [ ! -f "$SEED" ]; then
   echo "SKIP: seed checks -- $SEED not found (needs a web checkout beside soma; set SEED= to point at it)"
@@ -120,35 +123,22 @@ psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
 DO $$
 DECLARE n int;
 BEGIN
-    SELECT count(*) INTO n FROM model_versions m JOIN models e ON e.id = m.model_id
-      JOIN users u ON u.id = e.owner_id
-      WHERE u.role = 'baseline' AND m.status = 'active';
-    ASSERT n = 3, format('expected 3 active baselines, found %s', n);
-
-    -- The entry is named for the artifact directory, taken off the reserved `baseline.` prefix.
-    -- A substring pattern that silently matched the whole handle would name three entries
-    -- `baseline.nano-bc` and nothing else in the seed would fail.
-    SELECT count(*) INTO n FROM models e JOIN users u ON u.id = e.owner_id
-      WHERE u.role = 'baseline' AND (e.name LIKE 'baseline%' OR e.name = u.handle);
-    ASSERT n = 0, format('%s baseline entries kept the handle prefix in their name', n);
-
-    SELECT count(*) INTO n FROM ratings; ASSERT n = 6, format('expected 6 ratings, found %s', n);
-
-    SELECT count(*) INTO n FROM ratings r
-      WHERE NOT EXISTS (SELECT 1 FROM rating_events e
-                         WHERE e.version_id = r.version_id AND e.ladder = r.ladder AND e.seq = 0);
-    ASSERT n = 0, format('%s seeded ratings have no seq-0 event', n);
+    -- NO MODEL IS SEEDED (N29). A season's baselines are uploaded into it and admitted like any
+    -- submission; a seed that writes a version, a rating or a baseline account again is the roster
+    -- this replaced coming back as SQL only this stack runs.
+    SELECT count(*) INTO n FROM model_versions; ASSERT n = 0, format('the seed wrote %s versions', n);
+    SELECT count(*) INTO n FROM ratings;        ASSERT n = 0, format('the seed wrote %s ratings', n);
+    SELECT count(*) INTO n FROM users WHERE role = 'baseline';
+    ASSERT n = 0, format('the seed made %s baseline accounts', n);
+    SELECT count(*) INTO n FROM season_maps;    ASSERT n = 0, format('the seed wrote %s season maps', n);
 
     SELECT count(*) INTO n FROM games WHERE active_engine_digest IS NOT NULL;
     ASSERT n = 1, 'the game must carry an engine digest, placeholder or not';
 
-    -- docs/rating-and-seasons.md: exactly one live season, pinning the game's digest, with the baselines in it
+    -- docs/rating-and-seasons.md: exactly one live season, pinning the game's digest
     SELECT count(*) INTO n FROM seasons s JOIN games g ON g.id = s.game_id
       WHERE s.closed_at IS NULL AND s.engine_digest = g.active_engine_digest;
     ASSERT n = 1, 'the game must have exactly one live season, on its digest';
-    SELECT count(*) INTO n FROM model_versions m JOIN seasons s ON s.id = m.season_id
-      WHERE s.closed_at IS NULL AND m.status = 'active';
-    ASSERT n = 3, format('the three baselines must be active in the live season, found %s', n);
 
     -- Kalam reads two tables and writes only its own columns of them.
     SELECT count(*) INTO n FROM information_schema.table_privileges
@@ -192,11 +182,24 @@ SQL
 echo "===== the Kalam role, exercised ====="
 psql -d "$SEEDCHK" -q -v ON_ERROR_STOP=1 <<'SQL'
 \pset footer off
--- One claimable match, written as Soma (pair) would write it.
-INSERT INTO matches (id, game_id, season_id, engine_digest, seed, preset, seat_count, ladders)
-SELECT '11111111-1111-1111-1111-111111111111', g.id, s.id, s.engine_digest, 1, 'standard', 2,
+-- Two baselines in play and one board, as an upload, an admission and two enables leave them (the
+-- seed has neither), then one claimable match, written as Soma (pair) would write it.
+INSERT INTO users (handle, role) VALUES ('baseline.fixture-a', 'baseline'), ('baseline.fixture-b', 'baseline');
+INSERT INTO models (owner_id, game_id, name)
+SELECT u.id, g.id, substr(u.handle, 10) FROM users u, games g WHERE u.role = 'baseline' AND g.slug = 'ants';
+INSERT INTO model_versions (model_id, game_id, season_id, version, status, weight_class,
+                            weights_hash, manifest_hash, orion_version)
+SELECT e.id, e.game_id, s.id, 1, 'active', 'nano', 'sha256:w-' || e.name, 'sha256:m-' || e.name, '1.8.1'
+  FROM models e JOIN seasons s ON s.game_id = e.game_id AND s.closed_at IS NULL;
+INSERT INTO season_maps (season_id, map_id, players, rows, cols, digest, board, enabled, added_by)
+SELECT s.id, 'fixture', 2, 24, 24, 'sha256:fixture', '{"id": "fixture"}', true,
+       (SELECT id FROM users WHERE handle = 'baseline.fixture-a')
+  FROM seasons s WHERE s.closed_at IS NULL;
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders)
+SELECT '11111111-1111-1111-1111-111111111111', g.id, s.id, s.engine_digest, 1, sm.id, 2,
        ARRAY['nano','open']::ladder[]
-  FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = 'ants';
+  FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL
+  JOIN season_maps sm ON sm.season_id = s.id WHERE g.slug = 'ants';
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash)
 SELECT '11111111-1111-1111-1111-111111111111', row_number() OVER (ORDER BY m.id) - 1,
        m.id, m.weights_hash, m.manifest_hash

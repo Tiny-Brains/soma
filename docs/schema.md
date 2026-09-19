@@ -85,6 +85,8 @@ objects are for.
 ### 3.1 Enumerations
 
 ```sql
+-- 'disabled' is a baseline's alone: admitted and out of play (N29, §3.3b)
+CREATE TYPE model_status AS ENUM ('testing', 'verified', 'active', 'disabled', 'superseded', 'rejected');
 CREATE TYPE match_status AS ENUM
     ('pending', 'claimed', 'running', 'finished', 'rated', 'cancelled', 'failed');
 ```
@@ -268,6 +270,32 @@ header safely and `season_map_within()` checks it against the cartridge's `limit
 `season_map_json()` is the shape four routes return. `seasons` gains `name` and `slug`, the slug held
 to `season_slug(name)` by a CHECK and unique per game; `number` is an internal ordinal. The design
 and its reasons are [`season-maps.md`](season-maps.md).
+
+### 3.3b A season's baselines, and `baseline_events` (N29)
+
+There is no table of baselines: a baseline is a `baseline.<slug>` account (`users.role = 'baseline'`),
+its one entry in `models`, and its version in the season, uploaded by an admin and admitted by the
+walk every submission takes. **The version's status is whether it is in play**, which is why
+`model_status` gained `disabled`, a baseline's alone:
+
+```
+upload ──▶ testing ──admit──▶ disabled ◀──enable/disable──▶ active
+              └──refused──▶ rejected   (the name is free again)
+```
+
+`A_VERIFY` lands a baseline's verdict `disabled` rather than `verified`: a baseline has no trial, and
+`verified` is the trial pick's candidate set. Every reader that asks for `active` -- the ladder, the
+demand read, the trial pick, the insert, the close's settled test -- leaves `disabled` out, so out of
+play needs no second column for any of them to forget. `baseline_events` is what the status cannot
+hold: the `upload`, and every `enable` and `disable` with `by_user`, `at`, and how many queued matches
+a disable `cancelled`. `baseline_handle(name)` is `baseline.` and the name's slug, by the rule a
+season's slug follows; `season_baseline_json()` is the shape the three admin routes return, and
+`season_json()` counts a season's baselines `enabled`, `disabled` and `admitting`. The two writes are
+the upload's (the account and entry if new, the `testing` version, the event -- one statement, whose
+version insert names `model_versions_one_in_flight_uniq` as its arbiter because a bare `ON CONFLICT`
+is refused on a table with a deferrable constraint) and the flip's (the status, the first enable's
+two ratings and seq-0 events, a disable's cancel, the roster bump and the event -- one statement).
+Both are in `scripts/verify/statements.sql` as `b_insert` and `b_flip`, compared with what ships.
 
 ### 3.4 `match_seats` — one row per seat, the facts that are about a seat
 
@@ -501,10 +529,10 @@ not clear it, so a lapsed attempt keeps the attribution of the machine that lost
 
 ### 3.9 Seeds
 
-`games.active_engine_digest = 'sha256:placeholder'` for `ants`, overwritten by the deploy step;
-the four `clocks` rows above; the three baseline users and a `models` row each. The seed is
-`devops/compose/bootstrap/seed.sql`'s and is listed here only so the first pair run has a digest to
-stamp and a baseline to seat.
+`games.active_engine_digest = 'sha256:placeholder'` for `ants`, overwritten by the deploy step, and
+season 1 for the local stack; the four `clocks` rows are the migration's. **No baseline and no map is
+seeded** (N28, N29): both are uploaded into a season. The seed is web's `compose/seed.sql`, and
+`scripts/verify/run.sh` asserts it writes no version, rating, baseline account or season map.
 
 ### 3.10 The shared functions
 

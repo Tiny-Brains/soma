@@ -497,6 +497,72 @@ EXECUTE m_insert ('ants', 'summer-2026', '{"id": "another", "players": 2, "rows"
 ROLLBACK;
 \echo '--- the claim sends the board (expect the stand-in board of `default`)'
 SELECT m.seed, sm.map_id, sm.board FROM matches m JOIN season_maps sm ON sm.id = m.season_map_id WHERE m.seed = 43;
+\echo '===== season baselines: uploaded, admitted, enabled and disabled (N29) ====='
+\echo '--- a name gives an account (expect baseline.scout, baseline.fire-ant, then null for a name with no slug and for 49 characters)'
+SELECT baseline_handle('Scout') AS scout, baseline_handle('  Fire Ant ') AS fire_ant,
+       baseline_handle('🔥 🔥') IS NULL AS emoji_null, baseline_handle(repeat('a', 49)) IS NULL AS long_null;
+BEGIN;
+\echo '--- the upload makes the account, its entry and a TESTING version, with an upload event (expect INSERT 0 1, then baseline.scout Scout v1 testing, 1 event)'
+EXECUTE b_insert ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
+SELECT u.handle, e.name, v.version, v.status, (SELECT count(*) FROM baseline_events be WHERE be.version_id = v.id AND be.action = 'upload') AS events
+  FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout';
+SELECT v.id AS scout_v FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout' \gset
+\echo '    one version a name a season: the same name in another case, other weights (expect INSERT 0 0)'
+EXECUTE b_insert ('ants', 'summer-2026', 'SCOUT', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
+\echo '    one set of weights under a second name is a second baseline (expect INSERT 0 1, 2 accounts on those weights)'
+EXECUTE b_insert ('ants', 'summer-2026', 'Twin', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
+SELECT count(DISTINCT e.owner_id) AS accounts FROM model_versions v JOIN models e ON e.id = v.model_id WHERE v.weights_hash = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+\echo '--- admission lands a baseline DISABLED and a competitor VERIFIED (expect UPDATE 1 twice, then disabled / verified)'
+UPDATE model_versions SET admit_token = '0a000000-0000-0000-0000-000000000001', admit_started_at = now() WHERE id = :'scout_v';
+EXECUTE a_verify (:'scout_v', 'nano', 12000, 3000, 8000.5, '{}', '1.8.1', '0a000000-0000-0000-0000-000000000001', '{}');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'alt');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash, admit_token, admit_started_at)
+VALUES ('20000000-0000-0000-0000-0000000000a9', 'e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000000a',
+        '50000000-0000-0000-0000-000000000001', 1, 'sha256:walt', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '0a000000-0000-0000-0000-000000000002', now());
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000a9', 'nano', 12000, 3000, 8000.5, '{}', '1.8.1', '0a000000-0000-0000-0000-000000000002', '{}');
+SELECT (SELECT status FROM model_versions WHERE id = :'scout_v') AS scout, (SELECT status FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000a9') AS alt,
+       (SELECT model_phase(v) FROM model_versions v WHERE id = :'scout_v') AS phase;
+\echo '--- a testing baseline cannot be enabled (expect INSERT 0 0, twin still testing)'
+EXECUTE b_flip ('ants', 'summer-2026', 'twin', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+SELECT v.status FROM model_versions v JOIN models e ON e.id = v.model_id WHERE e.name = 'Twin';
+\echo '--- enabling seeds two ratings at the prior with their seq-0 events and moves the roster epoch (expect INSERT 0 1, active, 2 ratings at 25, 2 events, epoch moved, season_json enabled 2 -- random and scout -- admitting 1)'
+SELECT epoch AS ep0 FROM clocks WHERE key = 'roster' \gset
+EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+SELECT v.status, (SELECT count(*) FROM ratings r WHERE r.version_id = v.id AND r.mu = 25) AS ratings,
+       (SELECT count(*) FROM rating_events x WHERE x.version_id = v.id AND x.seq = 0) AS events,
+       (SELECT epoch FROM clocks WHERE key = 'roster') > :ep0 AS epoch_moved
+  FROM model_versions v WHERE v.id = :'scout_v';
+SELECT season_json(s) -> 'baselines' AS baselines FROM seasons s WHERE s.slug = 'summer-2026';
+\echo '    on the open ladder now (expect t); the same state again changes nothing (expect INSERT 0 0)'
+SELECT EXISTS (SELECT 1 FROM ladder_field('50000000-0000-0000-0000-000000000001', 'open') f WHERE f.version_id = :'scout_v') AS on_ladder;
+EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+\echo '--- disabling cancels the queued match seating it and lets the running one play on (expect two INSERT 0 2, the flip INSERT 0 1, then 90 cancelled BASELINE_DISABLED and 91 running, disable cancelled 1, off the ladder)'
+SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
+EXECUTE p_insert (:ep, 'ants', 90, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+EXECUTE p_insert (:ep, 'ants', 91, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+UPDATE matches SET status = 'running', claim_token = gen_random_uuid(), lease_expires_at = now() + interval '5 minutes' WHERE seed = 91;
+EXECUTE b_flip ('ants', 'summer-2026', 'scout', false, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+SELECT seed, status, withdrawn_reason FROM matches WHERE seed IN (90, 91) ORDER BY seed;
+SELECT action, cancelled FROM baseline_events WHERE version_id = :'scout_v' ORDER BY at;
+SELECT EXISTS (SELECT 1 FROM ladder_field('50000000-0000-0000-0000-000000000001', 'open') f WHERE f.version_id = :'scout_v') AS on_ladder;
+\echo '    a disabled seat can be paired no longer (expect INSERT 0 0)'
+SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
+EXECUTE p_insert (:ep, 'ants', 92, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+\echo '--- enabling it again keeps its ratings (expect INSERT 0 1, still 2 rating rows and 2 seq-0 events)'
+UPDATE ratings SET mu = 27 WHERE version_id = :'scout_v';
+EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+SELECT count(*) AS ratings, min(mu) AS mu FROM ratings WHERE version_id = :'scout_v';
+SELECT count(*) AS events FROM rating_events WHERE version_id = :'scout_v' AND seq = 0;
+\echo '--- a rejected upload frees its name (expect INSERT 0 1, then Twin v1 rejected and v2 testing)'
+UPDATE model_versions v SET status = 'rejected', reject_reason = 'ARTIFACT_MISSING' FROM models e WHERE e.id = v.model_id AND e.name = 'Twin';
+EXECUTE b_insert ('ants', 'summer-2026', 'twin', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
+SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id WHERE e.name = 'Twin' ORDER BY v.version;
+\echo '--- nothing is uploaded into, enabled or disabled in a closed season (expect INSERT 0 0 twice)'
+UPDATE seasons SET closed_at = now() WHERE slug = 'summer-2026';
+EXECUTE b_insert ('ants', 'summer-2026', 'Late', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE b_flip ('ants', 'summer-2026', 'scout', false, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+ROLLBACK;
 \echo '--- a season''s slug is its name''s (expect check violation), fixed per game (expect unique violation), and never a route''s word (expect check violation)'
 INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)
 VALUES ('00000000-0000-0000-0000-00000000000a', 7, 'Winter 2026', 'winter', 'sha256:e1',

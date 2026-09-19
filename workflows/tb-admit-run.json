@@ -1,7 +1,7 @@
 {
   "workflow_id": "tb-admit-run",
   "name": "Clock: admit",
-  "description": "What moves a submission off `testing`. Per item it asks GitHub for the release's metadata, reads the manifest the competitor uploaded to the models bucket and checks it against the hash they declared, registers the model on THIS node by reference and digest -- the node fetches the object and re-hashes it, so a row that lies fails admission -- runs admission synchronously, activates it, plays it over the game's reference observations through the probe channel, applies the platform's policy to the stats, and writes one verdict. It never fetches a competitor's bytes over the internet: the bytes are in the bucket because the competitor PUT them there through a presigned URL Soma minted, and Orion's storage connector is what reads them. The weight class is the season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes one row per item and a per-row claim is already the mutual exclusion. The branch that matters is on `fault`: a competitor's mistake rejects the version and OUR failure releases the claim and gives the attempt back. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk. docs/admission.md §4-§7 and §10.",
+  "description": "What moves a submission off `testing`. Per item it asks GitHub for the release's metadata, reads the manifest the competitor uploaded to the models bucket and checks it against the hash they declared, registers the model on THIS node by reference and digest -- the node fetches the object and re-hashes it, so a row that lies fails admission -- runs admission synchronously, activates it, plays it over the game's reference observations through the probe channel, applies the platform's policy to the stats, and writes one verdict. It never fetches a competitor's bytes over the internet: the bytes are in the bucket because the competitor PUT them there through a presigned URL Soma minted, and Orion's storage connector is what reads them. The weight class is the season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting is TOO_LARGE. A baseline an admin uploaded into a season (N29) walks the same path and lands `disabled` rather than `verified`: it has no trial, and it is out of play until an admin enables it. The claim is the fence -- there is no run fence, because admission writes one row per item and a per-row claim is already the mutual exclusion. The branch that matters is on `fault`: a competitor's mistake rejects the version and OUR failure releases the claim and gives the attempt back. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk. docs/admission.md §4-§7 and §10.",
   "tags": ["pkg:soma"],
   "condition": true,
   "loop": { "counter": "i", "max": 64 },
@@ -655,7 +655,7 @@
     },
     {
       "id": "verify",
-      "name": "testing -> verified",
+      "name": "testing -> verified (a baseline: disabled)",
       "condition": {
         "and": [
           { "var": "temp_data.head" },
@@ -668,7 +668,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE model_versions SET status = 'verified', weight_class = ($2)::ladder, size_bytes = ($3)::bigint, param_count = ($4)::bigint, infer_us = ($5)::float8::bigint, manifest = ($6)::text, orion_version = ($7)::text, probe_dims = ($9)::jsonb, admit_started_at = NULL, reject_reason = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($8)::uuid",
+          "query": "UPDATE model_versions SET status = CASE WHEN EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id WHERE e.id = model_versions.model_id AND u.role = 'baseline') THEN 'disabled'::model_status ELSE 'verified'::model_status END, weight_class = ($2)::ladder, size_bytes = ($3)::bigint, param_count = ($4)::bigint, infer_us = ($5)::float8::bigint, manifest = ($6)::text, orion_version = ($7)::text, probe_dims = ($9)::jsonb, admit_started_at = NULL, reject_reason = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($8)::uuid",
           "params": [
             { "var": "temp_data.it.model_id" },
             { "var": "temp_data.cls" },

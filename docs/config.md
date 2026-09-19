@@ -44,7 +44,7 @@ immutable, and read in the run that acts on it. Nothing depends on that yet.
 
 | Var | Value | Measured by | What the running ladder says |
 |---|---|---|---|
-| `prior_mu`, `prior_sigma` | 25, 8.3333 | nothing — it is a scale | TrueSkill's convention. **Soma reads these too**, for the baselines a season create carries, and the two must agree. Safe today only because both are in one config file; it stops being safe the day Soma gets a server of its own |
+| `prior_mu`, `prior_sigma` | 25, 8.3333 | nothing — it is a scale | TrueSkill's convention. **Soma's routes read these too**, for a baseline's first enable (N29), and the two must agree. Safe today only because both are in one config file; it stops being safe the day Soma gets a server of its own |
 | `ts_beta` | 4.1667 (`prior_sigma / 2`) | the fraction of matches the lower-rated seat wins, binned by rating gap; `beta` is the gap at which the favourite wins ~76% | not measurable on a field that draws |
 | `ts_tau` | 0.0833 (`prior_sigma / 100`) | the sigma floor: `min(sigma)` over settled versions | 0.70 — the floor is doing its job |
 | `ts_draw_probability` | 0.10 | §5's query, per season | **99.8%.** See §5 — this is the number most obviously wrong, and it is wrong because of the field, not the code |

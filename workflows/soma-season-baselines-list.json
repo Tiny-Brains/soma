@@ -1,0 +1,65 @@
+{
+  "workflow_id": "soma-season-baselines-list",
+  "name": "A season's baselines",
+  "description": "Admin only: every baseline uploaded into a season (N29), oldest first -- in play, admitted and out of play, still being admitted, and the uploads admission refused with the word it refused them for, because an admin re-uploading a baseline needs to know why the last one did not take. A baseline is a `baseline.` account, its entry and its version in this season, and its STATUS is whether it is in play: `active` is, `disabled` is not, `testing` is being admitted and `rejected` was refused. The ladder already shows the ones in play to everyone, under the baseline mark; this list is the admin's, because an upload still being admitted, or refused, is nobody else's business.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "query",
+      "name": "The season's baselines",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object( 'season', se.slug, 'baselines', coalesce((SELECT json_agg(season_baseline_json(v) ORDER BY v.created_at, v.id) FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u  ON u.id = e.owner_id AND u.role = 'baseline' WHERE v.season_id = se.id), '[]'::json)) AS body FROM seasons se JOIN games g ON g.id = se.game_id WHERE g.slug = ($1)::text AND se.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

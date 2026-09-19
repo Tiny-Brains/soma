@@ -105,6 +105,8 @@ sys.exit(0 if ok else 1)' && pass=$((pass+1)) || fail=$((fail+1))
 echo "==> anonymous callers are refused the session routes"
 check 401 "GET  /v1/me"                          "$BASE/v1/me"
 check 401 "POST ../seasons/{slug}/maps (anon)"   -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
+check 401 "GET  ../seasons/{slug}/baselines (anon)" "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
+check 401 "POST ../seasons/{slug}/baselines (anon)" -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
 check 401 "GET  /v1/me/matches"                  "$BASE/v1/me/matches"
 check 401 "GET  /v1/sessions"                    "$BASE/v1/sessions"
 check 401 "GET  /v1/me/notifications"            "$BASE/v1/me/notifications"
@@ -175,6 +177,14 @@ if [ "$ROLE" = "admin" ]; then
   check 400 "POST ../seasons/{slug}/maps (header)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{"id":"x"}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
   check 400 "PATCH ../maps/{id} (no state)"      -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps/no-such-map"
   check 404 "PATCH ../maps/{unknown}"            -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"enabled":false}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps/no-such-map"
+  check 200 "GET  ../seasons/{slug}/baselines"   "${C[@]}" "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
+  check 404 "GET  ../seasons/{unknown}/baselines" "${C[@]}" "$BASE/v1/games/$GAME/seasons/no-such-season/baselines"
+  check 400 "POST ../baselines (unusable name)"  -X POST "${C[@]}" -H 'content-type: application/json' \
+            -d '{"name":"!!","weights_hash":"sha256:x","manifest_hash":"sha256:y"}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
+  check 400 "POST ../baselines (no hashes)"      -X POST "${C[@]}" -H 'content-type: application/json' \
+            -d '{"name":"smoke"}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
+  check 400 "PATCH ../baselines/{slug} (no state)" -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines/no-such-baseline"
+  check 404 "PATCH ../baselines/{unknown}"       -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{"enabled":false}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines/no-such-baseline"
   check 200 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 200 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
   check 200 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \
@@ -219,6 +229,8 @@ if [ "$ROLE" = "admin" ]; then
 else
   check 403 "PATCH /v1/games/../seasons/{slug}"  -X PATCH "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON"
   check 403 "POST ../seasons/{slug}/maps"        -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/maps"
+  check 403 "GET  ../seasons/{slug}/baselines"   "${C[@]}" "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
+  check 403 "POST ../seasons/{slug}/baselines"   -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/games/$GAME/seasons/$SEASON/baselines"
   check 403 "GET  /v1/runner-keys"               "${C[@]}" "$BASE/v1/runner-keys"
   check 403 "GET  /v1/runners"                   "${C[@]}" "$BASE/v1/runners"
   check 403 "PATCH ../notification-settings (admin)" -X PATCH "${C[@]}" -H 'content-type: application/json' \

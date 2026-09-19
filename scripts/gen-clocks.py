@@ -365,6 +365,9 @@ UPDATE matches m
                 WHEN m.engine_digest <> s.engine_digest THEN 'ENGINE_RETIRED'
                 ELSE (SELECT CASE v.status WHEN 'superseded' THEN 'SUPERSEDED'
                                            WHEN 'rejected'   THEN 'REJECTED'
+                                           -- the disable cancels its own queue in the same
+                                           -- statement; this is the backstop for a race with it
+                                           WHEN 'disabled'   THEN 'BASELINE_DISABLED'
                                            ELSE 'SEAT_LEFT' END
                         FROM match_seats st
                         JOIN model_versions v ON v.id = st.version_id
@@ -1412,6 +1415,11 @@ SELECT (SELECT e ->> 'class'
 # honoured at the write: a run whose claim lapsed while it was verifying affects zero rows and
 # writes nothing, without halting -- the run that owns the item now redoes the work.
 #
+# A BASELINE LANDS `disabled`, NOT `verified` (N29). It is admitted by exactly this walk -- an admin
+# uploads it into a season the way a competitor submits -- but it has no trial, because it is what a
+# trial is played against, and it is out of play until an admin enables it, as an uploaded map is.
+# `verified` would put it in P_TRIALS' candidate set, where it would wait for a trial for ever.
+#
 # The schema's model_versions_past_testing_has_contents refuses a row past `testing` without
 # weights_hash, manifest_hash, orion_version, artifact_key and weight_class, so a verdict that
 # forgot one is a constraint violation rather than a half-verified version pair happily seats.
@@ -1419,7 +1427,10 @@ SELECT (SELECT e ->> 'class'
 # manifest is checked against its declared hash before it gets here.
 A_VERIFY = """
 UPDATE model_versions
-   SET status = 'verified', weight_class = ($2)::ladder,
+   SET status = CASE WHEN EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id
+                                   WHERE e.id = model_versions.model_id AND u.role = 'baseline')
+                     THEN 'disabled'::model_status ELSE 'verified'::model_status END,
+       weight_class = ($2)::ladder,
        size_bytes = ($3)::bigint, param_count = ($4)::bigint,
        -- ($5)::float8::bigint AND NOT ($5)::bigint. The probe measures `inference_ms`, which is
        -- fractional, and reports microseconds as `1000 * ms` -- so what arrives here is a JSON
@@ -1471,7 +1482,9 @@ ADMIT = {
         "are in the bucket because the competitor PUT them there through a presigned URL Soma "
         "minted, and Orion's storage connector is what reads them. The weight class is the "
         "season's, picked by `classify` as the smallest class whose cap S' fits; no class fitting "
-        "is TOO_LARGE. The claim is the fence -- there is no run fence, because admission writes "
+        "is TOO_LARGE. A baseline an admin uploaded into a season (N29) walks the same path and "
+        "lands `disabled` rather than `verified`: it has no trial, and it is out of play until an "
+        "admin enables it. The claim is the fence -- there is no run fence, because admission writes "
         "one row per item and a per-row claim is already the mutual exclusion. The branch that "
         "matters is on `fault`: a competitor's mistake rejects the version and OUR failure "
         "releases the claim and gives the attempt back. Every verdict, and every expiry this run "
@@ -1833,7 +1846,7 @@ ADMIT = {
         # The class is required rather than merely written: it is the one field that only exists if
         # admission answered, so requiring it here is what stops a half-verified row reaching the
         # schema's CHECK as a 500.
-        {"id": "verify", "name": "testing -> verified",
+        {"id": "verify", "name": "testing -> verified (a baseline: disabled)",
          "condition": {"and": STILL_GOOD + [{"!!": var("temp_data.cls")}]},
          "function": db_write("soma-db", A_VERIFY, [
              var("temp_data.it.model_id"), var("temp_data.cls"),

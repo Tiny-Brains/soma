@@ -1,0 +1,262 @@
+{
+  "workflow_id": "soma-season-baselines-add",
+  "name": "Upload a baseline into a season",
+  "description": "Admin only, and THE ONLY WAY A BASELINE REACHES THE PLATFORM (N29): no image, release or bootstrap carries one, and a season starts with none. The body is a name and the two hashes, exactly as a competitor's submission is, and the answer carries two one-shot presigned PUTs for the model and its manifest. The version is recorded `testing`, and the admit clock admits it by the walk every submission takes -- the node fetches and re-hashes the bytes, reads the graph, runs the adapters over the reference observations and measures the class -- then lands it `disabled`, not `verified`: a baseline has no trial, and it is out of play until an admin enables it, as an uploaded map is. THE NAME IS THE BASELINE: its account is `baseline.<slug of the name>`, so the same name in a later season is the same baseline with a new version, and one name holds one version a season. Refused in order: an unknown season, a closed one, a name with no usable slug, hashes that are not sha256:<64 hex>, and a name this season already has, unless that upload was rejected. POSTing the same name and hashes again while it is still `testing` answers 200 with fresh URLs, and creates nothing. One set of weights may stand under several names -- each is its own account and rating, which is how a trial on an eight-seat board finds seven opponents. The season's entry rules are not asked: they are a competitor's quotas, and admission still applies the season's graph and class rules. Its rate is per_admin_board_rate, as a season's boards and baselines arrive together.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "ctx",
+      "name": "The season, the name, and what it already holds",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH se AS ( SELECT s.id, s.closed_at FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text ), nm AS ( SELECT baseline_handle(($3)::text) AS handle ) SELECT json_build_object( 'season', EXISTS (SELECT 1 FROM se), 'closed', (SELECT se.closed_at IS NOT NULL FROM se), 'handle', nm.handle, 'hashes_ok', coalesce(($4)::text ~ '^sha256:[0-9a-f]{64}$' AND ($5)::text ~ '^sha256:[0-9a-f]{64}$', false), 'existing', (SELECT json_build_object( 'slug', substr(u.handle, length('baseline.') + 1), 'name', e.name, 'status', v.status, 'enabled', v.status = 'active', 'same', v.status = 'testing' AND v.weights_hash = ($4)::text AND v.manifest_hash = ($5)::text) FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u  ON u.id = e.owner_id AND u.role = 'baseline' JOIN se       ON se.id = v.season_id WHERE lower(u.handle) = lower(nm.handle) AND v.status <> 'rejected' ORDER BY v.created_at DESC LIMIT 1)) AS body FROM nm",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.name" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.manifest_hash" }
+          ],
+          "output": "temp_data.ctx"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.season" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": { "var": "temp_data.ctx.0.body.closed" },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "A closed season's baselines are its record; nothing is added to them."
+        },
+        "name": "The season has closed"
+      }
+    },
+    {
+      "id": "unusable",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.handle" } },
+        "status": 400,
+        "body": {
+          "error": "baseline_name_unusable",
+          "detail": "A baseline's name is 1 to 48 characters and must leave a slug: letters or digits."
+        },
+        "name": "A name that makes an account"
+      }
+    },
+    {
+      "id": "hashes",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.hashes_ok" } },
+        "status": 400,
+        "body": {
+          "error": "hashes_required",
+          "detail": "weights_hash and manifest_hash are each sha256: followed by 64 lower-case hexadecimal characters."
+        },
+        "name": "Two hashes"
+      }
+    },
+    {
+      "id": "taken",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "temp_data.ctx.0.body.existing" } },
+            { "!": { "var": "temp_data.ctx.0.body.existing.same" } }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "baseline_name_taken",
+          "detail": { "var": "temp_data.ctx.0.body.existing" }
+        },
+        "name": "One version a name a season",
+        "description": "A baseline's ratings describe the bytes it played, so its model never changes under it within a season. A different model is a different name; an upload admission rejected frees the name."
+      }
+    },
+    {
+      "id": "insert",
+      "name": "The account, its entry, and the version, testing",
+      "condition": { "!": { "var": "temp_data.ctx.0.body.existing" } },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "WITH se AS ( SELECT s.id, s.game_id FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text AND s.closed_at IS NULL ), nm AS ( SELECT baseline_handle(($3)::text) AS handle, btrim(($3)::text) AS name ), acct AS ( INSERT INTO users (handle, role, display_name) SELECT nm.handle, 'baseline', nm.name FROM nm, se WHERE nm.handle IS NOT NULL ON CONFLICT (lower(handle)) DO NOTHING RETURNING id ), who AS ( SELECT id FROM acct UNION ALL SELECT u.id FROM users u, nm WHERE lower(u.handle) = lower(nm.handle) AND u.role = 'baseline' ), ent AS ( INSERT INTO models (owner_id, game_id, name) SELECT who.id, se.game_id, nm.name FROM who, se, nm WHERE NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = who.id AND e.game_id = se.game_id) ON CONFLICT DO NOTHING RETURNING id ), entry AS ( SELECT id FROM ent UNION ALL (SELECT e.id FROM models e, who, se WHERE e.owner_id = who.id AND e.game_id = se.game_id ORDER BY e.created_at LIMIT 1) ), made AS ( INSERT INTO model_versions (model_id, game_id, season_id, version, weights_hash, manifest_hash) SELECT entry.id, se.game_id, se.id, coalesce((SELECT max(x.version) FROM model_versions x WHERE x.model_id = entry.id), 0) + 1, ($4)::text, ($5)::text FROM entry, se WHERE ($4)::text ~ '^sha256:[0-9a-f]{64}$' AND ($5)::text ~ '^sha256:[0-9a-f]{64}$' AND NOT EXISTS (SELECT 1 FROM model_versions x WHERE x.model_id = entry.id AND x.season_id = se.id AND x.status <> 'rejected') ON CONFLICT (model_id) WHERE status IN ('testing', 'verified') DO NOTHING RETURNING id ) INSERT INTO baseline_events (version_id, action, by_user) SELECT made.id, 'upload', ($6)::uuid FROM made",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.name" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.manifest_hash" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.insert"
+        }
+      }
+    },
+    {
+      "id": "raced",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { "var": "temp_data.ctx.0.body.existing" } },
+            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "baseline_conflict",
+          "detail": "Another upload of this name, or the season's close, got there first. Read the season's baselines and try again."
+        },
+        "name": "Nothing raced it"
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT season_baseline_json(v) AS body FROM model_versions v JOIN models e   ON e.id = v.model_id JOIN users u    ON u.id = e.owner_id AND u.role = 'baseline' JOIN seasons se ON se.id = v.season_id JOIN games g    ON g.id = se.game_id WHERE g.slug = ($1)::text AND se.slug = ($2)::text AND lower(u.handle) = lower(baseline_handle(($3)::text)) AND v.status = 'testing' AND v.weights_hash = ($4)::text AND v.manifest_hash = ($5)::text ORDER BY v.created_at DESC LIMIT 1",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.name" },
+            { "var": "data.req.weights_hash" },
+            { "var": "data.req.manifest_hash" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "sign",
+      "name": "Sign both uploads",
+      "description": "Both presigns are asked the same question -- is there a testing version to upload to -- so the group carries the condition once.",
+      "condition": { "!!": { "var": "temp_data.rows.0.body.version_id" } },
+      "tasks": [
+        {
+          "id": "sign_weights",
+          "name": "A one-shot PUT for the ONNX graph",
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-models",
+              "method": "PUT",
+              "key": {
+                "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
+              },
+              "expires_in": "30m",
+              "output": "temp_data.put_weights"
+            }
+          }
+        },
+        {
+          "id": "sign_manifest",
+          "name": "A one-shot PUT for the manifest",
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-models",
+              "method": "PUT",
+              "key": {
+                "cat": [
+                  "models/",
+                  { "var": "temp_data.rows.0.body.version_id" },
+                  "/",
+                  "manifest.json"
+                ]
+              },
+              "expires_in": "30m",
+              "output": "temp_data.put_manifest"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "description": "201 when the insert created the version, 200 when it did not -- the re-mint, for the same name and hashes still testing.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body.upload",
+              "logic": {
+                "if": [
+                  { "!!": { "var": "temp_data.rows.0.body.version_id" } },
+                  {
+                    "model_onnx": { "var": "temp_data.put_weights" },
+                    "manifest_json": { "var": "temp_data.put_manifest" },
+                    "expires_in": "30m",
+                    "note": "PUT the two files to these URLs. They are one-shot and expire in 30 minutes; POST the same name and hashes again for fresh ones."
+                  },
+                  null
+                ]
+              }
+            },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "if": [
+                  { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] },
+                  { "$from": "constants.created" },
+                  { "$from": "constants.ok" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

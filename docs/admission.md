@@ -837,9 +837,12 @@ load-bearing; both were written for this and neither needs touching.
    trained artifacts in `ants-baselines` now rather than untrained loader fixtures, so they have a
    repository that could cut releases. What is left is that the seeder writes the rows and uploads
    the objects directly, and admission would have to be driven by a real `POST /v1/submissions` with
-   a real upload. That is a chore, not a design. *Since 18 September 2026 the seeder is
-   `soma bootstrap`'s baselines step, driven by a roster (`docker/baselines.py`): the rows and
-   objects are still written directly, with the same hashes checked, so this question stands.*
+   a real upload. That is a chore, not a design. *Answered 19 September 2026 (N29): exactly this
+   path. An admin uploads a baseline into a season through `POST .../seasons/{slug}/baselines`, which
+   records a `testing` version of a `baseline.` account and answers presigned PUTs; this walk admits
+   it unchanged, and `verify` lands it `disabled` rather than `verified`, because a baseline has no
+   trial and is out of play until enabled. The roster step that wrote rows and objects directly is
+   deleted.*
 5. **Is the op allowlist per game or per platform?** the platform design says ~40 ops platform-wide,
    which is what §11 assumes. A cartridge whose observations are naturally recurrent might want
    `LSTM`; the manifest is where that would go, and this draft does not open it.

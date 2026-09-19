@@ -93,6 +93,9 @@ request handling and response construction, with matching soma-prefixed filename
 | GET | /v1/games/{game}/seasons/{slug}/maps/{map_id} | Public | One board, the board itself, and when it was enabled and disabled |
 | POST | /v1/games/{game}/seasons/{slug}/maps | Admin session | Upload one map file: judged by the engine, stored disabled, public |
 | PATCH | /v1/games/{game}/seasons/{slug}/maps/{map_id} | Admin session | `{"enabled": bool}`: put a board in play or take it out; disabling cancels its queued matches |
+| GET | /v1/games/{game}/seasons/{slug}/baselines | Admin session | A season's baselines: in play, switched off, being admitted, and refused uploads with their reason |
+| POST | /v1/games/{game}/seasons/{slug}/baselines | Admin session | `{name, weights_hash, manifest_hash}`: record a baseline and answer two presigned PUTs; admitted like a submission, lands switched off |
+| PATCH | /v1/games/{game}/seasons/{slug}/baselines/{baseline} | Admin session | `{"enabled": bool}`: put an admitted baseline in play or take it out; disabling cancels its queued matches |
 | GET | /v1/games/{game}/leaderboard | Public | Standings; ladder, season, limit, and cursor query parameters |
 | GET | /v1/games/{game}/submission | Session | Whether the caller may submit, why not, and as which version |
 | GET | /v1/models | Session | Caller's versions, with ratings and ranks; optional game filter |
@@ -299,8 +302,6 @@ package's cron, plugin, or authentication definitions and can report misleading 
 | SOMA_NODE_ADMIN | Loader substitution for soma-node-admin, the admin API admission registers a model on | Defaults to ORION_ADMIN, which is right on a node and wrong anywhere else |
 | ORION_ADMIN_BEARER | The whole `Bearer <key>` header value soma-node-admin sends | Every admin call is 401: a connector resolves `env://` only when the reference is the entire string |
 | PLUGIN_SIG_DIR | Loader: detached Ed25519 signatures for tb.rating, tb.pairing and tb.ants | A node with trust keys quarantines the clocks -- and the map routes -- that call an unsigned plugin |
-| /config/baselines.toml, or BASELINES_CONFIG | `bootstrap`: the baselines' roster -- `[models.*]` artifacts by URL or path, `[[baselines]]` with a permanent `id`, a `name` and a `model` (`docker/baselines.py`) | The image's own roster seeds `nano-bc`, `micro-bc` and `micro-percell`; `none` skips the step, and a season with no baselines admits nothing |
-| MODELS_ENDPOINT, MODELS_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY (bootstrap) | The models bucket as a node reaches it, with a credential that may PUT: the baselines step uploads what the roster names and restores what a season carry left out | `bootstrap` refuses at the baselines step, and names the four |
 | game, engine_digest | The game pair plays, and the engine this node loads (the entrypoint exports it from the image's cartridge) | Pairing has no game; every map upload is refused `engine_mismatch` |
 | count_batch, pair_depth_target, burst, steady_cap | Batch and demand controls | Defaults are not supplied by this package |
 | cross_class_fraction, repair_cap | Pairing policy | Incorrect values alter coverage and demand |
@@ -384,6 +385,25 @@ LICENSE                       repository licence
 
 ## Status
 
+**19 September 2026 — a season's baselines are uploaded to it, and the image ships no model (N29).**
+An admin names a baseline and gives its two files: `POST .../seasons/{slug}/baselines` records a
+`testing` version of the account `baseline.<slug of the name>` (made with its one entry if new) and
+answers two presigned PUTs, and the admit clock admits it by the walk every submission takes, then
+lands it **`disabled`** -- a new `model_status`, a baseline's alone: admitted, no trial, out of play.
+`PATCH .../baselines/{slug}` moves it to `active` (the first time with two ratings at the season's
+prior and their seq-0 events) and back (cancelling its pending matches `BASELINE_DISABLED`; running
+ones count), bumping the roster epoch and writing `baseline_events`. Disabled is off the ladder with
+its rating kept. **Season create no longer carries baselines**, which closes the empty-key carry
+recorded below; a new season has none until they are uploaded. Bootstrap's baselines step,
+`docker/baselines.py` and `docker/baselines.toml` are deleted. `check-defs.sh` clean (56 workflows),
+`check-sql.sh` 122/122, `verify/run.sh` exits 0 with the baseline walk -- upload, verdict, enable,
+disable with one queued and one running match, re-enable, a rejected upload freeing its name, a closed
+season refusing both -- and its seed half fixed (it asserted the three seeded baselines and inserted
+`matches.preset`, which N28 removed, so it had failed since the roster). On the rebuilt local stack:
+smoke 83/83; the starter's three models uploaded, admitted (micro, micro, nano), enabled and played;
+two more uploaded, switched on and off through the new admin page; and a four-competitor storm went
+through admission and trials against them to promotion, 11/11.
+
 **19 September 2026 — a season's boards are uploaded to it, and a season has a name (N28).**
 Built from [`docs/season-maps.md`](docs/season-maps.md). `season_maps` and `season_map_events` are in
 `0001_init.sql` (rewritten in place, so a local database is rebuilt, not migrated); a season has a
@@ -404,7 +424,8 @@ takes the cartridge from an `ants` stage, so `--build-context ants=../ants/dist`
 ants checkout. **Needs an ants release** (the engine digest moved, `limits.boards` is new) before a
 published image can carry it.
 
-**18 September 2026 — the baselines are a roster `bootstrap` applies.** They were a block of
+**18 September 2026 — the baselines are a roster `bootstrap` applies.** *Superseded the next day by
+N29: the roster, its step and the season carry are gone, and a season's baselines are uploaded to it.* They were a block of
 `web/compose/seed.sql` with placeholder hashes and `web/scripts/dev/seed-baselines.sh`, which
 `docker exec`ed into one container and read a sibling checkout -- so no deployment but the laptop
 stack could have any. `docker/baselines.py` runs as bootstrap's last step over a TOML roster:

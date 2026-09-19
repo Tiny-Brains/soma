@@ -151,10 +151,8 @@ LABEL org.opencontainers.image.title="soma" \
       org.opencontainers.image.source="https://github.com/Tiny-Brains/soma" \
       org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the four clocks on orion-server, with the schema and the command that applies it"
 
-# curl for the healthcheck, the self-load and the baselines' downloads and signed uploads; python3
-# because load-package.sh stages the set with it and bootstrap's baselines step is written in it
-# (stdlib only -- tomllib needs 3.11, which this Debian carries); postgresql-client and jq for
-# `bootstrap`.
+# curl for the healthcheck and the self-load; python3 because load-package.sh stages the set with
+# it; postgresql-client and jq for `bootstrap`.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl python3 postgresql-client jq \
  && rm -rf /var/lib/apt/lists/* \
@@ -164,9 +162,6 @@ RUN apt-get update \
 COPY --from=orion /usr/local/bin/orion-server /usr/local/bin/orion-server
 COPY docker/entrypoint.sh  /usr/local/bin/soma
 COPY docker/soma.toml.tmpl /etc/orion/soma.toml.tmpl
-# `bootstrap`'s baselines step, and the roster it seeds when none is mounted at /config/baselines.toml.
-COPY docker/baselines.py   /usr/local/lib/soma/baselines.py
-COPY docker/baselines.toml /pkg/soma/baselines.toml
 
 COPY channels/   /pkg/soma/channels/
 COPY workflows/  /pkg/soma/workflows/

@@ -28,7 +28,14 @@ CREATE TYPE ladder AS ENUM ('nano', 'micro', 'mini', 'small', 'large', 'open');
 
 -- 'verified' sits between 'testing' and 'active': admission has passed and the version is waiting
 -- for its trial match. A status of its own so pair, count and withdraw can each test it alone.
-CREATE TYPE model_status AS ENUM ('testing', 'verified', 'active', 'superseded', 'rejected');
+--
+-- 'disabled' is A BASELINE'S ALONE (N29): admitted, and out of play until an admin enables it, or
+-- taken out of play since. It is not 'verified' because a baseline has no trial -- it is what a
+-- trial is played against -- and not 'superseded' because nothing replaced it. Every reader that
+-- asks for 'active' leaves it out, which is the point: off the ladder, unpaired, and a pending
+-- match seating it is withdrawn. Its ratings and its matches stay, and enabling it again puts it
+-- back where it was. Only admission's verdict and the baseline enable/disable route write it.
+CREATE TYPE model_status AS ENUM ('testing', 'verified', 'active', 'disabled', 'superseded', 'rejected');
 
 -- 'pending' is born by pair; Kalam takes it through 'claimed' and 'running' to 'finished'; count
 -- marks it 'rated'. 'cancelled' is withdraw's, 'failed' is a fault's -- both terminal, neither counted.
@@ -298,8 +305,9 @@ CREATE TABLE seasons (
     game_id              uuid        NOT NULL REFERENCES games (id),
 
     -- AN INTERNAL ORDINAL, AND NO LONGER ANY KIND OF ADDRESS (N28): 1, 2, ... per game, read by the
-    -- baseline carry (the season before this one) and by the order seasons are listed in, and by
-    -- nothing a person types. Every URL, route parameter, query and notification names the slug.
+    -- order seasons are listed in and by nothing a person types. Every URL, route parameter, query
+    -- and notification names the slug. (It also found the season before this one, whose baselines
+    -- a create used to carry forward; since N29 a season's baselines are uploaded to it.)
     number               int         NOT NULL,
 
     -- WHAT A PERSON CALLS IT, AND HOW EVERYTHING ELSE ADDRESSES IT. The admin names the season
@@ -375,7 +383,9 @@ CREATE UNIQUE INDEX seasons_one_live_uniq ON seasons (game_id) WHERE closed_at I
 -- ---------------------------------------------------------------------- users
 
 -- Baselines are users -- one per reference opponent, so they can be told apart on a ladder that
--- displays a model as its owner's handle. They never sign in, hence the nullable github_id.
+-- displays a model as its owner's handle. They never sign in, hence the nullable github_id. An
+-- admin makes one by uploading it into a season under a name (N29), and the account is
+-- `baseline.<slug of that name>`: the same name in a later season is the same baseline again.
 CREATE TABLE users (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
 
@@ -396,7 +406,7 @@ CREATE TABLE users (
     -- both answer to one login.
     --
     -- TWO RESERVED PREFIXES, both containing a `.`, which a GitHub login cannot: `baseline.` for
-    -- the seeded reference opponents, and `released.` for a login taken back from a row that
+    -- the uploaded reference opponents, and `released.` for a login taken back from a row that
     -- provably no longer holds it -- see soma-auth-github. A login is [A-Za-z0-9-] and cannot
     -- contain a dot, so neither prefix can be minted against us.
     handle      text        NOT NULL,
@@ -412,7 +422,7 @@ CREATE TABLE users (
         CHECK (role = 'baseline' OR github_id IS NOT NULL),
 
     -- A baseline's handle lives in the reserved namespace and not in GitHub's. Without this a real
-    -- account whose login happened to equal a seeded handle -- `baseline-nano-bc` was one -- could
+    -- account whose login happened to equal a baseline's handle -- `baseline-nano-bc` was one -- could
     -- never sign in at all: the upsert would collide on the handle index, unhandled, for ever.
     CONSTRAINT users_baseline_handle_reserved
         CHECK (role <> 'baseline' OR handle LIKE 'baseline.%')
@@ -593,9 +603,9 @@ CREATE TABLE model_versions (
     -- its keep, since the admission batch, the demand read and the trial pick all want the game id.
     game_id         uuid         NOT NULL,
 
-    -- Stamped from the game's open season at submission, or by the season create for a carried
-    -- baseline; never changed. A closed season's `active` versions are its final standing, which
-    -- is why the one-active rule below is per season.
+    -- Stamped from the game's open season at submission, or from the season an admin uploaded a
+    -- baseline into; never changed. A closed season's `active` versions are its final standing,
+    -- which is why the one-active rule below is per season.
     season_id       uuid         NOT NULL,
 
     -- THE ONLY LABEL A SUBMISSION HAS, and it is the platform's, not the competitor's: 1, 2, 3...
@@ -762,6 +772,35 @@ CREATE TABLE season_map_events (
     cancelled     int         NOT NULL DEFAULT 0     -- pending matches the disable cancelled
 );
 CREATE INDEX season_map_events_map_idx ON season_map_events (season_map_id, at);
+
+-- ------------------------------------------------------------ season baselines
+
+-- A SEASON'S BASELINES ARE UPLOADED TO IT (N29), and they are the only opponents a trial can seat.
+-- No image, release or bootstrap carries one, and a new season starts with none. There is no table
+-- of them: a baseline is a `baseline.` account, its one entry, and its version in the season, and
+-- that version's STATUS is whether it is in play --
+--
+--   testing   -- uploaded, and being admitted by the same walk a competitor's submission takes
+--   rejected  -- admission refused it; a new upload under the same name is allowed
+--   disabled  -- admitted, and out of play (every upload lands here, as a map lands switched off)
+--   active    -- in play: paired, rated, on the ladder, and seated opposite every trial
+--
+-- The status and not a flag beside it, because every reader that asks "is this in play" already
+-- asks `status = 'active'`, and a second column is a question each of them could forget.
+--
+-- What the status cannot hold is WHO did it and WHEN, so this is the record: the upload, and every
+-- enable and disable, with how many queued matches a disable cancelled. Never deleted, like the
+-- version it is about.
+CREATE TABLE baseline_events (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    version_id  uuid        NOT NULL REFERENCES model_versions (id),
+    at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    action      text        NOT NULL,
+    by_user     uuid        NOT NULL REFERENCES users (id),
+    cancelled   int         NOT NULL DEFAULT 0,     -- pending matches a disable cancelled
+    CONSTRAINT baseline_events_action CHECK (action IN ('upload', 'enable', 'disable'))
+);
+CREATE INDEX baseline_events_version_idx ON baseline_events (version_id, at);
 
 -- -------------------------------------------------------------------- matches
 
@@ -1168,7 +1207,18 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
                     'sides',    CASE WHEN bool_or(sm.enabled) THEN json_build_array(
                                     min(least(sm.rows, sm.cols)) FILTER (WHERE sm.enabled),
                                     max(greatest(sm.rows, sm.cols)) FILTER (WHERE sm.enabled)) END)
-                   FROM season_maps sm WHERE sm.season_id = s.id));
+                   FROM season_maps sm WHERE sm.season_id = s.id),
+        -- The baselines, summarised the same way (N29): in play, admitted and out of play, and still
+        -- being admitted. A trial is seated only against the first number, so a season whose
+        -- `enabled` is 0 pairs no trial. The list itself is the admin's GET .../seasons/{slug}/baselines.
+        'baselines', (SELECT json_build_object(
+                    'enabled',   count(*) FILTER (WHERE v.status = 'active'),
+                    'disabled',  count(*) FILTER (WHERE v.status = 'disabled'),
+                    'admitting', count(*) FILTER (WHERE v.status = 'testing'))
+                   FROM model_versions v
+                   JOIN models e ON e.id = v.model_id
+                   JOIN users u  ON u.id = e.owner_id AND u.role = 'baseline'
+                  WHERE v.season_id = s.id));
 $$;
 
 -- THE HEADER OF AN UPLOADED MAP, or NULL when the file has none worth reading (N28): an `id` that
@@ -1215,6 +1265,16 @@ CREATE FUNCTION season_map_json(sm season_maps) RETURNS json LANGUAGE sql STABLE
         'matches',  (SELECT count(*) FROM matches m
                       WHERE m.season_map_id = sm.id AND m.status IN ('finished', 'rated')
                         AND m.trial_version_id IS NULL));
+$$;
+
+-- A BASELINE'S ACCOUNT, from the name an admin gives it (N29): `baseline.` and the name's slug, by
+-- the rule a season's slug follows. "Scout" and "scout" are one baseline, and the same name in a
+-- later season is that baseline again, with a new version. NULL for a name that leaves no usable
+-- slug, which the upload refuses as baseline_name_unusable.
+CREATE FUNCTION baseline_handle(p_name text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN char_length(btrim(p_name)) BETWEEN 1 AND 48
+                 AND season_slug(btrim(p_name)) ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                THEN 'baseline.' || season_slug(btrim(p_name)) END;
 $$;
 
 -- ------------------------------------------------ the season's rules, as predicates
@@ -1391,8 +1451,36 @@ CREATE FUNCTION model_phase(v model_versions) RETURNS text LANGUAGE sql STABLE A
                 WHEN v.status = 'testing'   THEN 'verifying'
                 WHEN v.status = 'verified'  THEN 'awaiting_trial'
                 WHEN v.status = 'active'    THEN 'on_the_ladder'
+                WHEN v.status = 'disabled'  THEN 'disabled'
                 WHEN v.status = 'rejected'  THEN 'rejected'
                 ELSE                             'superseded' END;
+$$;
+
+-- ONE SEASON BASELINE, as its three admin routes return it (N29): the name and the account, where
+-- the version stands, what admission measured, and how it has done on the open ladder. `slug` is
+-- how the routes address it -- the handle without its `baseline.` prefix.
+CREATE FUNCTION season_baseline_json(v model_versions) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'slug',          substr(u.handle, length('baseline.') + 1),
+        'name',          e.name,
+        'handle',        u.handle,
+        'model_id',      e.id,
+        'version_id',    v.id,
+        'version',       v.version,
+        'status',        v.status,
+        'phase',         model_phase(v),
+        'enabled',       v.status = 'active',
+        'reject_reason', v.reject_reason,
+        'class',         v.weight_class,
+        'size_bytes',    v.size_bytes,
+        'params',        v.param_count,
+        'infer_us',      v.infer_us,
+        'weights_hash',  v.weights_hash,
+        'added_at',      v.created_at,
+        'rating',        (SELECT r.conservative FROM ratings r WHERE r.version_id = v.id AND r.ladder = 'open'),
+        'matches',       (SELECT r.matches_played FROM ratings r WHERE r.version_id = v.id AND r.ladder = 'open'))
+      FROM models e JOIN users u ON u.id = e.owner_id
+     WHERE e.id = v.model_id;
 $$;
 
 -- A rating is half a sentence; the Version screen, the profile and the caller's own list all print

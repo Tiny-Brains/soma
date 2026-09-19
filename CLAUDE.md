@@ -115,9 +115,9 @@ node if not. `docker/entrypoint.sh bootstrap` is what devops' loader used to do 
 `orion_state`, the migrations under a recorded digest (a rewrite is refused by name), a mounted
 seed, the `runner_gate` password, the engine digest (a patch, or with `ENGINE_RELEASE=1` a release
 refused while a season is live), `games.manifest` + `reference_observations` from the cartridge
-the image was built with, and the **baselines** a roster names (`docker/baselines.py`: accounts,
-entries, live-season versions and their bytes in the models bucket; the roster is a mounted
-`/config/baselines.toml` or the image's `docker/baselines.toml`). **That cartridge is an ants
+the image was built with -- and **no baselines** (N29): a season's baselines are uploaded into it by
+an admin (`POST .../seasons/{slug}/baselines`), admitted by the admit clock like any submission, and
+land `disabled` until an admin enables them; the image ships no model. **That cartridge is an ants
 release chosen at build** — the latest, or `ANTS_RELEASE` — and a runner built from another release
 claims nothing.
 
@@ -219,8 +219,9 @@ ladder. All of it rests on SQL, never on process memory or Orion's singleton.
 
 Count is the only writer of a ladder, which is why it alone claims a run fence. Pair can overfill
 by at most one run's worth (the depth target bounds it) but can never seat a version that has left.
-Anything that bumps the roster — promotion, rejection, a season close — increments
-`clocks.epoch` where `key = 'roster'`, which is what invalidates pair's queued plans.
+Anything that bumps the roster — promotion, rejection, a season close, a baseline enabled or
+disabled (N29) — increments `clocks.epoch` where `key = 'roster'`, which is what invalidates pair's
+queued plans.
 
 **No clock deletes anything, and no grant says so any more.** The clocks run over `soma-db` as the
 owner since the merge; the `jodi` role that held no `DELETE` and nothing on `sessions` is gone.
@@ -368,6 +369,13 @@ only change to `db_write.rs` between them is sqlx 0.9's `AssertSqlSafe` wrapper,
   `activate` 404s on a model this node already archived, so a submission that needs a second attempt
   cannot get one.
 - **Trials feed no ladder.** A loss alone must never reject a candidate.
+- **A baseline is a submission an admin makes, and `disabled` is its alone** (N29). The upload records
+  a `testing` version of a `baseline.<slug>` account and answers presigned PUTs; `A_VERIFY` lands a
+  baseline's verdict `disabled`, never `verified` — `verified` is P_TRIALS' candidate set, where a
+  baseline would wait for a trial for ever. Enabling is `disabled -> active` (ratings seeded once, at
+  the prior), disabling is back again with its pending matches cancelled. Every `status = 'active'`
+  reader leaving `disabled` out is the whole of "out of play", so a new reader of the roster that
+  asks for anything broader must ask what it means by a baseline switched off.
 - **A notification is never inside the statement that decided the thing.** Each writer is its own
   `continue_on_error` `db_write` right after the decision, reads the decision off the ROW (never off
   `temp_data`, which survives a sweep), asks `notification_wanted()` inside its INSERT, and is
