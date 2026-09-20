@@ -6,8 +6,8 @@
   "config": {
     "type": "db",
     "connection_string": "env://RUNNER_GATE_DB_URL",
-    "max_connections": 10,
-    "connect_timeout_ms": 5000,
+    "max_connections": "var://gate_db_max_connections",
+    "connect_timeout_ms": "var://gate_db_connect_timeout_ms",
     "query_timeout_ms": 15000,
     "operations": { "delete": false },
     "allow_private_urls": "var://allow_private_urls"

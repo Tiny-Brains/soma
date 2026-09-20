@@ -51,6 +51,19 @@ url = "env://ORION_STATE_DB_URL"
 # entrypoint.sh runs `orion-server migrate` first, which is the deploy step this asks for.
 auto_migrate = false
 
+# ORION'S OWN POOL, and the larger half of what this node costs a Postgres plan: cron occurrences,
+# the cluster singletons, the audit trail and the traces. Orion's defaults (50 and 5) size a node
+# nobody here runs. THE WHOLE BUDGET IS THIS PLUS [vars] db_max_connections AND
+# gate_db_max_connections -- 15 + 8 + 4 = 27 as shipped, against the 80 these three used to be, which
+# is the difference between the smallest managed Postgres and the tier above it.
+#
+# acquire_timeout_secs is 10 rather than Orion's 3 because a smaller pool QUEUES: a wait that could
+# not happen at 50 connections is ordinary at 15, and three seconds turns it into a failed request
+# rather than a slow one.
+max_connections      = ${SOMA_STATE_DB_MAX_CONNECTIONS:-15}
+min_connections      = ${SOMA_STATE_DB_MIN_CONNECTIONS:-2}
+acquire_timeout_secs = ${SOMA_STATE_DB_ACQUIRE_TIMEOUT_SECS:-10}
+
 [vars]
 # ------------------------------------------------------------------------------- SOMA
 app_url            = "${APP_URL:-http://localhost:5173/}"
@@ -83,6 +96,58 @@ admin_github_ids   = "${SOMA_ADMIN_GITHUB_IDS:-}"
 # it as `var://allow_private_urls`; until Orion 1.9.0 a boolean could not be a reference and this
 # was written into a staged copy of the package at load time instead.
 allow_private_urls = ${SOMA_ALLOW_PRIVATE_URLS:-false}
+
+# ------------------------------------------------------------------------------ NODE SIZING
+# WHAT THIS NODE COSTS A DATABASE, as connections. Both pools are read by a connector as
+# `var://`, which a var keeps the TYPE of -- an `env://` there resolves to a string and fails to
+# deserialize, so a number belongs here and nowhere else.
+#
+# soma-db serves every public route and all five clocks; the gate's is only the runner statements,
+# which are millisecond claims and finishes. `connect_timeout_ms` is BOTH the dial deadline and the
+# POOL WAIT: sqlx takes it as acquire_timeout, so it is what a request spends queueing once the pool
+# is full, and shrinking a pool without knowing that turns saturation into a silent 5-second stall.
+db_max_connections         = ${SOMA_DB_MAX_CONNECTIONS:-8}
+db_connect_timeout_ms      = ${SOMA_DB_CONNECT_TIMEOUT_MS:-5000}
+gate_db_max_connections    = ${SOMA_GATE_DB_MAX_CONNECTIONS:-4}
+gate_db_connect_timeout_ms = ${SOMA_GATE_DB_CONNECT_TIMEOUT_MS:-5000}
+
+# ------------------------------------------------------------------------------ RATE LIMITS
+# The `constants.*_rate` blocks in shared/soma.json read every one of these; each channel names a
+# constant and holds no number of its own. The defaults are unchanged from when they were literals:
+# these exist so a deployment can open them up or close them down, not because a smaller machine
+# wants smaller ones. `key_logic` stays in the constant -- what a bucket is keyed on is the route's
+# design, not a deployment's.
+#
+# soma-admin-check is deliberately NOT here: its 100/200 is a guard that stops nginx's auth_request
+# locking an admin out of the console, not a budget anybody should be able to tighten.
+rate_public_rps              = ${SOMA_RATE_PUBLIC_RPS:-30}
+rate_public_burst            = ${SOMA_RATE_PUBLIC_BURST:-60}
+rate_session_rps             = ${SOMA_RATE_SESSION_RPS:-20}
+rate_session_burst           = ${SOMA_RATE_SESSION_BURST:-40}
+rate_per_user_read_rps       = ${SOMA_RATE_PER_USER_READ_RPS:-10}
+rate_per_user_read_burst     = ${SOMA_RATE_PER_USER_READ_BURST:-20}
+rate_per_user_write_rps      = ${SOMA_RATE_PER_USER_WRITE_RPS:-1}
+rate_per_user_write_burst    = ${SOMA_RATE_PER_USER_WRITE_BURST:-5}
+rate_per_admin_board_rps     = ${SOMA_RATE_PER_ADMIN_BOARD_RPS:-5}
+rate_per_admin_board_burst   = ${SOMA_RATE_PER_ADMIN_BOARD_BURST:-40}
+rate_runner_rps              = ${SOMA_RATE_RUNNER_RPS:-30}
+rate_runner_burst            = ${SOMA_RATE_RUNNER_BURST:-60}
+rate_runner_token_rps        = ${SOMA_RATE_RUNNER_TOKEN_RPS:-30}
+rate_runner_token_burst      = ${SOMA_RATE_RUNNER_TOKEN_BURST:-60}
+rate_per_runner_rps          = ${SOMA_RATE_PER_RUNNER_RPS:-10}
+rate_per_runner_burst        = ${SOMA_RATE_PER_RUNNER_BURST:-20}
+# Sign-in, which mints a session and so is limited per address and far harder than a read. It is the
+# one channel that writes its own rate rather than naming a constant.
+rate_signin_rps              = ${SOMA_RATE_SIGNIN_RPS:-5}
+rate_signin_burst            = ${SOMA_RATE_SIGNIN_BURST:-10}
+
+# ------------------------------------------------------------------------------ RESPONSE CACHE
+# How long an anonymous read is served from `soma-cache` (the LRU Redis). Raising these is the one
+# lever that takes load off BOTH the database pool and the node, so it is the first thing to reach
+# for on a machine that is too small, before the pools above. The connector itself has nothing to
+# size: Orion's redis backend is one multiplexed connection, not a pool.
+hot_cache_ttl_secs           = ${SOMA_HOT_CACHE_TTL_SECS:-10}
+season_cache_ttl_secs        = ${SOMA_SEASON_CACHE_TTL_SECS:-60}
 
 # ------------------------------------------------------------------------------- CLOCKS
 # Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here
@@ -290,6 +355,13 @@ public_keys = ["${TB_TRUST_PUBLIC_KEY:?the Ed25519 trust root; web/scripts/setup
 [cron]
 # An INNER deadline under server.shutdown_force_timeout_secs, so it can only make the wait shorter.
 shutdown_timeout_secs = ${ORION_CRON_SHUTDOWN_SECS:-60}
+
+# HOW MANY CLOCKS MAY RUN AT ONCE, and the one number here that must not be tuned down to save a
+# small machine. Five clocks are declared, each a `forbid` singleton, and soma-clock-admit holds its
+# worker for as long as its 600 s timeout allows -- so fewer workers than clocks that can be due
+# together is pair, count, withdraw and reap waiting behind admit, which is an idle ladder on a node
+# whose /readyz says ok. Raise it for a node carrying more clocks; lower it only by removing one.
+workers = ${SOMA_CRON_WORKERS:-4}
 
 # Soma reaches Postgres through raw db_read, so these bind no endpoint today; set so a dialect task
 # added later inherits sane numbers.

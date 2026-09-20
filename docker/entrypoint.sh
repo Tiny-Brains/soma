@@ -21,6 +21,48 @@ set -eu
 PKG="${SOMA_PKG_DIR:-/pkg/soma}"
 CARTRIDGE="${SOMA_CARTRIDGE_DIR:-/pkg/cartridge}"
 
+# THE NUMBERS A DEPLOYMENT SIZES THIS NODE WITH: the two connector pools, Orion's state pool, the
+# cron lanes, every rate limit and the two cache TTLs. soma.toml.tmpl holds each default ONCE, as
+# ${NAME:-default} -- and that fallback fires only when the name is UNSET. An empty value
+# substitutes as empty and stops the line being TOML -- the same trap serve() normalises
+# SOMA_ALLOW_PRIVATE_URLS and SOMA_COOKIE_SECURE for. Compose passes every one of these as
+# `${NAME:-}`, which is empty far more often than it
+# is set, so empty is turned back into unset here; that is what keeps a default in one file
+# instead of a second copy in each compose file, free to drift.
+#
+# Anything but digits is refused BY NAME. Spliced into the template it would surface as a TOML
+# parse error naming a line the operator never wrote, on a node that then does not start.
+#
+# OUT HERE, NOT IN serve(), so EVERY command through this entrypoint sees a normalised environment
+# -- `soma serve`, and the `exec "$@"` escape hatch a debugging session uses. Run orion-server
+# DIRECTLY in this container (`docker compose exec soma orion-server validate-config -c ...`) and
+# you bypass this: the template then substitutes the empty values compose passes and refuses to
+# parse. Go through the entrypoint instead: `docker compose exec soma soma orion-server ...`.
+for v in \
+  SOMA_DB_MAX_CONNECTIONS SOMA_DB_CONNECT_TIMEOUT_MS \
+  SOMA_GATE_DB_MAX_CONNECTIONS SOMA_GATE_DB_CONNECT_TIMEOUT_MS \
+  SOMA_STATE_DB_MAX_CONNECTIONS SOMA_STATE_DB_MIN_CONNECTIONS SOMA_STATE_DB_ACQUIRE_TIMEOUT_SECS \
+  SOMA_CRON_WORKERS \
+  SOMA_RATE_PUBLIC_RPS SOMA_RATE_PUBLIC_BURST \
+  SOMA_RATE_SESSION_RPS SOMA_RATE_SESSION_BURST \
+  SOMA_RATE_PER_USER_READ_RPS SOMA_RATE_PER_USER_READ_BURST \
+  SOMA_RATE_PER_USER_WRITE_RPS SOMA_RATE_PER_USER_WRITE_BURST \
+  SOMA_RATE_PER_ADMIN_BOARD_RPS SOMA_RATE_PER_ADMIN_BOARD_BURST \
+  SOMA_RATE_RUNNER_RPS SOMA_RATE_RUNNER_BURST \
+  SOMA_RATE_RUNNER_TOKEN_RPS SOMA_RATE_RUNNER_TOKEN_BURST \
+  SOMA_RATE_PER_RUNNER_RPS SOMA_RATE_PER_RUNNER_BURST \
+  SOMA_RATE_SIGNIN_RPS SOMA_RATE_SIGNIN_BURST \
+  SOMA_HOT_CACHE_TTL_SECS SOMA_SEASON_CACHE_TTL_SECS
+do
+  eval "value=\${$v-}"
+  case "$value" in
+    "") unset "$v" ;;
+    *[!0-9]*)
+      echo "$v must be a whole number, not '$value' -- it is spliced into the node's config" >&2
+      exit 1 ;;
+  esac
+done
+
 # ---------------------------------------------------------------------------- serve
 serve() {
   # orion-server substitutes ${NAME:-default} from this environment as it reads the file, so nothing
@@ -61,6 +103,7 @@ serve() {
     *) echo "==> $(printf '%s' "$SOMA_ADMIN_GITHUB_IDS" | tr ',' '\n' | grep -c .) GitHub account(s) are admins by deployment" ;;
   esac
   export SOMA_ADMIN_GITHUB_IDS
+
 
   # The engine this node loads, which [vars] engine_digest names so a map upload can refuse a season
   # pinned to another one: validating a board on a different engine proves nothing about the one

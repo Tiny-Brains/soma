@@ -12,11 +12,16 @@
 # its protocol, its route and how its workflow refuses -- and compared with what it claims. A tag
 # cannot drift from what the channel actually does, because nobody writes the truth twice.
 #
-# No database, no stack, no Docker: it reads the set and nothing else.
+# It also checks the `var://` names, which are a naming contract of the same kind: every one the set
+# uses against what `docker/soma.toml.tmpl` declares in `[vars]`. Orion's own rule for that reads a
+# workflow's logic and not a connector's or a channel's config, so this is where a renamed pool size
+# or rate limit is caught.
+#
+# No database, no stack, no Docker: it reads the set and the instance template, and nothing else.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 - <<'PY'
-import json, pathlib, sys
+import json, pathlib, re, sys
 
 PACKAGE = json.loads(pathlib.Path("shared/package.json").read_text())["package"]["name"]
 SURFACES = ("pub", "user", "admin", "gate", "clock")
@@ -189,6 +194,38 @@ for f, sites in sorted(refs.items()):
     if f != f"{wid}-{tid}.sql":
         bad(pathlib.Path("sql") / f, f"should be {wid}-{tid}.sql")
 
+# ---------------------------------------------------------------------------- var:// names
+# EVERY `var://name` IN THE SET, AGAINST WHAT [vars] DECLARES. Orion's own `[vars]` clippy rule
+# reads a workflow's logic and NOT a connector's or a channel's config, so `var://db_max_connections`
+# with the var renamed passes `clippy -c` and fails at the node's boot apply instead -- the same
+# blind spot the pre-existing `var://allow_private_urls` sits in. Since the pools, every rate limit
+# and the cache TTLs are vars now, a typo here would be thirty ways to stop a node with a message
+# nobody sees until a deployment.
+#
+# The template cannot be TOML-parsed: its values are unsubstituted `${NAME:-default}`. The
+# declarations are read as text, which is all a name check needs.
+tmpl = pathlib.Path("docker/soma.toml.tmpl").read_text().splitlines()
+declared, in_vars = set(), False
+for line in tmpl:
+    stripped = line.strip()
+    if stripped.startswith("["):
+        in_vars = stripped == "[vars]"
+        continue
+    if not in_vars or stripped.startswith("#") or "=" not in stripped:
+        continue
+    name = stripped.split("=", 1)[0].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        declared.add(name)
+
+used = {}
+for f in sorted(pathlib.Path(".").glob("*/*.json")):
+    if f.parts[0] not in ("channels", "connectors", "workflows", "shared"):
+        continue
+    for name in re.findall(r'"var://([A-Za-z0-9_]+)"', f.read_text()):
+        used.setdefault(name, []).append(f)
+for name in sorted(set(used) - declared):
+    bad(used[name][0], f"names var://{name}, which [vars] does not declare")
+
 for n in notes:
     print(f"  note: {n}", file=sys.stderr)
 for e in errors:
@@ -196,5 +233,5 @@ for e in errors:
 if errors:
     sys.exit(f"{len(errors)} naming error(s)")
 print("  " + ", ".join(f"{s} {census.get(s, 0)}" for s in SURFACES)
-      + f"; {len(connectors)} connectors, {len(on_disk)} statements")
+      + f"; {len(connectors)} connectors, {len(on_disk)} statements, {len(used)} vars")
 PY

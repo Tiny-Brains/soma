@@ -11,7 +11,10 @@
   "config": {
     "response": { "$from": "constants.shaped", "allowed_headers": ["location"], "cookies": true },
     "timeout_ms": 10000,
-    "rate_limit": { "requests_per_second": 5, "burst": 10 },
+    "rate_limit": {
+      "requests_per_second": "var://rate_signin_rps",
+      "burst": "var://rate_signin_burst"
+    },
     "oauth2_login": {
       "authorize_url": "https://github.com/login/oauth/authorize",
       "token_url": "https://github.com/login/oauth/access_token",

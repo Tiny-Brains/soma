@@ -179,6 +179,11 @@ compose file sets every one of them for the local stack.
 | `RUNNER_GATE_DB_URL` | required | Same database as `runner_gate` (`soma-db-gate`: the gate's match statements) |
 | `ORION_STATE_DB_URL` | required | Orion's own state, database `orion_state` |
 | `REDIS_URL` | required | Cluster state |
+| `SOMA_DB_MAX_CONNECTIONS`, `SOMA_GATE_DB_MAX_CONNECTIONS` | 8, 4 | `soma-db` and `soma-db-gate` pool sizes |
+| `SOMA_DB_CONNECT_TIMEOUT_MS`, `SOMA_GATE_DB_CONNECT_TIMEOUT_MS` | 5000 | Dial deadline **and** the pool wait: sqlx takes it as `acquire_timeout` |
+| `SOMA_STATE_DB_MAX_CONNECTIONS`, `SOMA_STATE_DB_MIN_CONNECTIONS` | 15, 2 | Orion's own state pool (`[storage]`) |
+| `SOMA_STATE_DB_ACQUIRE_TIMEOUT_SECS` | `10` | How long a request waits for a state connection |
+| `SOMA_CRON_WORKERS` | `4` | How many clocks may run at once; never below the number that can be due together |
 | `ORION_ADMIN_KEY` | required | Admin API key (`[admin_auth]`). Required by name: an unset or empty value stops the boot saying so |
 | `TB_TRUST_PUBLIC_KEY` | required | Ed25519 key plugin signatures must verify under |
 | `SOMA_SESSION_SECRET` | required | HS256 for session cookies and OAuth state, at least 32 bytes |
@@ -203,12 +208,25 @@ compose file sets every one of them for the local stack.
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
 | `SOMA_ALLOW_PRIVATE_URLS` | `false` | `[vars] allow_private_urls`, which every connector but `soma-cache` reads: compose service names resolve to private addresses |
 | `SOMA_CACHE_URL` | *(required)* | `soma-cache`'s Redis, the response cache for the anonymous reads. An absent `env://` skips the connector |
+| `SOMA_HOT_CACHE_TTL_SECS`, `SOMA_SEASON_CACHE_TTL_SECS` | 10, 60 | How long an anonymous read is served from `soma-cache` |
+| `SOMA_RATE_*_RPS`, `SOMA_RATE_*_BURST` | as shipped | One pair per rate-limit family (`public`, `session`, `per_user_read`, `per_user_write`, `per_admin_board`, `runner`, `runner_token`, `per_runner`, `signin`); `docker/soma.toml.tmpl` lists them |
 | `GITHUB_API_BASE` | api.github.com | Load-time connector base |
 | `SOMA_ARTIFACT` | `/var/lib/orion/soma.package.json` | Where `serve` compiles the package to, and what `[packages] apply` reads |
 | `SOMA_ADMIN_DB_URL` | bootstrap, required | The maintenance database (`.../postgres`), for `CREATE DATABASE orion_state` |
 | `RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD` | bootstrap; first required | Role passwords; the migration creates both roles with none |
 | `ENGINE_RELEASE` | bootstrap, `0` | `1` declares the engine as a release instead of a patch |
 | `GAME` | `ants` | The game bootstrap registers |
+
+**Node sizing.** Every pool, rate limit and cache TTL is a `[vars]` entry the definitions read as
+`var://`, not a literal in the package: a var keeps its declared TYPE, which an `env://` (always a
+string) cannot. **The Postgres budget is `SOMA_DB_MAX_CONNECTIONS + SOMA_GATE_DB_MAX_CONNECTIONS`
+against `soma`, plus `SOMA_STATE_DB_MAX_CONNECTIONS` against `orion_state` — 27 as shipped**, plus a
+transient `psql` or two while `bootstrap` runs. Shrink the pools before the cron workers: five clocks
+are declared and `soma-clock-admit` holds a worker for as long as its 600 s timeout, so fewer workers
+than clocks that can be due together is an idle ladder on a node whose `/readyz` says ok. The
+response-cache TTLs are the lever that takes load off the pools and the node at once.
+`scripts/check-names.sh` refuses a `var://` name `[vars]` does not declare — Orion's own rule reads
+workflow logic and not a connector's config, so that one is checked here.
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
 engine digest and component come from it), `ORION_VERSION` (1.9.0), `RUST_VERSION`,

@@ -16,32 +16,52 @@
       "source": { "header": "Authorization", "scheme": "Bearer " }
     },
     "shaped": { "mode": "shaped" },
-    "public_rate": { "requests_per_second": 30, "burst": 60 },
-    "session_rate": { "requests_per_second": 20, "burst": 40 },
+    "public_rate": {
+      "requests_per_second": "var://rate_public_rps",
+      "burst": "var://rate_public_burst"
+    },
+    "session_rate": {
+      "requests_per_second": "var://rate_session_rps",
+      "burst": "var://rate_session_burst"
+    },
     "per_user_read_rate": {
-      "requests_per_second": 10,
-      "burst": 20,
+      "requests_per_second": "var://rate_per_user_read_rps",
+      "burst": "var://rate_per_user_read_burst",
       "key_logic": { "var": "auth.sub" }
     },
     "per_user_write_rate": {
-      "requests_per_second": 1,
-      "burst": 5,
+      "requests_per_second": "var://rate_per_user_write_rps",
+      "burst": "var://rate_per_user_write_burst",
       "key_logic": { "var": "auth.sub" }
     },
     "per_admin_board_rate": {
-      "requests_per_second": 5,
-      "burst": 40,
+      "requests_per_second": "var://rate_per_admin_board_rps",
+      "burst": "var://rate_per_admin_board_burst",
       "key_logic": { "var": "auth.sub" }
     },
-    "runner_rate": { "requests_per_second": 30, "burst": 60 },
-    "runner_token_rate": { "requests_per_second": 30, "burst": 60 },
+    "runner_rate": {
+      "requests_per_second": "var://rate_runner_rps",
+      "burst": "var://rate_runner_burst"
+    },
+    "runner_token_rate": {
+      "requests_per_second": "var://rate_runner_token_rps",
+      "burst": "var://rate_runner_token_burst"
+    },
     "per_runner_rate": {
-      "requests_per_second": 10,
-      "burst": 20,
+      "requests_per_second": "var://rate_per_runner_rps",
+      "burst": "var://rate_per_runner_burst",
       "key_logic": { "var": "auth.sub" }
     },
-    "hot_cache": { "enabled": true, "ttl_secs": 10, "connector": "soma-cache" },
-    "season_cache": { "enabled": true, "ttl_secs": 60, "connector": "soma-cache" },
+    "hot_cache": {
+      "enabled": true,
+      "ttl_secs": "var://hot_cache_ttl_secs",
+      "connector": "soma-cache"
+    },
+    "season_cache": {
+      "enabled": true,
+      "ttl_secs": "var://season_cache_ttl_secs",
+      "connector": "soma-cache"
+    },
     "ok": { "status": 200, "body_path": "data.body" },
     "created": { "status": 201, "body_path": "data.body" },
     "no_content": { "status": 204 },

@@ -222,6 +222,18 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   An http or cache `url` MAY be `env://` and any connector boolean may be a reference
   (`allow_private_urls` is `var://allow_private_urls`, from `[vars]`), so nothing stages a copy of
   the set any more — the deployment's settings are declarations in the committed connectors.
+- **A NUMBER IS A `var://`, NEVER AN `env://`.** `var://` substitution is TYPED — the var keeps the
+  type `[vars]` declared it with — while `env://` always resolves to a string, and the only coercion
+  at a reference site is `true`/`false`. So `"max_connections": "env://X"` fails at load naming the
+  field, and `"var://db_max_connections"` works. **Every pool size, rate limit and cache TTL in this
+  package is a var**: the two db pools, `[storage]`'s, `[cron] workers`, the nine rate families in
+  `shared/soma.json` and the two cache TTLs, each `${SOMA_...:-default}` in `soma.toml.tmpl` and
+  nowhere else — a compose file passes `${NAME:-}` and `entrypoint.sh` turns empty back into unset,
+  so the default has one home. `soma-admin-check`'s 100/200 stays a literal on purpose: it is the
+  guard that stops nginx's `auth_request` locking an admin out, not a budget.
+  **Orion's `[vars]` clippy rule does not read a connector's or a channel's config**, only workflow
+  logic, so a renamed var there passes `clippy -c` and stops the node at its boot apply instead;
+  `scripts/check-names.sh` is what refuses it offline.
 - **An `env://` that resolves to an empty string is now REFUSED, not accepted.** A connector's
   endpoint is scheme-checked again AFTER its references resolve, so `""` fails as `ftp://` would,
   the connector is skipped, and a workflow naming it cannot activate. Setting a variable empty to
