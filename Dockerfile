@@ -165,6 +165,9 @@ COPY docker/soma.toml.tmpl /etc/orion/soma.toml.tmpl
 
 COPY channels/   /pkg/soma/channels/
 COPY workflows/  /pkg/soma/workflows/
+# The statements the workflows name as `{"$sql": "../sql/<file>"}`. `compile` resolves them off
+# disk, so a set without this directory does not compile and the node stops at its boot apply.
+COPY sql/        /pkg/soma/sql/
 COPY connectors/ /pkg/soma/connectors/
 COPY migrations/ /pkg/soma/migrations/
 COPY shared/     /pkg/soma/shared/
