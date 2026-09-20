@@ -176,9 +176,42 @@ schema_digest() {
   cat $files | sha256sum | cut -d' ' -f1
 }
 
+# WHERE THE APPLIED DIGEST LIVES: a table of bootstrap's own, not
+# `ALTER DATABASE ... SET tinybrains.schema_digest`.
+#
+# A customized GUC -- one with a dot and no registered definition -- can only be set at database
+# level by a REAL superuser, because PostgreSQL has no definition to read a privilege level from. No
+# managed provider grants that: Cloud SQL's `cloudsqlsuperuser` is not one, and neither is RDS's
+# `rds_superuser`. The old form died there with `permission denied to set parameter`, having already
+# applied the schema -- so the database was left built but unrecorded. The local stack hid it
+# completely, because its `soma` role owns the container's postgres outright.
+#
+# The table is created HERE rather than in a migration, deliberately: migration bookkeeping is not
+# part of the schema it tracks (Orion's own state database does the same), and keeping it out means
+# adding it does not move the digest the migrations hash -- every database already built from them
+# stays current instead of being refused.
+ensure_schema_meta() {
+  psql_db <<'SQL'
+-- One row, enforced by the primary key and the CHECK together. `singleton` and not `only`:
+-- ONLY is reserved (SELECT ... FROM ONLY t) and does not parse as a column name unquoted.
+CREATE TABLE IF NOT EXISTS public.soma_schema (
+  singleton  boolean     PRIMARY KEY DEFAULT true CHECK (singleton),
+  digest     text        NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+SQL
+}
+
+# The table first, then the old GUC, so a database recorded before this change is still CHECKED
+# rather than silently adopted. `record_schema_digest` then moves it into the table.
+read_schema_digest() {
+  psql -X "$DB" -At -c "SELECT coalesce((SELECT digest FROM public.soma_schema), nullif(current_setting('tinybrains.schema_digest', true), ''), '')"
+}
+
 record_schema_digest() {
-  psql -X "$DB" -q -v ON_ERROR_STOP=1 -v d="$1" <<'SQL'
-SELECT format('ALTER DATABASE %I SET tinybrains.schema_digest = %L', current_database(), :'d')\gexec
+  psql_db -v d="$1" <<'SQL'
+INSERT INTO public.soma_schema (singleton, digest) VALUES (true, :'d')
+ON CONFLICT (singleton) DO UPDATE SET digest = EXCLUDED.digest, applied_at = now();
 SQL
 }
 
@@ -203,7 +236,8 @@ SELECT format('CREATE DATABASE orion_state OWNER %I', current_user)
 SQL
 
   want=$(schema_digest)
-  have=$(psql -X "$DB" -At -c "SELECT coalesce(current_setting('tinybrains.schema_digest', true), '')")
+  ensure_schema_meta
+  have=$(read_schema_digest)
   present=$(psql -X "$DB" -At -c "SELECT CASE WHEN to_regclass('public.games') IS NULL THEN 'no' ELSE 'yes' END")
   if [ "$present" = "no" ]; then
     echo "==> applying the schema"
@@ -226,6 +260,8 @@ SQL
     exit 1
   else
     echo "==> the schema is current (sha256:${want%${want#????????}}...)"
+    # Idempotent, and it is what carries a GUC-era database into the table.
+    record_schema_digest "$want"
   fi
 
   echo "==> role passwords"
