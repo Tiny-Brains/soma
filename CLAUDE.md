@@ -2,7 +2,7 @@
 
 Soma is an Orion 1.9.0 package plus the Postgres migrations every TinyBrains package shares, shipped
 as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour is JSON channel and
-workflow definitions whose statements live in `sql/*.sql`, generated clock files, connectors and two
+workflow definitions whose statements live in `sql/*.sql`, connectors and two
 Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares
 the Orion it needs in `shared/package.json`, and every offline command checks the binary against it.
 
@@ -13,7 +13,7 @@ the cli. When you close a gap or find one, update README's **Known gaps**.
 ## Checks
 
 ```sh
-./scripts/check-defs.sh                          # every change: generator drift, lint, clippy, fmt, clippy -c; no stack
+./scripts/check-defs.sh                          # every change: clippy, fmt, names/tags, clippy -c; no stack
 cargo test --manifest-path plugins/Cargo.toml    # after touching plugins/ (clippy there is clean; the allows are deliberate)
 ./scripts/check-sql.sh                           # after any SQL or schema change; starts its own postgres
 ./scripts/verify/run.sh                          # after a gate, clock, notification or schema change; needs a postgres container (DB_CONTAINER)
@@ -54,16 +54,23 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   body`. Shaping a response in JSONLogic is the exception.
 - **The session guard is a JOIN on `live_sessions` inside the query**, never a guard task. Admin
   routes read `role` off that live row, never off a cookie claim, so a demotion takes effect at once.
-  Where `json_agg` without `GROUP BY` would return a row regardless (`soma-models-list`, the
+  Where `json_agg` without `GROUP BY` would return a row regardless (`soma-user-models-list`, the
   preflight), `live_sessions` is the outer `FROM`.
 - **Write, then diagnose.** `db_write` answers only `rows_affected`, so a refusal is one statement
   that does the work, a conditional `db_read` that asks why nothing happened, and a terminal map that
-  turns that into an error code (`soma-seasons-create`: `create` → `why` → `refused`).
+  turns that into an error code (`soma-admin-seasons-create`: `create` → `why` → `refused`).
 - A route that can return something private gets its **own path** (`/v1/me/matches`), never a
   parameter on a public route.
 - **Only a caller-invariant route may declare `cache`.** The response-cache key carries method,
   path params and query, and nothing about the caller.
-- Every definition keeps `"tags": ["pkg:soma"]`. A node's boot apply
+- **Every definition carries three tags, `[package, surface, domain]`**, in that order --
+  `["soma", "gate", "matches"]`. `?tag=` is an EXACT, SINGLE-TAG match with no prefix and no AND,
+  and no list page searches names or ids, so the tag filter is the navigation and each tag has to
+  be a useful question on its own. The surface is one of `pub`, `user`, `admin`, `gate`, `clock`
+  (`conn` on a connector) and is also the id's second segment; `scripts/check-names.sh` DERIVES it
+  from the definition and fails if the two disagree. The domain comes from a closed list of
+  thirteen, shared with kalam -- web's `scripts/check/configs.sh` compares them.
+- A node's boot apply
   ADDS and UPDATES only: retiring what a version dropped is `scripts/load-package.sh --prune`, which
   reads the receipt's own inventory rather than sweeping by tag, and is a deliberate operator step
   because it removes routes. So a release that drops a channel needs that one run against the
@@ -74,8 +81,9 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 
 ### Clocks
 
-- **The clocks are AUTHORED, like every route.** `channels|workflows/tb-*.json` and the
-  `sql/tb-*.sql` they name are edited directly; there is no generator and nothing to regenerate.
+- **The clocks are AUTHORED, like every route.** `channels/soma-clock-*.json`,
+  `workflows/soma-clock-*-run.json` and the `sql/soma-clock-*.sql` they name are edited directly;
+  there is no generator and nothing to regenerate.
   A statement keeps the comments and alignment it is written with — Orion's `$sql` normal form
   collapses both when `compile` inlines the file, so a comment costs nothing and a comment edit
   moves neither the statement nor the package's content hash. A statement two tasks share is ONE
@@ -87,11 +95,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `compile` expands it all.
 - `group_runs()` folds consecutive tasks sharing a condition into a task group. **Anything that
   walks a clock workflow must descend into groups**, or it silently skips most of the statements.
-- **`scripts/autoscaler.sql` is generated from `P_DEMAND_DOC`**, pair's CTEs up to its final
+- **`scripts/autoscaler.sql` carries pair's demand CTEs verbatim**, up to its final
   `SELECT json_build_object(`, so keep that split point and the CTE names `wants` and `depth`.
   The CTEs bind `$1`–`$4` and `$6`; pair's `$5` (the depth target) is only in its final SELECT,
   which is why the autoscaler can take `$5` for itself. A new CTE parameter changes both.
-- **Soma runs no model.** `[models]` is off. `tb-admit` prepares a submission (HEAD, manifest,
+- **Soma runs no model.** `[models]` is off. `soma-clock-admit` prepares a submission (HEAD, manifest,
   rebuilt registration) and queues an `admissions` row; an admitting kalam runner claims it through
   `/v1/runner/admissions/*`, runs Orion's admission and the probe, and reports; the clock judges the
   report. A new admission step that needs a model belongs on the runner, and its verdict here.
@@ -108,7 +116,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   That a clock never reads `sessions` or rewrites an entry is enforced by review, not by a grant.
 - `tb.pairing` decides quality, never correctness. It must stay pure and seeded by the occurrence
   id, and every correctness rule (seat count from the board, contesting, self-pairing) is repeated
-  in `P_INSERT`. Trials are picked in SQL (`P_TRIALS`), not by the plugin. `tb.rating` refuses a
+  in pair's `insert`. Trials are picked in SQL (pair's `trials`), not by the plugin. `tb.rating` refuses a
   missing parameter rather than defaulting one, and its output is the fold's `$4` exactly.
 - **Admission branches on whose fault it is, not on the reason word**, and `admission_facts()` in
   the migration is where that is decided for a report: a `failed` stage of `size`, `digest`, `parse`
@@ -152,7 +160,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - Constraints carry the rules no writer is trusted with: partial unique indexes, the deferrable
   one-active exclusion, `matches_status_shape`.
 - **Grants are the boundary with Kalam.** `kalam` and `runner_gate` get SELECT on a few tables and
-  UPDATE on named columns. The gate's match statements run as `runner_gate` over `soma-runner-db`,
+  UPDATE on named columns. The gate's match statements run as `runner_gate` over `soma-db-gate`,
   and the admin routes and the token exchange run on `soma-db`. A runner statement that needs a new
   grant is argued on the grant block, and `kalam` is never widened.
 - A season's `weight_classes` are validated strictly ascending, because admission takes the first
@@ -173,11 +181,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 
 ### Runner gate
 
-- The match statements' home is `workflows/soma-runner-*.json`. Kalam's `sql/tb-match-run-*.sql`
-  holds db-mode copies that **no check compares**, so change both together. The admission routes have no
-  db-mode copy: only an `api` runner admits.
+- The match statements' home is `workflows/soma-gate-*.json`, and there is **one copy**: Kalam's
+  db mode is gone, and with it the second set of statements nothing compared.
+  `scripts/verify/run.sh` reads each statement out of the workflow that ships it, so the harness
+  cannot drift from what is served either.
 - A gate route's `data.req.*` field names are the contract with the runner. Diff them against the
-  body `kalam/workflows/tb-match-run.json` sends.
+  body `kalam/workflows/kalam-match-run.json` sends.
 - `live_runners` is joined **inside** every statement. A JSONLogic guard fails open.
 - `finish` writes, then reads back under the same token: `200 {applied: false}` is a duplicate
   delivery, and `409` is a lost claim. Never conflate them.
@@ -237,7 +246,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   reads as a routing miss.
 - Twenty tensor operators are live on every expression surface. A single-key object keyed `shape`,
   `full`, `cast`, `pad`, `crop`, `concat` or `stack` is a call, and the escape is `{"$shape": ...}`.
-  Kalam's tb-admit probe relies on `{"length": [{"shape": ...}]}` being a call.
+  Kalam's soma-clock-admit probe relies on `{"length": [{"shape": ...}]}` being a call.
 - Archive and delete are not refused for a model an active workflow names by a computed id. Model
   `stats` are written at admission and never recomputed.
 - **Orion activates only a `draft` version.** An archived model 404s on `status: active` and 409s on

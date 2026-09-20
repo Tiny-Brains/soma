@@ -55,7 +55,7 @@ WITH cand AS (
                    WHERE b.game_id = pick.game_id AND b.season_id = pick.season_id
                      AND b.status = 'active'
                      -- ONE SEAT PER OWNER among the opponents, and this is not cosmetic: a season
-                     -- forbidding self-pairing makes P_INSERT refuse a match seating two versions
+                     -- forbidding self-pairing makes the insert statement refuse a match seating two versions
                      -- of one owner, and a trial is plan item 0. A trial the insert refuses halts
                      -- the whole run, every run, for ever -- so trials must never propose one.
                    ORDER BY be.owner_id, b.id) b

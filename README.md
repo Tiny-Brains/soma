@@ -108,22 +108,22 @@ admin API, `/health`, `/readyz` and `/metrics`. Only `/v1/` may be proxied.
 
 ## Clocks
 
-Authored as `channels/tb-*.json` and `workflows/tb-*.json`, with their statements in
-`sql/tb-*.sql`. Each is a `forbid` singleton on its own key with the `latest` misfire policy;
+Authored as `channels/soma-clock-*.json` and `workflows/soma-clock-*-run.json`, with their
+statements in `sql/soma-clock-*.sql`. Each is a `forbid` singleton on its own key with the `latest` misfire policy;
 the singleton buys order, and the SQL fences buy correctness.
 
 | Channel | Every | Timeout | Does | Fence |
 |---|---|---|---|---|
-| `tb-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
-| `tb-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
-| `tb-count` | 10 s | 60 s | Fold finished matches in finish order, decide trials, promote | run fence on `clocks.count` |
-| `tb-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season | none: idempotent |
-| `soma-runner-reap` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
+| `soma-clock-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
+| `soma-clock-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
+| `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order, decide trials, promote | run fence on `clocks.count` |
+| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season | none: idempotent |
+| `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
 or `rejected` at either step.
 
-**Admission runs no model here.** `tb-admit` walks a submission twice. *Prepare* checks what needs no
+**Admission runs no model here.** `soma-clock-admit` walks a submission twice. *Prepare* checks what needs no
 model (the object is in the bucket, the manifest hashes to its declaration, the registration rebuilt
 from it field by field) and queues one `admissions` row. An **admitting runner** (kalam,
 `RUNNER_ROLE=admit`) claims it through the gate, registers it on its own node, lets Orion admit it,
@@ -153,7 +153,8 @@ judged by `worldgen`.
 
 | Command | What it does | Needs |
 |---|---|---|
-| `./scripts/check-defs.sh` | Generator `--check`, `orion-server lint`, `clippy`, `fmt --check`, and `clippy -c docker/soma.toml.tmpl` for the three rules that need the serving config (all `--deny-warnings`) | `orion-server` in `shared/package.json`'s range |
+| `./scripts/check-defs.sh` | `orion-server lint`, `clippy`, `fmt --check`, `check-names.sh`, and `clippy -c docker/soma.toml.tmpl` for the three rules that need the serving config (all `--deny-warnings`) | `orion-server` in `shared/package.json`'s range |
+| `./scripts/check-names.sh` | The ids, the three tags and the `sql/` filenames. Derives each channel's surface from its protocol, route and role guard, and fails if the tag or the id's second segment disagrees | nothing; it reads the set |
 | `cargo test --manifest-path plugins/Cargo.toml` | Rating and pairing host tests | stable Rust |
 | `plugins/build.sh tb-rating` (or `tb-pairing`) | Tests, then the wasm component and `plugin.json` beside the source (gitignored) | `wasm32-unknown-unknown`, `wasm-tools`, Python 3.11+ |
 | `./scripts/check-sql.sh` | `orion-server sql check`: prepare every shipped statement against a scratch schema built from `migrations/`, each as its connector's role, and plan it to prove that role's grants | docker, or `SQLCHECK_DATABASE` |
@@ -175,7 +176,7 @@ compose file sets every one of them for the local stack.
 | Variable | Default | Purpose |
 |---|---|---|
 | `SOMA_DB_URL` | required | Platform database as its owner (`soma-db`: routes and clocks) |
-| `RUNNER_GATE_DB_URL` | required | Same database as `runner_gate` (`soma-runner-db`: the gate's match statements) |
+| `RUNNER_GATE_DB_URL` | required | Same database as `runner_gate` (`soma-db-gate`: the gate's match statements) |
 | `ORION_STATE_DB_URL` | required | Orion's own state, database `orion_state` |
 | `REDIS_URL` | required | Cluster state |
 | `ORION_ADMIN_KEY` | required | Admin API key (`[admin_auth]`). Required by name: an unset or empty value stops the boot saying so |
@@ -309,9 +310,9 @@ docker/soma.toml.tmpl       the instance config, cluster mode, and every [vars] 
 .github/workflows/release.yml  a v* tag publishes the image for amd64 and arm64
 channels/soma-*.json        routes: method, path, auth, rate limits, cache
 workflows/soma-*.json       their task lists and inline SQL; each `description` carries the route's reasoning
-channels|workflows/tb-*.json  the clocks (generated; never edit by hand)
-connectors/                 soma-db, soma-runner-db, soma-cache, github-api, soma-blobs (replay GET),
-                            soma-runner-blobs (replay PUT), soma-models (public: upload PUT),
+channels/soma-clock-*.json   the five clocks; their task lists are workflows/soma-clock-*-run.json
+connectors/                 soma-db, soma-db-gate, soma-cache, soma-github, soma-blobs (replay GET),
+                            soma-blobs-gate (replay PUT), soma-models (public: upload PUT),
                             soma-models-internal (HEAD + GET), soma-models-http
 shared/soma.json            constants and fragments the set references with $from and use
 plugins/                    tb-rating and tb-pairing (one cargo workspace) and build.sh
@@ -322,11 +323,12 @@ sql/                        every statement over ~240 characters, one file each;
 scripts/load-package.sh     compile and apply a working copy into a running node; --prune retires
                             what a version dropped. A node's own [packages] apply does the boot
 scripts/check-defs.sh       no-stack gate
+scripts/check-names.sh      the ids, the tags and the sql/ filenames; run by check-defs.sh
 scripts/check-sql.sh        orion-server sql check, as each connector's role
 scripts/smoke.sh            every route, against a running stack
 scripts/verify/             run.sh (reads the shipped statements), statements.sql (only what does
                             NOT ship), scenario.sql, the race files
-scripts/autoscaler.sql      how many runners the ladder wants (generated)
+scripts/autoscaler.sql      how many runners the ladder wants; its CTEs are pair's, diffed by check-sql.sh
 ```
 
 ## Invariants
@@ -351,7 +353,7 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
   refused trial spends no repair: it has a ceiling of its own, which rejects `RUNNER_UNAVAILABLE`,
   never `UNPLAYABLE`.
 - **The autoscaler counts demand exactly as pair does.** `check-sql.sh` compares its CTE block
-  against `sql/tb-pair-run-demand.sql` and fails on a difference.
+  against `sql/soma-clock-pair-run-demand.sql` and fails on a difference.
 - **A shape many routes return is defined once, in the migration** (`season_json`, `season_state`,
   `current_season`, `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`, the
   `season_admits*` predicates). A second copy is two pages that disagree.
@@ -369,8 +371,13 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
 - **A gate route's `data.req.*` field names are the contract** with Kalam's runner.
 - **`finish` tells a duplicate delivery (200) from a lost claim (409).** Conflating them fails a
   healthy runner.
-- **Every definition carries `"tags": ["pkg:soma"]`**, or a deleted route keeps its path after
-  the load.
+- **Every definition carries three tags, `[package, surface, domain]`**, in that order --
+  `["soma", "gate", "matches"]`. `?tag=` is an EXACT, SINGLE-TAG match with no prefix and no AND,
+  and no list page searches names or ids, so the tag filter is the navigation and each tag has to
+  be a useful question on its own. The surface is one of `pub`, `user`, `admin`, `gate`, `clock`
+  (`conn` on a connector) and is also the id's second segment; `scripts/check-names.sh` DERIVES it
+  from the definition and fails if the two disagree. The domain comes from a closed list of
+  thirteen, shared with kalam -- web's `scripts/check/configs.sh` compares them.
 - **Only caller-invariant routes cache.** The cache key has no caller in it. A route that carries
   the live season (`/v1/games`, `/v1/games/{game}`, the seasons list) takes `season_cache`, 60 s,
   so an admin's change reaches every reader within a minute and the three never disagree.

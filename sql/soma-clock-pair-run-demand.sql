@@ -54,7 +54,7 @@ WITH live AS (
      GROUP BY s.version_id
 ), w AS (
     -- No branch for a baseline, and none may come back: it is paced like every version.
-    -- The one thing a baseline does alone is sit opposite every trial, which is P_TRIALS'.
+    -- The one thing a baseline does alone is sit opposite every trial, which is the trials statement's.
     SELECT v.model_id, v.owner_id, v.weight_class, v.sigma, v.played,
            coalesce(f.in_flight, 0) AS in_flight,
            CASE WHEN v.played < lim.burst         THEN 'placement'

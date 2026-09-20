@@ -37,7 +37,7 @@ shutdown_force_timeout_secs = ${ORION_SHUTDOWN_FORCE_SECS:-30}
 trusted_proxies = ${SOMA_TRUSTED_PROXIES:-["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}
 
 # Required, not optional: an Orion singleton is a row in the state database, so "cluster-wide"
-# means "state-database-wide". Two servers over two state databases are two tb-count clocks folding
+# means "state-database-wide". Two servers over two state databases are two soma-clock-count clocks folding
 # the same matches -- which the fence makes safe, but not once.
 [cluster]
 enabled                = ${ORION_CLUSTER_ENABLED:-true}
@@ -56,7 +56,7 @@ auto_migrate = false
 app_url            = "${APP_URL:-http://localhost:5173/}"
 # Exactly as registered with GitHub. https only, except on a loopback host.
 oauth_redirect_uri = "${OAUTH_REDIRECT_URI:-http://localhost:5173/v1/auth/github/callback}"
-# WHERE SIGN-IN MAY SEND YOU BACK TO. `soma-auth-github` carries a `?next=` through the GitHub
+# WHERE SIGN-IN MAY SEND YOU BACK TO. `soma-pub-auth-github` carries a `?next=` through the GitHub
 # round-trip -- Orion seals it into the signed state, so it cannot be tampered with in flight --
 # and these two are the whole allow list. The match is origin + path boundary, never a string
 # prefix, which is what stops `http://localhost:5173.evil.test/steal` being admitted.

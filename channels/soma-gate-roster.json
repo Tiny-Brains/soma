@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-gate-roster",
   "name": "soma-gate-roster",
-  "description": "What the ladder says this node should be able to play. A replica's own tb-roster clock reads it; no clock ever calls a replica.",
+  "description": "What the ladder says this node should be able to play. A replica's own kalam-roster clock reads it; no clock ever calls a replica.",
   "tags": ["soma", "gate", "models"],
   "channel_type": "sync",
   "protocol": "rest",
