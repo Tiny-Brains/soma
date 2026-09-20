@@ -39,6 +39,12 @@ orion-server clippy . --deny-warnings
 echo "==> fmt"
 orion-server fmt --check .
 
+# ---------------------------------------------------------------- the names and the sql/ directory
+# Orion checks that every reference RESOLVES; it has no opinion about what anything is CALLED, and
+# `?tag=` is the only way to navigate a list. So the naming rules are checked here or nowhere.
+echo "==> names, tags and the sql/ directory"
+./scripts/check-names.sh
+
 # ---------------------------------------------------------------- the serving config's rules
 # Three clippy rules need the config the node will actually serve with, because what they prove is
 # a definition against a setting: a `[vars]` name nothing declares, a `secret` nothing supplies,
