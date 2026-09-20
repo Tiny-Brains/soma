@@ -541,15 +541,17 @@ EXECUTE b_insert ('ants', 'summer-2026', 'SCOUT', 'sha256:cccccccccccccccccccccc
 \echo '    one set of weights under a second name is a second baseline (expect INSERT 0 1, 2 accounts on those weights)'
 EXECUTE b_insert ('ants', 'summer-2026', 'Twin', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
 SELECT count(DISTINCT e.owner_id) AS accounts FROM model_versions v JOIN models e ON e.id = v.model_id WHERE v.weights_hash = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-\echo '--- admission lands a baseline DISABLED and a competitor VERIFIED (expect UPDATE 1 twice, then disabled / verified)'
+\echo '--- admission lands a baseline DISABLED and a competitor VERIFIED, each on its prepared admission (expect UPDATE 1 and INSERT 0 1 for each, then disabled / verified)'
 UPDATE model_versions SET admit_token = '0a000000-0000-0000-0000-000000000001', admit_started_at = now() WHERE id = :'scout_v';
-EXECUTE a_verify (:'scout_v', 'nano', 12000, 3000, 8000.5, '{}', '1.8.1', '0a000000-0000-0000-0000-000000000001', '{}');
+INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES (:'scout_v', '{}', '{}', 12000, 1000000);
+EXECUTE a_verify (:'scout_v', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000001', '{}');
 INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'alt');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash, admit_token, admit_started_at)
 VALUES ('20000000-0000-0000-0000-0000000000a9', 'e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000000a',
         '50000000-0000-0000-0000-000000000001', 1, 'sha256:walt', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '0a000000-0000-0000-0000-000000000002', now());
-EXECUTE a_verify ('20000000-0000-0000-0000-0000000000a9', 'nano', 12000, 3000, 8000.5, '{}', '1.8.1', '0a000000-0000-0000-0000-000000000002', '{}');
+INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES ('20000000-0000-0000-0000-0000000000a9', '{}', '{}', 12000, 1000000);
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000a9', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000002', '{}');
 SELECT (SELECT status FROM model_versions WHERE id = :'scout_v') AS scout, (SELECT status FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000a9') AS alt,
        (SELECT model_phase(v) FROM model_versions v WHERE id = :'scout_v') AS phase;
 \echo '--- a testing baseline cannot be enabled (expect INSERT 0 0, twin still testing)'
@@ -591,6 +593,106 @@ SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model
 UPDATE seasons SET closed_at = now() WHERE slug = 'summer-2026';
 EXECUTE b_insert ('ants', 'summer-2026', 'Late', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
 EXECUTE b_flip ('ants', 'summer-2026', 'scout', false, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
+ROLLBACK;
+\echo '===== admission: prepared here, admitted on a runner, decided here ====='
+BEGIN;
+UPDATE games SET reference_observations = '[{"o": 1}, {"o": 2}, {"o": 3}]' WHERE id = '00000000-0000-0000-0000-00000000000a';
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'queued'),
+  ('e0000000-0000-0000-0000-0000000000c2', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'crashes');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash) VALUES
+  ('20000000-0000-0000-0000-0000000000c1', 'e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a',
+   '50000000-0000-0000-0000-000000000001', 1, 'sha256:wc1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'),
+  ('20000000-0000-0000-0000-0000000000c2', 'e0000000-0000-0000-0000-0000000000c2', '00000000-0000-0000-0000-00000000000a',
+   '50000000-0000-0000-0000-000000000001', 1, 'sha256:wc2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
+\echo '--- prepare: the clock claims both, queues both, releases both (expect claimed t t, INSERT 0 1 twice, UPDATE 1 twice, then queued queued)'
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000001', 16, 180);
+SELECT admit_token = '0b000000-0000-0000-0000-000000000001' AS claimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
+EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{"name": "tb.v20000000-0000-0000-0000-0000000000c1"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');
+EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c2', '{"name": "tb.v20000000-0000-0000-0000-0000000000c2"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c1', '0b000000-0000-0000-0000-000000000001');
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000001');
+SELECT model_phase(v) FROM model_versions v WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
+\echo '    a queued submission is the runner''s: the clock does not claim it again, and a lapsed stale claim queues nothing (expect not re-claimed t t, INSERT 0 0)'
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000002', 16, 180);
+SELECT admit_token IS NULL AS not_reclaimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
+EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 1, 1, '0b000000-0000-0000-0000-000000000001');
+\echo '    waiting on a runner spends nothing, so nothing expires (expect UPDATE 0)'
+EXECUTE a_expire (3, 180, '0b000000-0000-0000-0000-00000000000e');
+\echo '--- the runner claims AS runner_gate: oldest first, one attempt spent, the registration, key, digest, budget and the first two observations (expect UPDATE 1, then the claim)'
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000001', 300, 3);
+EXECUTE g_admit_row ('0c000000-0000-0000-0000-000000000001', 'tb.v', 2, 5000);
+\echo '    a second runner takes the other one, and a third finds nothing (expect UPDATE 1, UPDATE 0); a revoked runner claims nothing (expect UPDATE 0)'
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000002', '0c000000-0000-0000-0000-000000000002', 300, 3);
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000003', 300, 3);
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000003', '0c000000-0000-0000-0000-000000000004', 300, 3);
+\echo '    the role reports and decides nothing: a verdict column and the prepared manifest are refused (expect permission denied twice)'
+SAVEPOINT denied;
+UPDATE model_versions SET status = 'verified' WHERE id = '20000000-0000-0000-0000-0000000000c1';
+ROLLBACK TO SAVEPOINT denied;
+UPDATE admissions SET manifest = 'x' WHERE version_id = '20000000-0000-0000-0000-0000000000c1';
+ROLLBACK TO SAVEPOINT denied;
+RESET ROLE;
+SELECT model_phase(v) FROM model_versions v WHERE id = '20000000-0000-0000-0000-0000000000c1';
+\echo '--- the report: a stranger''s token writes nothing and is not mine (expect UPDATE 0, mine f); the holder''s lands (expect UPDATE 1); again is a duplicate (expect UPDATE 0, mine t reported t)'
+SET ROLE runner_gate;
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000-0000-000000000009', '{"state": "passed"}', '{}', '{}', 'c1000000-0000-0000-0000-000000000001');
+EXECUTE g_admit_why ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000-0000-000000000009');
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000-0000-000000000001',
+  '{"state": "passed", "stage": null, "reason": null}',
+  '{"parameters": 3000, "opset": 17, "operators": ["Conv", "Relu"], "probe_dims": {"H": 24}, "artifact_bytes": 5000.0}',
+  '{"ok": true, "over_budget": false, "reason": null, "ops_max": 900, "infer_us_max": 8000.5, "checked": 2, "errored": false}',
+  'c1000000-0000-0000-0000-000000000001');
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000-0000-000000000001', '{"state": "failed"}', '{}', '{}', 'c1000000-0000-0000-0000-000000000001');
+EXECUTE g_admit_why ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000-0000-000000000001');
+RESET ROLE;
+\echo '--- the facts the clock judges (expect admitted, no again, size 5002, 3000 params, opset 17, probe ok over 2, infer_us 8000)'
+SELECT admission_facts(a) FROM admissions a WHERE a.version_id = '20000000-0000-0000-0000-0000000000c1';
+\echo '--- decide: the reported one is claimed again, the waiting one is not; the verdict takes the prepared manifest (expect claimed t, not f; UPDATE 1; verified nano 5002 with manifest {} and an admission)'
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000003', 16, 180);
+SELECT id = '20000000-0000-0000-0000-0000000000c1' AS reported, admit_token IS NOT NULL AS claimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000c1', 'nano', 5002, 3000, 8000, '1.8.1', '0b000000-0000-0000-0000-000000000003', '{"H": 24}');
+SELECT status, weight_class, size_bytes, manifest, model_phase(v) FROM model_versions v WHERE id = '20000000-0000-0000-0000-0000000000c1';
+\echo '--- a report that decided nothing goes back with its attempt spent (expect UPDATE 1, UPDATE 1, UPDATE 1; then no report, PROBE_TOO_SLOW, 1 attempt, queued)'
+SET ROLE runner_gate;
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c2', '0c000000-0000-0000-0000-000000000002',
+  '{"state": "failed", "stage": "probe", "reason": "the probe inference took 277.1 ms (median of 5), over models.max_probe_ms (250)"}', '{}', NULL,
+  'c1000000-0000-0000-0000-000000000002');
+RESET ROLE;
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000004', 16, 180);
+EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000004', 'PROBE_TOO_SLOW');
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000004');
+SELECT a.report IS NULL AS no_report, a.requeued_for, a.attempts, model_phase(v) FROM admissions a JOIN model_versions v ON v.id = a.version_id WHERE a.version_id = '20000000-0000-0000-0000-0000000000c2';
+\echo '--- a submission that crashes every runner runs out of attempts: two lapsed leases more, then no claim, then the expiry (expect UPDATE 1, UPDATE 1, UPDATE 0, UPDATE 1, then rejected TIMED_OUT)'
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000005', 300, 3);
+RESET ROLE;
+UPDATE admissions SET lease_expires_at = now() - interval '1 second' WHERE version_id = '20000000-0000-0000-0000-0000000000c2';
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000006', 300, 3);
+RESET ROLE;
+UPDATE admissions SET lease_expires_at = now() - interval '1 second' WHERE version_id = '20000000-0000-0000-0000-0000000000c2';
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000007', 300, 3);
+RESET ROLE;
+EXECUTE a_expire (3, 180, '0b000000-0000-0000-0000-00000000000f');
+SELECT status, reject_reason FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000c2';
+\echo '--- whose fault, on Orion''s stage (expect: DIGEST_FAILED refused; ARTIFACT_UNREACHABLE, ADMISSION_TIMED_OUT, PROBE_TOO_SLOW, ADMISSION_UNREACHABLE again; PARSE_FAILED refused)'
+SELECT r.label, admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL)::admissions) ->> 'refused' AS refused,
+       admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL)::admissions) ->> 'again' AS again
+  FROM (VALUES
+    (1, 'digest',  '{"admission": {"state": "failed", "stage": "digest", "reason": "the bytes hash to something else"}}'::jsonb),
+    (2, 'fetch',   '{"admission": {"state": "failed", "stage": "fetch", "reason": "connection reset"}}'::jsonb),
+    (3, 'late',    '{"admission": {"state": "failed", "stage": "fetch", "reason": "admission exceeded models.admission_timeout_secs (120) during fetch"}}'::jsonb),
+    (4, 'slow',    '{"admission": {"state": "failed", "stage": "probe", "reason": "over models.max_probe_ms (250)"}}'::jsonb),
+    (5, 'nothing', '{"stats": {}}'::jsonb),
+    (6, 'parse',   '{"admission": {"state": "failed", "stage": "parse", "reason": "the graph does not read"}}'::jsonb)) AS r (n, label, report)
+ ORDER BY r.n;
+\echo '--- a malformed report is missing facts, never a cast error (expect parameters null, opset 13, size 102, operators [], probe null -- it evaluated nothing)'
+SELECT admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1,
+  '{"admission": {"state": "passed"}, "stats": {"parameters": "lots", "opset": 13.9, "operators": "Conv", "artifact_bytes": 1e30}, "probe": {"ok": true, "checked": 0, "reason": "EVIL"}}',
+  now(), NULL)::admissions);
 ROLLBACK;
 \echo '--- a season''s slug is its name''s (expect check violation), fixed per game (expect unique violation), and never a route''s word (expect check violation)'
 INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)

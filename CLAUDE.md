@@ -79,10 +79,10 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `SELECT json_build_object(`, so keep that split point and the CTE names `wants` and `depth`.
   The CTEs bind `$1`–`$4` and `$6`; pair's `$5` (the depth target) is only in its final SELECT,
   which is why the autoscaler can take `$5` for itself. A new CTE parameter changes both.
-- **`tb-probe` is closed to HTTP twice**: its route is outside `data_mounts = ["/v1"]`, so HTTP gets
-  404 before auth, and `probe_auth` names an audience no route mints. Orion checks a channel's
-  `auth` for HTTP callers and never for `channel_call`, which is the only way the admit walk
-  reaches it. Never give it a rate limit: that one does apply to `channel_call`.
+- **Soma runs no model.** `[models]` is off. `tb-admit` prepares a submission (HEAD, manifest,
+  rebuilt registration) and queues an `admissions` row; an admitting kalam runner claims it through
+  `/v1/runner/admissions/*`, runs Orion's admission and the probe, and reports; the clock judges the
+  report. A new admission step that needs a model belongs on the runner, and its verdict here.
 - The loop shape: `loop: {counter: "i", max: N}` replays the whole task list every sweep.
   `first_sweep()` tasks run on sweep 0, a `more` filter with `on_reject: "halt"` is the real
   terminator, and `temp_data` survives a sweep, so every per-item slot is cleared as the item is
@@ -98,16 +98,21 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   id, and every correctness rule (seat count from the board, contesting, self-pairing) is repeated
   in `P_INSERT`. Trials are picked in SQL (`P_TRIALS`), not by the plugin. `tb.rating` refuses a
   missing parameter rather than defaulting one, and its output is the fold's `$4` exactly.
-- **Admission branches on whose fault it is, not on the reason word.** A node verdict of `failed` is
-  the competitor's and rejects the version. No verdict at all is ours: the claim is released and the
-  attempt given back, except a probe that failed on a model the node activated, which keeps it.
-  Every "ours" that can recur for one submission is a retry every tick for ever, so a new branch
-  into `retry` needs a reason it cannot be the submission.
-- **The admission node keeps nothing between walks**: the walk deletes what it registered, and a
-  409 on `register` clears a dead walk's leftover. Never archive there instead.
+- **Admission branches on whose fault it is, not on the reason word**, and `admission_facts()` in
+  the migration is where that is decided for a report: a `failed` stage of `size`, `digest`, `parse`
+  or `probe` is the competitor's and rejects; `gate`, `head`, `fetch`, `cache`, a timeout and a probe
+  over `max_probe_ms` are the runner's (`again`: back to the queue, attempt spent). A fault of the
+  clock's own (`retry`) releases the item and spends nothing, so every "ours" that can recur for one
+  submission is a retry every tick for ever -- a new branch into `retry` needs a reason it cannot be
+  the submission, and a new runner fault goes to `again`, which runs out.
+- **A runner's report is read only through `admission_facts()`**, which types every value. The
+  batch read binds parts of it, and a cast error there stops admission for everyone behind it.
+- **An attempt is a runner's claim** (`admissions.attempts`). A submission waiting for a runner
+  spends none and never expires, which is why expiry requires the last lease to have lapsed.
 - **No large document rides a clock's message.** Every write keeps deep copies of the old and new
   value in the audit trail, and an errored run keeps its whole trace, so the reference set carried
-  per item held ~3 GB for ten submissions. Read it where it is used, a piece at a time (`PR_OBS`).
+  per item held ~3 GB for ten submissions. The batch carries its length; the gate's admission claim
+  reads the set straight from `games` for the runner.
 - **The manifest is fetched twice, deliberately**: as text (the exact bytes, which the declared
   hash and the stored copy are over) and parsed (to build the registration). What is registered is
   rebuilt field by field with `name` forced to `tb.v<uuid>`, so a `reference` to someone else's key
@@ -154,7 +159,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 ### Runner gate
 
 - The match statements' home is `workflows/soma-runner-*.json`. Kalam's `gen-kalam.py` holds
-  db-mode copies that **no check compares**, so change both together.
+  db-mode copies that **no check compares**, so change both together. The admission routes have no
+  db-mode copy: only an `api` runner admits.
 - A gate route's `data.req.*` field names are the contract with the runner. Diff them against the
   body `kalam/scripts/gen-kalam.py` sends.
 - `live_runners` is joined **inside** every statement. A JSONLogic guard fails open.
@@ -205,7 +211,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   reads as a routing miss.
 - Twenty tensor operators are live on every expression surface. A single-key object keyed `shape`,
   `full`, `cast`, `pad`, `crop`, `concat` or `stack` is a call, and the escape is `{"$shape": ...}`.
-  `tb-probe`'s `{"length": [{"shape": ...}]}` is meant as a call.
+  Kalam's tb-admit probe relies on `{"length": [{"shape": ...}]}` being a call.
 - Archive and delete are not refused for a model an active workflow names by a computed id. Model
   `stats` are written at admission and never recomputed.
 - **Orion activates only a `draft` version.** An archived model 404s on `status: active` and 409s on

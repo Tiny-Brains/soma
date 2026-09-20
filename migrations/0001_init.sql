@@ -670,14 +670,13 @@ CREATE TABLE model_versions (
 
     reject_reason   text,
 
-    -- THE ADMISSION CLAIM. One row per item, so this per-row claim is the mutual exclusion -- a run
-    -- that dies mid-batch releases what it never reached at once, and the row it held after
-    -- admit_timeout_s. The verdict re-checks admit_token, so a lapsed claim writes nothing.
-    -- admit_attempts counts REAL attempts: a loader-class fault decrements it, because an outage
-    -- must not consume a competitor's three tries.
+    -- THE ADMIT CLOCK'S CLAIM, held while it prepares a submission for a runner and again while it
+    -- judges what the runner found. One row per item, so this per-row claim is the mutual exclusion
+    -- -- a run that dies mid-batch releases what it never reached at once, and the row it held after
+    -- admit_timeout_s. The verdict re-checks admit_token, so a lapsed claim writes nothing. The
+    -- ATTEMPTS are not here: an attempt is a runner's, and `admissions.attempts` counts them.
     admit_started_at timestamptz,
     admit_token      uuid,
-    admit_attempts   int          NOT NULL DEFAULT 0,
 
     created_at      timestamptz  NOT NULL DEFAULT now(),
 
@@ -701,6 +700,56 @@ CREATE TABLE model_versions (
         CHECK (manifest IS NULL
             OR manifest_hash = 'sha256:' || encode(sha256(convert_to(manifest, 'UTF8')), 'hex'))
 );
+
+-- ----------------------------------------------------------------- admissions
+
+-- ONE ROW PER SUBMISSION THE ADMIT CLOCK HAS PREPARED, and the queue an ADMITTING RUNNER claims
+-- from. Soma runs no model: the clock checks what it can without one (the object is there, the
+-- manifest hashes to its declaration, the registration rebuilt from it), writes this row, and a
+-- runner whose role is `admit` does the rest on its own node -- registers the model, lets Orion admit
+-- it, plays it over the game's reference observations, deletes it -- and reports what it found.
+-- The clock judges the report. So a runner executes admission and never decides it: the report is
+-- facts, the verdict is written by the clock, and a runner's role cannot reach model_versions.
+--
+-- Rows are never deleted (the clocks cannot), so a decided version keeps the last report it was
+-- judged on.
+CREATE TABLE admissions (
+    version_id       uuid        PRIMARY KEY REFERENCES model_versions (id) ON DELETE CASCADE,
+
+    -- WHAT THE CLOCK PREPARED. `registration` is the manifest rebuilt field by field AT THE CENTRE,
+    -- `name` forced to the platform's model id, so a competitor's `reference` never reaches a node;
+    -- it is all a runner is given of the manifest. `manifest` is the competitor's exact text, kept
+    -- for the verdict (the hash is over it) and never sent. `artifact_bytes` is what the bucket
+    -- answered the clock's own HEAD, so the size a class is judged on is never only a runner's word.
+    registration     jsonb       NOT NULL,
+    manifest         text        NOT NULL,
+    artifact_bytes   bigint      NOT NULL,
+    budget_ops       bigint      NOT NULL,
+    prepared_at      timestamptz NOT NULL DEFAULT now(),
+
+    -- THE RUNNER'S CLAIM: a lease and a token, as a match has, minted by the gate. Nothing renews
+    -- it -- one admission is a few seconds of work -- so a lease that lapses is a runner that
+    -- vanished, and the next claim takes the row. `attempts` counts claims, which is what
+    -- admit_attempts_max bounds: a submission that kills every runner that touches it must end.
+    runner_id        uuid        REFERENCES runners (id),
+    claim_token      uuid,
+    lease_expires_at timestamptz,
+    attempts         int         NOT NULL DEFAULT 0,
+
+    -- WHAT THE RUNNER FOUND, as it sent it: Orion's admission verdict and stats, and the probe's
+    -- tally. Read only through admission_facts(), which types every value, because this is JSON a
+    -- runner built and the clock binds parts of it into statements.
+    report           jsonb,
+    reported_at      timestamptz,
+
+    -- Why the clock last sent a report back to the queue, for whoever reads the row.
+    requeued_for     text,
+
+    CONSTRAINT admissions_attempts_nonneg CHECK (attempts >= 0)
+);
+
+-- The runner's claim: prepared rows nobody has reported on, oldest first.
+CREATE INDEX admissions_queue_idx ON admissions (prepared_at) WHERE report IS NULL;
 
 -- -------------------------------------------------------------------- ratings
 
@@ -1460,14 +1509,89 @@ $$;
 
 -- Which of the two clocks a version is waiting on, in the words the pages print. Four routes say
 -- this; a version whose row is 'testing' or 'verified' yields the first three states only.
+-- 'verifying' is somebody working on it: the admit clock, a runner holding its admission, or a
+-- report the clock has yet to judge. Waiting for a runner to pick it up is still 'queued'.
 CREATE FUNCTION model_phase(v model_versions) RETURNS text LANGUAGE sql STABLE AS $$
-    SELECT CASE WHEN v.status = 'testing' AND v.admit_started_at IS NULL THEN 'queued'
+    SELECT CASE WHEN v.status = 'testing' AND v.admit_started_at IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM admissions a
+                                  WHERE a.version_id = v.id
+                                    AND (a.report IS NOT NULL OR a.lease_expires_at > now()))
+                                     THEN 'queued'
                 WHEN v.status = 'testing'   THEN 'verifying'
                 WHEN v.status = 'verified'  THEN 'awaiting_trial'
                 WHEN v.status = 'active'    THEN 'on_the_ladder'
                 WHEN v.status = 'disabled'  THEN 'disabled'
                 WHEN v.status = 'rejected'  THEN 'rejected'
                 ELSE                             'superseded' END;
+$$;
+
+-- A number out of a runner's report as a whole, non-negative bigint, or NULL -- never a cast error.
+-- A nested CASE, because the outer test must run first: `'x'::numeric` raises.
+CREATE FUNCTION admission_num(j jsonb) RETURNS bigint LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN jsonb_typeof(j) = 'number'
+                THEN CASE WHEN (j #>> '{}')::numeric >= 0 AND (j #>> '{}')::numeric < 1e18
+                          THEN floor((j #>> '{}')::numeric)::bigint END END;
+$$;
+
+-- WHAT A RUNNER FOUND, AS FACTS THE ADMIT CLOCK CAN JUDGE. The report is JSON a runner built, and the
+-- clock binds parts of it into statements -- where a float in an integer column or a string where a
+-- number was is not one refused submission but a failed statement in the batch, which stops
+-- admission for everyone behind it. So every value is typed here, and a malformed one is a missing
+-- fact, which the clock treats as ours: the report goes back to the queue and keeps its attempt.
+--
+-- WHOSE FAULT A REFUSAL IS, on Orion's stage (model/admission.rs and artifact.rs). `size`, `digest`,
+-- `parse` and `probe` are the artifact's, and `refused` names them as a competitor reads them.
+-- `gate`, `head`, `fetch` and `cache` are the runner reaching the bucket, and so is an admission
+-- that ran out of time. A probe over `models.max_probe_ms` is the runner's too: wall clock belongs to
+-- the machine that measured it, and one busy with anything else is slower than the model. Those go
+-- back to the queue as `again`, so a model that is slow on every runner runs out of attempts and
+-- expires rather than being refused for one machine's load.
+--
+-- `size` is S': the larger of the bucket's answer to the clock's own HEAD and the bytes the runner
+-- fetched and re-hashed, plus the manifest -- so no report can make a model smaller than it is.
+-- A probe that evaluated nothing, or that a runner says errored, is no probe at all.
+CREATE FUNCTION admission_facts(a admissions) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN a.report IS NULL THEN NULL ELSE (
+      SELECT json_build_object(
+        'admitted', r.state = 'passed',
+        'refused',  CASE WHEN r.state = 'failed' AND r.theirs THEN upper(r.stage) || '_FAILED' END,
+        'again',    CASE WHEN r.state = 'passed'  THEN NULL
+                         WHEN r.state <> 'failed' THEN 'ADMISSION_UNREACHABLE'
+                         WHEN r.slow              THEN 'PROBE_TOO_SLOW'
+                         WHEN r.late              THEN 'ADMISSION_TIMED_OUT'
+                         WHEN NOT r.theirs        THEN 'ARTIFACT_UNREACHABLE' END,
+        'parameters', admission_num(a.report #> '{stats,parameters}'),
+        'opset',      admission_num(a.report #> '{stats,opset}'),
+        'operators',  CASE WHEN jsonb_typeof(a.report #> '{stats,operators}') = 'array'
+                           THEN a.report #> '{stats,operators}' ELSE '[]'::jsonb END,
+        'probe_dims', CASE WHEN jsonb_typeof(a.report #> '{stats,probe_dims}') = 'object'
+                           THEN a.report #> '{stats,probe_dims}' ELSE '{}'::jsonb END,
+        'size',       greatest(a.artifact_bytes,
+                               coalesce(admission_num(a.report #> '{stats,artifact_bytes}'), 0))
+                      + length(a.manifest),
+        'probe',      CASE WHEN jsonb_typeof(a.report -> 'probe') = 'object'
+                            AND a.report #> '{probe,errored}' IS DISTINCT FROM 'true'::jsonb
+                            AND admission_num(a.report #> '{probe,checked}') > 0
+                           THEN json_build_object(
+                                'ok',           coalesce(a.report #> '{probe,ok}' = 'true'::jsonb, false),
+                                'over_budget',  coalesce(a.report #> '{probe,over_budget}' = 'true'::jsonb,
+                                                         false),
+                                'reason',       CASE WHEN a.report #>> '{probe,reason}'
+                                                          IN ('ADAPTER_INVALID', 'HEAD_UNREADABLE')
+                                                     THEN a.report #>> '{probe,reason}' END,
+                                'ops_max',      admission_num(a.report #> '{probe,ops_max}'),
+                                'infer_us_max', admission_num(a.report #> '{probe,infer_us_max}'),
+                                'checked',      admission_num(a.report #> '{probe,checked}')) END)
+        FROM (SELECT s.state, s.stage, s.why,
+                     s.stage IN ('size', 'digest', 'parse', 'probe')
+                         AND position('models.max_probe_ms' IN s.why) = 0
+                         AND position('admission_timeout_secs' IN s.why) = 0 AS theirs,
+                     s.stage = 'probe' AND position('models.max_probe_ms' IN s.why) > 0 AS slow,
+                     position('admission_timeout_secs' IN s.why) > 0 AS late
+                FROM (SELECT coalesce(a.report #>> '{admission,state}', '') AS state,
+                             coalesce(a.report #>> '{admission,stage}', '') AS stage,
+                             coalesce(a.report #>> '{admission,reason}', '') AS why) s) r)
+    END;
 $$;
 
 -- ONE SEASON BASELINE, as its three admin routes return it (N29): the name and the account, where
@@ -1628,7 +1752,7 @@ GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
 
 -- ------------------------------------------------------------ the runner gate
 
--- THE ROLE THE EIGHT MACHINE-FACING ROUTES RUN AS, and the repair of the one boundary the gate
+-- THE ROLE THE MACHINE-FACING ROUTES RUN AS, and the repair of the one boundary the gate
 -- weakened when it shipped inside this package instead of a second one (N7 -> N17).
 --
 -- It is a THIRD ROLE and not the `kalam` one, and that distinction is the whole point. The routes
@@ -1639,12 +1763,11 @@ GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
 --
 -- WHAT IT CANNOT DO, and this is the list that matters: rate a match, cancel one, pair one, or
 -- touch `ratings`, `rating_events`, `users`, `seasons`, `clocks`, `models` or `model_versions`
--- beyond the six roster columns. "A runner statement cannot write a rating" is a fact of this grant
--- again, rather than a fact of review.
+-- beyond the roster columns and a version's game, and so decide no admission. "A runner statement
+-- cannot write a rating" is a fact of this grant again, rather than a fact of review.
 --
 -- THE FIVE ADMIN ROUTES STAY ON `soma-db`. `runner_keys` creation and revocation are Soma's auth
--- surface, the same as sessions, and they are session-authed rather than runner-authed -- so the
--- swap is eight workflows, not thirteen.
+-- surface, the same as sessions, and they are session-authed rather than runner-authed.
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'runner_gate') THEN
         CREATE ROLE runner_gate LOGIN;
@@ -1683,6 +1806,19 @@ GRANT UPDATE (last_used_at) ON runner_keys TO runner_gate;
 GRANT SELECT, INSERT ON runners TO runner_gate;
 GRANT UPDATE (label, engine_digest, node_version, orion_version, ops_budget, arch, last_seen_at)
     ON runners TO runner_gate;
+
+-- ADMISSION, which an admitting runner executes and never decides. The claim takes a prepared row
+-- under a lease and answers the registration, the artifact's key and digest, and the first of the
+-- game's reference observations; the report stores what the runner found. So the role reads the
+-- queue and the game's reference set (public: they ship in every ants release), sees a version's
+-- game and status to join them, and writes only the claim and the report. The verdict columns --
+-- status, weight_class, size_bytes, everything the admit clock writes on model_versions -- stay out
+-- of reach: a runner reports, the clock judges.
+GRANT SELECT (id, game_id) ON model_versions TO runner_gate;
+GRANT SELECT (reference_observations) ON games TO runner_gate;
+GRANT SELECT ON admissions TO runner_gate;
+GRANT UPDATE (runner_id, claim_token, lease_expires_at, attempts, report, reported_at)
+    ON admissions TO runner_gate;
 
 -- THE `kalam` ROLE IS GRANTED NOTHING ON runner_keys, runners, live_runners OR sessions, and the
 -- absence is deliberate: runner identity is Soma's auth surface, the same as session identity, and

@@ -27,8 +27,8 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 # copy nobody compares is a copy that drifts: a race "proved" against a stale copy proves a statement
 # that does not exist. Comparing them costs a second and makes that impossible rather than unlikely.
 #
-# The clock, notification, season-map, season-baseline and admission-verdict statements are compared
-# the same way, against the workflows that ship them (n_version against all three tasks that ship
+# The clock, notification, season-map, season-baseline and admission statements are compared the
+# same way, against the workflows that ship them (n_version against all three tasks that ship
 # it). The clock tasks live inside TASK GROUPS, which is why the lookup below descends.
 echo "===== the statements under test are the statements that ship ====="
 python3 - <<'PY'
@@ -54,6 +54,13 @@ PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim"
          ("m_insert", "soma-season-maps-add", "insert"),
          ("m_flip", "soma-season-maps-update", "flip"),
          ("a_verify", "tb-admit-run", "verify"),
+         ("a_expire", "tb-admit-run", "expire"), ("a_claim", "tb-admit-run", "claim"),
+         ("a_batch_doc", "tb-admit-run", "batch"), ("a_queue", "tb-admit-run", "queue"),
+         ("a_requeue", "tb-admit-run", "requeue"), ("a_release", "tb-admit-run", "release"),
+         ("g_admit_claim", "soma-runner-admissions-claim", "claim"),
+         ("g_admit_row", "soma-runner-admissions-claim", "row"),
+         ("g_admit_report", "soma-runner-admissions-report", "report"),
+         ("g_admit_why", "soma-runner-admissions-report", "why"),
          ("b_insert", "soma-season-baselines-add", "insert"),
          ("b_flip", "soma-season-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()

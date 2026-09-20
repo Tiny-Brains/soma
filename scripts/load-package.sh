@@ -18,11 +18,10 @@
 # Environment:
 #   ORION_ADMIN             admin API base (default http://127.0.0.1:8080/api/v1/admin)
 #   ORION_ADMIN_API_KEY     admin credential, when admin_auth is enabled
-#   SOMA_ALLOW_PRIVATE_DB   1 to set allow_private_urls on the database, models, node-admin and
-#                           object-store HTTP connectors
+#   SOMA_ALLOW_PRIVATE_DB   1 to set allow_private_urls on the database, models and object-store
+#                           HTTP connectors
 #   SOMA_CACHE_REDIS_URL    the response cache's Redis; empty keeps the committed literal
 #   GITHUB_API_BASE         stand-in for api.github.com, which sign-in alone calls
-#   SOMA_NODE_ADMIN         the admin API the admit clock registers a model on (default: this node)
 #   R2_ENDPOINT             the models bucket at its INTERNAL address -- soma-models-http's base
 #   PLUGIN_SIG_DIR          detached Ed25519 signatures for tb.rating, tb.pairing and tb.ants, named <component>.sig
 #
@@ -55,14 +54,14 @@ curl_admin() {
 #
 # Orion's SSRF guard refuses a host resolving to a private address, which both localhost:5432 and a
 # compose service name like db:5432 are. soma-cache always needs the opt-out -- its Redis is
-# private wherever it runs -- while soma-db, soma-models and the admit clock's three are per
+# private wherever it runs -- while soma-db, soma-models and the admit clock's two are per
 # deployment. soma-models signs a competitor's upload against the PUBLIC endpoint, so on a laptop
 # 127.0.0.1 is where the browser is; a deployment pointing MODELS_PUBLIC_ENDPOINT at an internal
 # name needs the flag too.
 #
 # The admit clock reads the same bucket at its INTERNAL address instead: soma-models-internal signs
-# the GET and soma-models-http, based at R2_ENDPOINT, fetches it. soma-node-admin is the admin API
-# admission registers a model on -- this node unless SOMA_NODE_ADMIN says otherwise.
+# the GET and soma-models-http, based at R2_ENDPOINT, fetches it. No model is registered here: an
+# admitting runner does that on its own node.
 PRIVATE=$([ "${SOMA_ALLOW_PRIVATE_DB:-0}" = "1" ] && echo true || echo false)
 
 echo "==> staging the set"
@@ -76,8 +75,6 @@ VERSION=$(python3 scripts/stage-set.py . "$STAGE" \
   "soma-models-internal=allow_private_urls=$PRIVATE" \
   "soma-models-http=allow_private_urls=$PRIVATE" \
   "soma-models-http=url=${R2_ENDPOINT:-}" \
-  "soma-node-admin=allow_private_urls=$PRIVATE" \
-  "soma-node-admin=url=${SOMA_NODE_ADMIN:-$ADMIN}" \
   "github-api=url=${GITHUB_API_BASE:-}")
 
 echo "==> compiling soma@$VERSION"

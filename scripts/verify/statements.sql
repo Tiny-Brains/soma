@@ -260,7 +260,7 @@ WITH target AS ( SELECT sm.id FROM season_maps sm JOIN seasons se ON se.id = sm.
 
 -- Admission's verdict, which lands a baseline `disabled` and anyone else `verified`.
 PREPARE a_verify AS
-UPDATE model_versions SET status = CASE WHEN EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id WHERE e.id = model_versions.model_id AND u.role = 'baseline') THEN 'disabled'::model_status ELSE 'verified'::model_status END, weight_class = ($2)::ladder, size_bytes = ($3)::bigint, param_count = ($4)::bigint, infer_us = ($5)::float8::bigint, manifest = ($6)::text, orion_version = ($7)::text, probe_dims = ($9)::jsonb, admit_started_at = NULL, reject_reason = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($8)::uuid;
+UPDATE model_versions SET status = CASE WHEN EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id WHERE e.id = model_versions.model_id AND u.role = 'baseline') THEN 'disabled'::model_status ELSE 'verified'::model_status END, weight_class = ($2)::ladder, size_bytes = ($3)::bigint, param_count = ($4)::bigint, infer_us = ($5)::float8::bigint, manifest = (SELECT a.manifest FROM admissions a WHERE a.version_id = model_versions.id), orion_version = ($6)::text, probe_dims = ($8)::jsonb, admit_started_at = NULL, reject_reason = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($7)::uuid AND EXISTS (SELECT 1 FROM admissions a WHERE a.version_id = model_versions.id);
 
 -- Season baselines: the upload's account, entry, version and event, and the enable/disable flip.
 PREPARE b_insert AS
@@ -268,3 +268,46 @@ WITH se AS ( SELECT s.id, s.game_id FROM seasons s JOIN games g ON g.id = s.game
 
 PREPARE b_flip AS
 WITH target AS ( SELECT v.id, v.weight_class, se.rules FROM model_versions v JOIN models e   ON e.id = v.model_id JOIN users u    ON u.id = e.owner_id AND u.role = 'baseline' JOIN seasons se ON se.id = v.season_id JOIN games g    ON g.id = se.game_id WHERE g.slug = ($1)::text AND se.slug = ($2)::text AND lower(u.handle) = lower('baseline.' || ($3)::text) AND se.closed_at IS NULL AND v.status = CASE WHEN ($4)::boolean THEN 'disabled'::model_status ELSE 'active'::model_status END FOR UPDATE OF v ), flipped AS ( UPDATE model_versions v SET status = CASE WHEN ($4)::boolean THEN 'active'::model_status ELSE 'disabled'::model_status END FROM target WHERE v.id = target.id RETURNING v.id, v.weight_class, target.rules ), rated AS ( INSERT INTO ratings (version_id, ladder, mu, sigma) SELECT f.id, l.ladder, coalesce((f.rules -> 'rating' ->> 'prior_mu')::float8, ($6)::float8), coalesce((f.rules -> 'rating' ->> 'prior_sigma')::float8, ($7)::float8) FROM flipped f CROSS JOIN LATERAL (VALUES (f.weight_class), ('open'::ladder)) AS l (ladder) WHERE ($4)::boolean ON CONFLICT (version_id, ladder) DO NOTHING RETURNING version_id, ladder, mu, sigma ), seeded AS ( INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after) SELECT version_id, ladder, 0, mu, sigma FROM rated ON CONFLICT (version_id, ladder, seq) DO NOTHING RETURNING 1 ), cancelled AS ( UPDATE matches m SET status = 'cancelled', withdrawn_reason = 'BASELINE_DISABLED', closed_at = now() FROM flipped WHERE NOT ($4)::boolean AND m.status = 'pending' AND EXISTS (SELECT 1 FROM match_seats s WHERE s.match_id = m.id AND s.version_id = flipped.id) RETURNING m.id ), bump AS ( UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM flipped WHERE c.key = 'roster' RETURNING c.epoch ) INSERT INTO baseline_events (version_id, action, by_user, cancelled) SELECT flipped.id, CASE WHEN ($4)::boolean THEN 'enable' ELSE 'disable' END, ($5)::uuid, (SELECT count(*) FROM cancelled) FROM flipped;
+
+-- ADMISSION. The admit clock's two walks (tb-admit-run) and the admitting runner's two gate routes
+-- (soma-runner-admissions-*), copied verbatim like everything above.
+
+-- workflows/tb-admit-run.json / expire
+PREPARE a_expire AS
+UPDATE model_versions v SET status = 'rejected', reject_reason = 'TIMED_OUT', admit_started_at = NULL, admit_token = ($3)::uuid WHERE v.status = 'testing' AND (v.admit_started_at IS NULL OR v.admit_started_at < now() - (($2)::int * interval '1 second')) AND EXISTS (SELECT 1 FROM admissions a WHERE a.version_id = v.id AND a.report IS NULL AND a.attempts >= ($1)::int AND (a.lease_expires_at IS NULL OR a.lease_expires_at < now()));
+
+-- workflows/tb-admit-run.json / claim
+PREPARE a_claim AS
+UPDATE model_versions m SET admit_started_at = now(), admit_token = ($1)::uuid WHERE m.id IN (SELECT c.id FROM model_versions c WHERE c.status = 'testing' AND (c.admit_started_at IS NULL OR c.admit_started_at < now() - (($3)::int * interval '1 second')) AND NOT EXISTS (SELECT 1 FROM admissions a WHERE a.version_id = c.id AND a.report IS NULL) ORDER BY c.created_at LIMIT ($2)::int FOR UPDATE SKIP LOCKED);
+
+-- workflows/tb-admit-run.json / batch
+PREPARE a_batch_doc AS
+SELECT json_build_object( 'n', count(*), 'items', coalesce(json_agg(json_build_object( 'model_id', v.id, 'model', ($5)::text || v.id::text, 'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash, 'artifact_key', v.artifact_key, 'manifest_key', regexp_replace(v.artifact_key, 'model\.onnx$', 'manifest.json'), 'budget_ops', coalesce((se.rules -> 'graph' ->> 'adapter_ops_max')::bigint, (g.manifest -> 'budgets' ->> 'adapter_ops_max')::bigint), 'observations_n', CASE WHEN jsonb_typeof(g.reference_observations) = 'array' THEN jsonb_array_length(g.reference_observations) ELSE 0 END, 'opset_min', coalesce((se.rules -> 'graph' ->> 'opset_min')::int, ($2)::int), 'opset_max', coalesce((se.rules -> 'graph' ->> 'opset_max')::int, ($3)::int), 'op_allowlist', coalesce( (SELECT jsonb_agg(o) FROM jsonb_array_elements_text(($4)::jsonb) AS o WHERE o IN (SELECT jsonb_array_elements_text( se.rules -> 'graph' -> 'op_allowlist'))), ($4)::jsonb), 'params_max', (se.rules -> 'graph' ->> 'params_max')::bigint, 'infer_us_max', (se.rules -> 'graph' ->> 'infer_us_max')::bigint, 'rules_ok', se.id IS NOT NULL, 'job', (SELECT admission_facts(a) FROM admissions a WHERE a.version_id = v.id)) ORDER BY v.created_at), '[]'::json)) AS body FROM model_versions v JOIN games g ON g.id = v.game_id JOIN seasons se ON se.id = v.season_id WHERE v.admit_token = ($1)::uuid AND v.status = 'testing';
+
+-- workflows/tb-admit-run.json / queue
+PREPARE a_queue AS
+INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) SELECT v.id, ($2)::jsonb, ($3)::text, ($4)::bigint, ($5)::bigint FROM model_versions v WHERE v.id = ($1)::uuid AND v.status = 'testing' AND v.admit_token = ($6)::uuid ON CONFLICT (version_id) DO NOTHING;
+
+-- workflows/tb-admit-run.json / requeue
+PREPARE a_requeue AS
+UPDATE admissions a SET report = NULL, reported_at = NULL, claim_token = NULL, lease_expires_at = NULL, requeued_for = ($3)::text WHERE a.version_id = ($1)::uuid AND a.report IS NOT NULL AND EXISTS (SELECT 1 FROM model_versions v WHERE v.id = a.version_id AND v.status = 'testing' AND v.admit_token = ($2)::uuid);
+
+-- workflows/tb-admit-run.json / release
+PREPARE a_release AS
+UPDATE model_versions SET admit_started_at = NULL, admit_token = NULL WHERE id = ($1)::uuid AND status = 'testing' AND admit_token = ($2)::uuid;
+
+-- workflows/soma-runner-admissions-claim.json / claim
+PREPARE g_admit_claim AS
+WITH pick AS MATERIALIZED ( SELECT a.version_id FROM admissions a JOIN model_versions v ON v.id = a.version_id AND v.status = 'testing' WHERE a.report IS NULL AND (a.lease_expires_at IS NULL OR a.lease_expires_at < now()) AND a.attempts < ($4)::int AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($1)::uuid) ORDER BY a.prepared_at, a.version_id LIMIT 1 FOR UPDATE OF a SKIP LOCKED) UPDATE admissions a SET runner_id = ($1)::uuid, claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval '1 second', attempts = a.attempts + 1 FROM pick WHERE a.version_id = pick.version_id;
+
+-- workflows/soma-runner-admissions-claim.json / row
+PREPARE g_admit_row AS
+SELECT json_build_object( 'admission', json_build_object( 'version_id', a.version_id, 'model', ($2)::text || a.version_id::text, 'registration', a.registration, 'artifact', json_build_object('key', v.artifact_key, 'digest', v.weights_hash), 'budget_ops', a.budget_ops, 'infer_ms', ($4)::int, 'attempt', a.attempts, 'observations', CASE WHEN jsonb_typeof(g.reference_observations) = 'array' THEN (SELECT coalesce(jsonb_agg(o.obs ORDER BY o.n), '[]'::jsonb) FROM jsonb_array_elements(g.reference_observations) WITH ORDINALITY AS o (obs, n) WHERE o.n <= ($3)::int) ELSE '[]'::jsonb END), 'lease_expires_at', a.lease_expires_at) AS body FROM admissions a JOIN model_versions v ON v.id = a.version_id JOIN games g ON g.id = v.game_id WHERE a.claim_token = ($1)::uuid;
+
+-- workflows/soma-runner-admissions-report.json / report
+PREPARE g_admit_report AS
+UPDATE admissions a SET report = jsonb_build_object('admission', ($3)::jsonb, 'stats', ($4)::jsonb, 'probe', ($5)::jsonb), reported_at = now(), lease_expires_at = NULL WHERE a.version_id = ($1)::uuid AND a.claim_token = ($2)::uuid AND a.runner_id = ($6)::uuid AND a.report IS NULL AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($6)::uuid) AND EXISTS (SELECT 1 FROM model_versions v WHERE v.id = a.version_id AND v.status = 'testing');
+
+-- workflows/soma-runner-admissions-report.json / why
+PREPARE g_admit_why AS
+SELECT json_build_object('mine', a.claim_token = ($2)::uuid, 'reported', a.report IS NOT NULL) AS body FROM admissions a WHERE a.version_id = ($1)::uuid;

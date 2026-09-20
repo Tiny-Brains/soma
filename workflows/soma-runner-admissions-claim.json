@@ -1,0 +1,122 @@
+{
+  "workflow_id": "soma-runner-admissions-claim",
+  "name": "Claim one submission to admit",
+  "description": "THE ADMISSION QUEUE, and the match claim's shape: FOR UPDATE SKIP LOCKED with LIMIT 1, so two admitting runners never queue behind each other, and a lease minted here that nothing renews -- an admission is seconds of work, so a lease that lapses is a runner that vanished and the next claim takes the row. Every claim spends an attempt (admissions.attempts), which is what lets a submission that kills every runner that touches it run out of them and expire; the claim never takes one that has none left, so the expiry and a claim cannot race.\n\nWHAT THE RUNNER IS GIVEN, and nothing else: the registration the admit clock rebuilt from the manifest at the centre -- never the competitor's document, so a `reference` has nowhere to survive -- the artifact's key and the digest the node re-hashes it against, the adapter budget, the deadline for each inference, and the first admit_observations of the game's reference observations, read straight from `games` so no clock message ever carries the set.\n\nA CLAIM STATES WHAT IT RUNS: the stats a verdict is judged on are the Orion's that measured them, so a runner on another Orion than this node's orion_version is refused with 409 rather than left to claim -- recorded against one version and measured by another is exactly what a re-validation sweep looks for. An empty queue is 200 {\"idle\": true}, as the match claim's is.",
+  "tags": ["pkg:soma"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.orion_version" } },
+        "status": 400,
+        "body": { "error": "orion_version_required" },
+        "name": "A claim states what it runs",
+        "description": "The Orion that will register, admit and probe the model is the one whose stats the verdict is judged on."
+      }
+    },
+    {
+      "id": "same_orion",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!==": [{ "var": "data.req.orion_version" }, { "var": "metadata.vars.orion_version" }]
+        },
+        "status": 409,
+        "body": {
+          "error": "orion_version_differs",
+          "want": { "var": "metadata.vars.orion_version" }
+        },
+        "name": "Another Orion measures differently",
+        "description": "A 409 on every poll rather than an idle answer, because a misconfigured admitting runner that quietly claimed nothing would look exactly like an empty queue."
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the claim token",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.token", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "claim",
+      "name": "Claim one submission",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-runner-db",
+          "query": "WITH pick AS MATERIALIZED ( SELECT a.version_id FROM admissions a JOIN model_versions v ON v.id = a.version_id AND v.status = 'testing' WHERE a.report IS NULL AND (a.lease_expires_at IS NULL OR a.lease_expires_at < now()) AND a.attempts < ($4)::int AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($1)::uuid) ORDER BY a.prepared_at, a.version_id LIMIT 1 FOR UPDATE OF a SKIP LOCKED) UPDATE admissions a SET runner_id = ($1)::uuid, claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval '1 second', attempts = a.attempts + 1 FROM pick WHERE a.version_id = pick.version_id",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.admit_lease_s" },
+            { "var": "metadata.vars.admit_attempts_max" }
+          ],
+          "output": "temp_data.claimed"
+        }
+      }
+    },
+    {
+      "id": "row",
+      "name": "Read what was claimed",
+      "condition": { ">": [{ "var": "temp_data.claimed.rows_affected" }, 0] },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-runner-db",
+          "query": "SELECT json_build_object( 'admission', json_build_object( 'version_id', a.version_id, 'model', ($2)::text || a.version_id::text, 'registration', a.registration, 'artifact', json_build_object('key', v.artifact_key, 'digest', v.weights_hash), 'budget_ops', a.budget_ops, 'infer_ms', ($4)::int, 'attempt', a.attempts, 'observations', CASE WHEN jsonb_typeof(g.reference_observations) = 'array' THEN (SELECT coalesce(jsonb_agg(o.obs ORDER BY o.n), '[]'::jsonb) FROM jsonb_array_elements(g.reference_observations) WITH ORDINALITY AS o (obs, n) WHERE o.n <= ($3)::int) ELSE '[]'::jsonb END), 'lease_expires_at', a.lease_expires_at) AS body FROM admissions a JOIN model_versions v ON v.id = a.version_id JOIN games g ON g.id = v.game_id WHERE a.claim_token = ($1)::uuid",
+          "params": [
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.model_prefix" },
+            { "var": "metadata.vars.admit_observations" },
+            { "var": "metadata.vars.admit_infer_ms" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "idle",
+      "name": "Nothing to admit",
+      "condition": { "!": { "var": "temp_data.rows.0.body.admission" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "idle": true } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "admission": { "var": "temp_data.rows.0.body.admission" },
+                "claim": {
+                  "token": { "var": "temp_data.token" },
+                  "lease_expires_at": { "var": "temp_data.rows.0.body.lease_expires_at" }
+                }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

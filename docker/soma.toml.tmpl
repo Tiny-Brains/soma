@@ -134,12 +134,24 @@ model_prefix = "tb.v"
 # What ran the adapters, recorded on every verdict and every finished match. A change in it is what
 # makes a re-validation sweep necessary, so it is pinned here beside the binary
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
-# a different thing that moves for different reasons.
+# a different thing that moves for different reasons. AN ADMITTING RUNNER MUST RUN THIS ONE: the
+# admission claim refuses any other, because the stats a verdict is judged on are its Orion's.
 orion_version = "${ORION_VERSION:-1.8.1}"
+
+# ADMISSION. The admit clock prepares up to admit_batch submissions a tick and holds each for
+# admit_timeout_s; the model itself is admitted on an ADMITTING RUNNER (kalam, RUNNER_ROLE=admit),
+# which claims one through the gate and holds it for admit_lease_s. Nothing renews that lease, so it
+# covers the worst case: kalam's three-minute wait on Orion's admission and every observation at its
+# full deadline. Every runner claim is one of admit_attempts_max, and a submission whose attempts run
+# out expires TIMED_OUT -- one that waits for a runner spends nothing. The claim sends the first
+# admit_observations of the game's reference observations, each played under admit_infer_ms:
+# kalam's ADMIT_LOOP_MAX must reach the first, which web's configs.sh checks.
 admit_batch        = 4
 admit_timeout_s    = 180
 admit_attempts_max = 3
-admit_deadline_ms = 5000
+admit_lease_s      = 600
+admit_observations = 64
+admit_infer_ms     = 5000
 revalidate_batch = 4
 
 # The ONNX surface a submission may use.
@@ -232,40 +244,13 @@ blob_endpoint = "${RUNNER_BLOB_ENDPOINT:-http://minio:9000}"
 enabled = true
 api_keys = ["${ORION_ADMIN_KEY}"]
 
-# ONNX AS A GOVERNED ENTITY, and on this node it is an ADMISSION instrument only.
-# The admit clock registers a submission here, runs admission synchronously, activates it long
-# enough to play it over the game's reference observations, and deletes it again -- so the active
-# set is normally empty and a generation build recompiles no competitor's adapter. The replicas
-# are where models are served, and their roster clocks put them there.
+# NO MODEL RUNS ON THIS NODE. Admission registers, admits and probes a submission on an ADMITTING
+# RUNNER (kalam, RUNNER_ROLE=admit), and matches are played on runners, so the node that serves the
+# site and holds the database owner never parses or executes a competitor's ONNX. The admit clock
+# still checks what needs no model -- the object is in the bucket, the manifest hashes to what was
+# declared -- and judges what the runner reports.
 [models]
-enabled = true
-
-cache_dir = "/var/lib/orion/models"
-max_cache_bytes  = 4294967296
-max_loaded_bytes = 2147483648
-
-# Nothing is warmed here: an admission node touches each model once.
-preload = "none"
-
-# The node refuses an object past this (SIZE_FAILED) before any class is considered. It is also the
-# ceiling on every class cap: weight_classes_ok() refuses one above 64 MiB. web's configs.sh holds
-# the two together, and the runner's template to the same value.
-max_artifact_bytes = 67108864
-max_input_elements  = 1048576
-max_output_elements = 1048576
-
-# The probe's ceiling, and the ONLY compute gate at admission -- five zero-filled inferences at the
-# manifest's `probe_dims`, median inside this. A season may set graph.infer_us_max on top; none
-# that the platform ships does: the turn deadline, not a compute cap, is what bounds a model.
-max_probe_ms = 250
-
-# The adapter's own deadline when the probe channel plays a reference observation.
-max_timeout_ms = 5000
-
-# NO `[models.trust]`, and that is the decision. A plugin is the platform's own code and is signed
-# by whoever holds the trust key; a model is a competitor's, and the platform has no key to sign it
-# with. What guards a model is the digest the submission declared, which the node re-hashes the
-# fetched object against before it will run it.
+enabled = false
 
 [plugins]
 enabled = true

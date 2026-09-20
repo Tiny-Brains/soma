@@ -10,17 +10,17 @@ migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/
 **Owns:** GitHub sign-in and sessions · public reads · submissions and their presigned uploads ·
 seasons, their boards and baselines · admission, pairing, trials, promotion, rating, withdrawal and
 the season close · the runner gate `/v1/runner/*` · notifications · the schema and the `kalam` /
-`runner_gate` grants. **Does not:** play matches or write replays (Kalam) · run models outside
-admission (each node's Orion `models` entity) · implement game rules (the Ants cartridge) · decide
-deployment addresses, credentials or replica counts.
+`runner_gate` grants. **Does not:** run any model -- a submission is admitted on an admitting
+runner and matches are played on runners (Kalam) · write replays · implement game rules (the Ants
+cartridge) · decide deployment addresses, credentials or replica counts.
 
 ```text
 browser ──▶ web nginx ──/v1/──▶ ┌── Soma node × N (Orion, cluster mode) ────────────────┐
 Kalam runner ──/v1/runner/*───▶ │ routes · runner gate · clocks · tb.rating · tb.pairing │── SQL ──▶ Postgres
-                                │ tb.ants (map checks) · models entity (admission only)  │
+                                │ tb.ants (map checks) · no models entity                │
                                 └──┬─────────────────────┬───────────────────────────────┘
-                     presign PUT/GET│                     │ HEAD + GET the manifest; the node fetches by digest
-competitor ──presigned PUT──▶ models bucket (public-read) ◀── runners fetch by digest
+                     presign PUT/GET│                     │ HEAD + GET the manifest
+competitor ──presigned PUT──▶ models bucket (public-read) ◀── runners fetch by digest (the admitting one first)
 runner ──presigned PUT──────▶ replay bucket (private)     ◀── browsers, presigned GET
 ```
 
@@ -99,13 +99,12 @@ channels add a per-principal quota.
 | POST | `/v1/runner/matches/{id}/replay-url` | Runner | Presigned PUT for `replays/<match>/<claim_token>.json` |
 | POST | `/v1/runner/matches/{id}/finish` | Runner | `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 | GET | `/v1/runner/roster` | Runner | Every `verified` or `active` version a runner must be able to play |
+| POST | `/v1/runner/admissions/claim` | Runner | `{orion_version}` → one prepared submission (registration, key, digest, budget, reference observations) and its claim, or `200 {"idle": true}`; 409 `orion_version_differs` |
+| POST | `/v1/runner/admissions/{id}/report` | Runner | `{claim_token, admission, stats, probe}` → `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 
 `/v1/admin-check` exists for nginx `auth_request` (web puts the Orion console behind it): 2xx allows,
-401 sends the caller to sign in, 403 refuses. Keep the 401/403 split. `tb-probe` also registers
-`POST /internal/probe/adapter`, but only for the admit walk's `channel_call`: the route is outside
-`[server] data_mounts` (`/v1`), so every HTTP caller gets 404 before auth, and its `probe_auth` names
-an audience nothing mints as a second lock. `smoke.sh` asserts the 404. The port also
-serves Orion's admin API, `/health`, `/readyz` and `/metrics`. Only `/v1/` may be proxied.
+401 sends the caller to sign in, 403 refuses. Keep the 401/403 split. The port also serves Orion's
+admin API, `/health`, `/readyz` and `/metrics`. Only `/v1/` may be proxied.
 
 ## Clocks
 
@@ -115,15 +114,25 @@ the singleton buys order, and the SQL fences buy correctness.
 
 | Channel | Every | Timeout | Does | Fence |
 |---|---|---|---|---|
-| `tb-admit` | 20 s | 600 s | Expire, claim `testing` versions, run the admit walk, write one verdict each | per-row `admit_token` claim |
+| `tb-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
 | `tb-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
 | `tb-count` | 10 s | 60 s | Fold finished matches in finish order, decide trials, promote | run fence on `clocks.count` |
 | `tb-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season | none: idempotent |
 | `soma-runner-reap` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
-| `tb-probe` | — | 120 s | Not a clock: runs `model_infer` over the game's reference observations | — |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
-or `rejected` at either step. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
+or `rejected` at either step.
+
+**Admission runs no model here.** `tb-admit` walks a submission twice. *Prepare* checks what needs no
+model (the object is in the bucket, the manifest hashes to its declaration, the registration rebuilt
+from it field by field) and queues one `admissions` row. An **admitting runner** (kalam,
+`RUNNER_ROLE=admit`) claims it through the gate, registers it on its own node, lets Orion admit it,
+plays it over the first `admit_observations` of the game's reference observations, deletes it and
+reports. *Decide* reads the report through `admission_facts()`, measures S' from the clock's own HEAD
+and the runner's bytes, picks the class and writes the verdict. A report that decided nothing (the
+runner could not fetch, ran out of time, or measured the probe over `max_probe_ms`) goes back to the
+queue with its attempt spent; a submission waiting for a runner spends none. Nothing is admitted
+while no admitting runner is up. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
 `tb.rating.trueskill` is the TrueSkill update per ladder, pure; `tb.pairing.pair` picks opponents and
 boards, pure and seeded by the occurrence id. `tb.ants` is the engine, loaded so a map upload can be
 judged by `worldgen`.
@@ -171,7 +180,6 @@ compose file sets every one of them for the local stack.
 | `ORION_STATE_DB_URL` | required | Orion's own state, database `orion_state` |
 | `REDIS_URL` | required | Cluster state |
 | `ORION_ADMIN_KEY` | required | Admin API key (`[admin_auth]`), also used by the self-load |
-| `ORION_ADMIN_BEARER` | required | `Bearer <ORION_ADMIN_KEY>`, the whole header value, for the admit walk's `soma-node-admin` |
 | `TB_TRUST_PUBLIC_KEY` | required | Ed25519 key plugin signatures must verify under |
 | `SOMA_SESSION_SECRET` | required | HS256 for session cookies and OAuth state, at least 32 bytes |
 | `RUNNER_TOKEN_SECRET` | required | HS256 for runner tokens; a different key from the session one |
@@ -193,9 +201,9 @@ compose file sets every one of them for the local stack.
 | `ORION_VERSION` | `1.8.1` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
-| `SOMA_ALLOW_PRIVATE_DB` | `0` | `1` sets `allow_private_urls` on the database, bucket and admin connectors (compose service names are private) |
+| `SOMA_ALLOW_PRIVATE_DB` | `0` | `1` sets `allow_private_urls` on the database and bucket connectors (compose service names are private) |
 | `SOMA_CACHE_REDIS_URL` | `redis://redis:6379/1` | Response cache for the anonymous reads |
-| `SOMA_NODE_ADMIN`, `GITHUB_API_BASE` | this node, api.github.com | Load-time connector bases |
+| `GITHUB_API_BASE` | api.github.com | Load-time connector base |
 | `SOMA_SELF_LOAD` | `1` | `0` starts the node without loading the package |
 | `SOMA_ADMIN_DB_URL` | bootstrap, required | The maintenance database (`.../postgres`), for `CREATE DATABASE orion_state` |
 | `RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD` | bootstrap; first required | Role passwords; the migration creates both roles with none |
@@ -260,8 +268,11 @@ its next sign-in, so removing someone for good means removing their id too.
   state means no eviction policy can trim the cache without evicting the clocks' coordination.
 - **TLS**: `SOMA_COOKIE_SECURE=1`, and an https `OAUTH_REDIRECT_URI` (Orion refuses http off
   loopback).
-- **Never expose port 8080 beyond the proxy.** It carries the admin API, `/metrics` and
-  `/internal/probe/adapter`. `admin_auth` is on, and `/health` detail needs the key.
+- **Never expose port 8080 beyond the proxy.** It carries the admin API and `/metrics`.
+  `admin_auth` is on, and `/health` detail needs the key.
+- **An admitting runner, somewhere.** Soma runs no model, so a submission waits in `testing` until
+  a kalam runner with `RUNNER_ROLE=admit` claims it (`--profile admit` in kalam's compose files). One
+  per deployment is enough; run it on the Orion `orion_version` names, or the claim refuses it.
 - **Non-empty trust keys** and plugins signed by web's `scripts/setup/sign-plugins.sh` for every new
   image, or the self-load stops the node.
 - **Narrow `SOMA_TRUSTED_PROXIES`** to the proxy actually in front. Empty, every browser shares one
@@ -273,7 +284,8 @@ its next sign-in, so removing someone for good means removing their id too.
   `scripts/autoscaler.sql` is pair's own demand statement plus the scaling arithmetic, generated by
   `gen-clocks.py` and prepared by `check-sql.sh`; its header lists the nine parameters.
 - **Timeouts:** a channel's `timeout_ms` bounds a whole run (admit: 600 s for up to `admit_batch`
-  submissions), and `admit_timeout_s` (180 s) bounds one submission before another run may re-claim it.
+  submissions), `admit_timeout_s` (180 s) bounds this clock's hold on one submission before another
+  run may re-claim it, and `admit_lease_s` (600 s) bounds an admitting runner's.
 
 ## Releasing
 
@@ -298,10 +310,10 @@ docker/soma.toml.tmpl       the instance config, cluster mode, and every [vars] 
 .github/workflows/release.yml  a v* tag publishes the image for amd64 and arm64
 channels/soma-*.json        routes: method, path, auth, rate limits, cache
 workflows/soma-*.json       their task lists and inline SQL; each `description` carries the route's reasoning
-channels|workflows/tb-*.json  the clocks and tb-probe (generated; never edit by hand)
+channels|workflows/tb-*.json  the clocks (generated; never edit by hand)
 connectors/                 soma-db, soma-runner-db, soma-cache, github-api, soma-blobs (replay GET),
                             soma-runner-blobs (replay PUT), soma-models (public: upload PUT),
-                            soma-models-internal (HEAD + GET), soma-models-http, soma-node-admin
+                            soma-models-internal (HEAD + GET), soma-models-http
 shared/soma.json            constants and fragments the set references with $from and use
 plugins/                    tb-rating and tb-pairing (one cargo workspace) and build.sh
 migrations/0001_init.sql    tables, constraints, shared functions, roles and grants
@@ -322,13 +334,13 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
 - **Pair's insert derives everything and trusts nothing**: it checks the roster epoch, takes the
   seat count from an enabled board of the live season, and refuses self-pairing unless the season
   allows it. A stale plan inserts nothing.
-- **Admission writes only under its `admit_token`**, and a failure that is ours gives the attempt
-  back. Otherwise an outage spends a competitor's tries. The one exception is a probe that failed
-  on a model the node admitted and activated: it keeps the attempt, so one that never answers
-  expires `TIMED_OUT` instead of retrying every tick.
-- **The admission node keeps nothing between walks.** The walk deletes what it registered, and a
-  `register` that 409s on a dead walk's leftover deletes it and registers again. Orion activates
-  only a `draft`, so an archived leftover could never be probed again.
+- **Admission writes only under its `admit_token`**, and an attempt is a runner's claim. A
+  submission waiting for a runner, or for this clock over a fault of its own, spends nothing; a
+  report that decided nothing keeps the attempt its claim spent, so one that fails the same way on
+  every runner expires `TIMED_OUT` instead of retrying every tick.
+- **A runner executes admission and never decides it.** The registration is rebuilt here, the report
+  is typed by `admission_facts()` before anything binds it, and `runner_gate` can write an
+  admission's claim and report and no verdict column.
 - **Trials feed no ladder**, and a loss alone never rejects a candidate.
 - **A trial is live until count decides it**, `finished` included, in pair's read exactly as in
   `matches_one_live_trial_uniq`. A pair run that offered a second trial would die on the index.
@@ -373,15 +385,20 @@ scripts/autoscaler.sql      how many runners the ladder wants (generated)
   before its roster catches up. A refused row is claimed after the fresh rows of its kind, which
   spreads the refusals; trials still come before every ranked match.
 - A `failed` match notifies nobody. The gate writes it as `runner_gate`, which must not gain the grant.
-- The probe cannot reject a broken adapter. `channel_call` fails whole on any error recorded in the
-  child, `continue_on_error` included, so an inference that fails outright arrives as no probe at
-  all. The version keeps the attempt and expires `TIMED_OUT` rather than `ADAPTER_INVALID`.
-- The probe runs the first 64 reference observations (`loop.max`), not the game's whole set, inside
-  a fixed `admit_deadline_ms` that is not sized from their count or the season's `turn_ms`. A model
-  that is legal at play but slow can time out here, three times, and expire.
-- A registration the node refuses (400) reads as `ADMISSION_UNREACHABLE` and is retried with the
-  attempt given back, for ever: `http_call` writes nothing on a 4xx, so the walk cannot tell a
-  refusal from an outage. A missing artifact no longer reaches it (`head` decides `ARTIFACT_MISSING`).
+- A broken adapter is not rejected as one. An inference that fails outright on the admitting runner
+  is reported as a probe that errored, which cannot be told from a runner's own failure, so the
+  report goes back to the queue and the version expires `TIMED_OUT` rather than `ADAPTER_INVALID`.
+- Admission plays the first `admit_observations` (64) reference observations, each under a fixed
+  `admit_infer_ms` that is not sized from the season's `turn_ms`. A model that is legal at play but
+  slower than that errors here on every runner and expires.
+- A registration the admitting runner's node refuses (400) reads as `ADMISSION_UNREACHABLE`:
+  `http_call` writes nothing on a 4xx, so the runner cannot tell a refusal from an outage. It costs
+  an attempt each time and expires `TIMED_OUT` rather than being refused with a reason.
+- An admitting runner's report is judged, not re-derived. The size is measured here too, but the
+  operator set, opset, parameter count and probe tally are the runner's word. Every runner key is an
+  admin's, and a runner key can already report a match result.
+- Nothing tells an admin that no admitting runner is up. Submissions wait in `testing` (phase
+  `queued`) for as long as there is none, spending no attempt.
 - The OAuth callback cannot say which failure happened: `oauth2_login` answers a fixed 401.
 - No API tokens for an SDK or CLI.
 - `finish` has no `turns <= max_turns` gate (`max_turns` is a season rule, so it needs the claim's coalesce).

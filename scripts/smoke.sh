@@ -133,12 +133,8 @@ check 400 "POST /v1/runner/token (no key)"       -X POST -H 'content-type: appli
 check 401 "POST /v1/runner/token (bad key)"      -X POST -H 'content-type: application/json' \
           -d '{"key":"tbr_nope_nope","label":"smoke"}' "$BASE/v1/runner/token"
 
-echo "==> the admit walk's probe is closed to HTTP"
-# The admit clock reaches tb-probe in-process. Over HTTP its route is outside [server] data_mounts
-# (`/v1`), so Orion answers 404 before auth is consulted; probe_auth, an audience nothing mints, is
-# the second lock.
-check 404 "POST /internal/probe/adapter (anon)"  -X POST -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
-check 404 "POST /internal/probe/adapter (session)" -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
+check 401 "POST /v1/runner/admissions/claim (anonymous)" -X POST -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/admissions/claim"
+check 401 "POST /v1/runner/admissions/claim (session)"   -X POST "${C[@]}" -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/admissions/claim"
 
 echo "==> session routes"
 check 200 "GET  /v1/me"                          "${C[@]}" "$BASE/v1/me"
@@ -235,9 +231,17 @@ if [ "$ROLE" = "admin" ]; then
       else
         fail=$((fail+1)); printf '  FAIL %-46s got %s, wanted 200\n' "POST /v1/runner/claim (real token)" "$got"
       fi
-      # A runner's token is signed with the probe's key but carries the runner's audience.
-      check 404 "POST /internal/probe/adapter (runner)" -X POST -H "authorization: Bearer $TOK" \
-                -H 'content-type: application/json' -d '{}' "$BASE/internal/probe/adapter"
+      # THE ADMISSION ROUTES, WITHOUT TAKING A REAL JOB. A claim that states no Orion is a 400 and one
+      # on another Orion a 409 -- both answered by the workflow, so the token passed -- and neither
+      # spends an attempt or holds a lease on a submission somebody is waiting for. The report on a
+      # row that does not exist runs its statement as runner_gate and answers claim_lost.
+      check 400 "POST /v1/runner/admissions/claim (no orion)" -X POST -H "authorization: Bearer $TOK" \
+                -H 'content-type: application/json' -d '{}' "$BASE/v1/runner/admissions/claim"
+      check 409 "POST /v1/runner/admissions/claim (other orion)" -X POST -H "authorization: Bearer $TOK" \
+                -H 'content-type: application/json' -d '{"orion_version":"0.0.0-smoke"}' "$BASE/v1/runner/admissions/claim"
+      check 409 "POST /v1/runner/admissions/{unknown}/report" -X POST -H "authorization: Bearer $TOK" \
+                -H 'content-type: application/json' -d '{"claim_token":"00000000-0000-0000-0000-000000000000"}' \
+                "$BASE/v1/runner/admissions/00000000-0000-0000-0000-000000000000/report"
     else
       fail=$((fail+1)); printf '  FAIL %-46s %s\n' "POST /v1/runner/token (real key)" "no token -- RUNNER_TOKEN_SECRET set?"
     fi

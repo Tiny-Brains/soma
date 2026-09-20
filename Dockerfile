@@ -149,7 +149,7 @@ RUN set -eux; \
 FROM debian:${DEBIAN_VERSION}
 LABEL org.opencontainers.image.title="soma" \
       org.opencontainers.image.source="https://github.com/Tiny-Brains/soma" \
-      org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the four clocks on orion-server, with the schema and the command that applies it"
+      org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the four clocks on orion-server -- no model runs here -- with the schema and the command that applies it"
 
 # curl for the healthcheck and the self-load; python3 because load-package.sh stages the set with
 # it; postgresql-client and jq for `bootstrap`.
@@ -157,7 +157,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl python3 postgresql-client jq \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin orion \
- && install -d -o orion -g orion /var/lib/orion /var/lib/orion/models
+ && install -d -o orion -g orion /var/lib/orion
 
 COPY --from=orion /usr/local/bin/orion-server /usr/local/bin/orion-server
 COPY docker/entrypoint.sh  /usr/local/bin/soma
