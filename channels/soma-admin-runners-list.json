@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-runners-list",
   "name": "soma-admin-runners-list",
+  "description": "The replicas that have registered, and what each last did.",
   "tags": ["soma", "admin", "runners"],
   "channel_type": "sync",
   "protocol": "rest",

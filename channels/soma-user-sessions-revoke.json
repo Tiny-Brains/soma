@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-sessions-revoke",
   "name": "soma-user-sessions-revoke",
+  "description": "Revokes one of them by sid. Session-authed, not admin: a competitor may only ever revoke their own.",
   "tags": ["soma", "user", "auth"],
   "channel_type": "sync",
   "protocol": "rest",

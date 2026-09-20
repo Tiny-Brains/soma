@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-admissions-report",
   "name": "soma-gate-admissions-report",
+  "description": "The admitting runner reports facts and Soma decides. admission_facts() types what it sends; a renamed key here is a fact read as missing, and the report goes back to the queue until the submission expires.",
   "tags": ["soma", "gate", "admission"],
   "channel_type": "sync",
   "protocol": "rest",

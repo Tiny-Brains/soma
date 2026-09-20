@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-baselines-list",
   "name": "soma-admin-baselines-list",
+  "description": "A season's baselines and their status, which is the only place a `disabled` model is visible.",
   "tags": ["soma", "admin", "baselines"],
   "channel_type": "sync",
   "protocol": "rest",

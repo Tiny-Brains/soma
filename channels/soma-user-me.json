@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-me",
   "name": "soma-user-me",
+  "description": "The signed-in competitor's own record. session_auth: it answers about whoever holds the session, so it takes no id and can leak nothing by guessing one.",
   "tags": ["soma", "user", "profile"],
   "channel_type": "sync",
   "protocol": "rest",

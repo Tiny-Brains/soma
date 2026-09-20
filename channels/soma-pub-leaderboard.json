@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-leaderboard",
   "name": "soma-pub-leaderboard",
+  "description": "The standings, and the hottest read on the site. hot_cache, because every rated match moves it and a stale rank for a few seconds is cheaper than the query.",
   "tags": ["soma", "pub", "ladder"],
   "channel_type": "sync",
   "protocol": "rest",

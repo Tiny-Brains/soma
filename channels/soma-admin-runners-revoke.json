@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-runners-revoke",
   "name": "soma-admin-runners-revoke",
+  "description": "Revokes one replica. Its live claims are left to lapse and the reap clock returns them.",
   "tags": ["soma", "admin", "runners"],
   "channel_type": "sync",
   "protocol": "rest",

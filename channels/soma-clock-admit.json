@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-clock-admit",
   "name": "soma-clock-admit",
+  "description": "Checks what needs no model, queues an admissions row, and judges the report an admitting runner sends back. 10 MINUTES, not one: it waits on a runner's walk of the reference observations. Nothing is admitted while no admitting runner is up.",
   "tags": ["soma", "clock", "admission"],
   "channel_type": "async",
   "protocol": "cron",

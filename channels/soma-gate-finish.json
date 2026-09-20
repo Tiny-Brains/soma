@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-finish",
   "name": "soma-gate-finish",
+  "description": "Finishes the row in one statement, on the token. Binds `data.req.result` and `data.req.engine_digest`: a runner sending other names binds nulls and gets 409 claim_lost.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

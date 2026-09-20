@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-models-update",
   "name": "soma-user-models-update",
+  "description": "Edits a model's own fields. Nothing here touches a version's status: that is the admit clock's alone.",
   "tags": ["soma", "user", "models"],
   "channel_type": "sync",
   "protocol": "rest",

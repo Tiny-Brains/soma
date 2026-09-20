@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-users-update",
   "name": "soma-admin-users-update",
+  "description": "Promotes or demotes a user. The other way in is SOMA_ADMIN_GITHUB_IDS, which promotes at sign-in.",
   "tags": ["soma", "admin", "users"],
   "channel_type": "sync",
   "protocol": "rest",

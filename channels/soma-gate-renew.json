@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-renew",
   "name": "soma-gate-renew",
+  "description": "Extends the lease mid-match. Answers `applied`; false means the claim is gone and the run must halt.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

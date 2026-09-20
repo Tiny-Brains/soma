@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-token",
   "name": "soma-gate-token",
+  "description": "THE ONE GATE ROUTE WITH NO AUTH BLOCK, which is what it is for: a runner presents a key here and leaves with the bearer token every other /v1/runner/ route verifies. Its surface is `gate` because of its path, not its auth. runner_token_rate, not runner_rate: the caller has no principal yet, so the limit is per address.",
   "tags": ["soma", "gate", "auth"],
   "channel_type": "sync",
   "protocol": "rest",

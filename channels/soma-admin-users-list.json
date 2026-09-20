@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-users-list",
   "name": "soma-admin-users-list",
+  "description": "Every user and their role.",
   "tags": ["soma", "admin", "users"],
   "channel_type": "sync",
   "protocol": "rest",

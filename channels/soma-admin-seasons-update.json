@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-seasons-update",
   "name": "soma-admin-seasons-update",
+  "description": "Edits a season's window and rules before it closes.",
   "tags": ["soma", "admin", "seasons"],
   "channel_type": "sync",
   "protocol": "rest",

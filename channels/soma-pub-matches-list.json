@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-matches-list",
   "name": "soma-pub-matches-list",
+  "description": "The recent matches feed. hot_cache: it is append-mostly and every visitor asks for it.",
   "tags": ["soma", "pub", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

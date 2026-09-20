@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-submissions-create",
   "name": "soma-user-submissions-create",
+  "description": "Takes the hashes of an ONNX file and its manifest and answers presigned PUTs. The PUTs are signed for the PUBLIC endpoint, which is not the one a node fetches by.",
   "tags": ["soma", "user", "models"],
   "channel_type": "sync",
   "protocol": "rest",

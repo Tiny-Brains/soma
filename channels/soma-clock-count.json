@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-clock-count",
   "name": "soma-clock-count",
+  "description": "Folds finished matches into ratings and promotes or rejects a version on its trial. The only writer of `ratings`.",
   "tags": ["soma", "clock", "ladder"],
   "channel_type": "async",
   "protocol": "cron",

@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-maps-get",
   "name": "soma-pub-maps-get",
+  "description": "One board, whole, for the viewer to draw. Uncached for the same reason as the list.",
   "tags": ["soma", "pub", "maps"],
   "channel_type": "sync",
   "protocol": "rest",

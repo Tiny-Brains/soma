@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-models-create",
   "name": "soma-user-models-create",
+  "description": "Registers a model against a game. The submission that gives it a version is a separate route.",
   "tags": ["soma", "user", "models"],
   "channel_type": "sync",
   "protocol": "rest",

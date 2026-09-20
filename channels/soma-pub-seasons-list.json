@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-seasons-list",
   "name": "soma-pub-seasons-list",
+  "description": "A game's seasons, past and live. season_cache: a closed season's row never changes again.",
   "tags": ["soma", "pub", "seasons"],
   "channel_type": "sync",
   "protocol": "rest",

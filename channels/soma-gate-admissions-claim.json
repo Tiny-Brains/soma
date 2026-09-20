@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-admissions-claim",
   "name": "soma-gate-admissions-claim",
+  "description": "Claims one queued admission for an admitting runner. Binds `orion_version` and refuses a runner on another.",
   "tags": ["soma", "gate", "admission"],
   "channel_type": "sync",
   "protocol": "rest",

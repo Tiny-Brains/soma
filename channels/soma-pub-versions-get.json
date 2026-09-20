@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-versions-get",
   "name": "soma-pub-versions-get",
+  "description": "One version, its admission verdict and its rating. hot_cache.",
   "tags": ["soma", "pub", "models"],
   "channel_type": "sync",
   "protocol": "rest",

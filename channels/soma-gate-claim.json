@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-claim",
   "name": "soma-gate-claim",
+  "description": "Claims one queued match on this runner's engine digest, under a lease, and answers the row, its seats and the board whole. A runner fetches no board separately.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

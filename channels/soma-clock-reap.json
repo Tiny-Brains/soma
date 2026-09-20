@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-clock-reap",
   "name": "soma-clock-reap",
+  "description": "Returns lapsed leases to the queue. Every 5 seconds, the fastest clock, because a crashed runner's rows are unplayable until it runs. Three lapses fail the row.",
   "tags": ["soma", "clock", "matches"],
   "channel_type": "async",
   "protocol": "cron",

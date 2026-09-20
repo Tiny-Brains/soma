@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-baselines-update",
   "name": "soma-admin-baselines-update",
+  "description": "Enables or disables a baseline. Disabled is off the ladder with its rating kept.",
   "tags": ["soma", "admin", "baselines"],
   "channel_type": "sync",
   "protocol": "rest",

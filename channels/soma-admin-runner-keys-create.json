@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-runner-keys-create",
   "name": "soma-admin-runner-keys-create",
+  "description": "Mints a runner key. Admin, despite the `runner` in the name -- a runner presents this key, it does not create one.",
   "tags": ["soma", "admin", "runners"],
   "channel_type": "sync",
   "protocol": "rest",

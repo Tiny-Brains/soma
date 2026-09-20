@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-games-list",
   "name": "soma-pub-games-list",
+  "description": "The game catalogue. season_cache, not hot_cache: this answer changes when an admin creates or closes a season, not when a match is rated.",
   "tags": ["soma", "pub", "platform"],
   "channel_type": "sync",
   "protocol": "rest",

@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-models-list",
   "name": "soma-user-models-list",
+  "description": "The signed-in competitor's own models, including the ones no public route will show.",
   "tags": ["soma", "user", "models"],
   "channel_type": "sync",
   "protocol": "rest",

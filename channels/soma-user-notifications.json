@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-notifications",
   "name": "soma-user-notifications",
+  "description": "The bell. Uncached and per-session; web polls it, which is why the response is shaped rather than raw.",
   "tags": ["soma", "user", "notifications"],
   "channel_type": "sync",
   "protocol": "rest",

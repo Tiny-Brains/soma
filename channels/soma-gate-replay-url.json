@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-replay-url",
   "name": "soma-gate-replay-url",
+  "description": "Signs the replay PUT for RUNNER_BLOB_ENDPOINT -- the host a RUNNER dials, which is a third address for the one bucket -- and answers the endpoint alongside the URL so the runner can subtract it.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

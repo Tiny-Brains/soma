@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-release",
   "name": "soma-gate-release",
+  "description": "Returns a claimed row to the queue -- what a runner calls when it cannot serve a seat's model.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

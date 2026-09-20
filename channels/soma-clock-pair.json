@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-clock-pair",
   "name": "soma-clock-pair",
+  "description": "Reads demand and inserts queued matches and their seats, pinning each one's board. Its demand statement is also scripts/autoscaler.sql's, which check-sql.sh diffs.",
   "tags": ["soma", "clock", "matches"],
   "channel_type": "async",
   "protocol": "cron",

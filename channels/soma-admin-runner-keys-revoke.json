@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-runner-keys-revoke",
   "name": "soma-admin-runner-keys-revoke",
+  "description": "Revokes a runner key. A runner holding it fails its next token exchange, not its current match.",
   "tags": ["soma", "admin", "runners"],
   "channel_type": "sync",
   "protocol": "rest",

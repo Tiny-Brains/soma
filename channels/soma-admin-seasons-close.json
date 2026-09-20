@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-seasons-close",
   "name": "soma-admin-seasons-close",
+  "description": "Closes a season by request rather than by its window. Standings are kept for ever.",
   "tags": ["soma", "admin", "seasons"],
   "channel_type": "sync",
   "protocol": "rest",

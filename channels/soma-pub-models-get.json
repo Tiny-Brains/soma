@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-models-get",
   "name": "soma-pub-models-get",
+  "description": "A model's public face. hot_cache.",
   "tags": ["soma", "pub", "models"],
   "channel_type": "sync",
   "protocol": "rest",

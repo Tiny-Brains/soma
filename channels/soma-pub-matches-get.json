@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-matches-get",
   "name": "soma-pub-matches-get",
+  "description": "One match and its replay reference. hot_cache -- a finished match is immutable, so the only staleness is how soon a new one appears.",
   "tags": ["soma", "pub", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

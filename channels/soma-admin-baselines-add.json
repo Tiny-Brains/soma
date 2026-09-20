@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-baselines-add",
   "name": "soma-admin-baselines-add",
+  "description": "Uploads a named baseline into a season. 20s: it answers presigned PUTs and queues an admission, which the admit clock judges like any submission.",
   "tags": ["soma", "admin", "baselines"],
   "channel_type": "sync",
   "protocol": "rest",

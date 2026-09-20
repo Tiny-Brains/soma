@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-auth-github",
   "name": "soma-pub-auth-github",
+  "description": "Sign-in, and the one route with a rate limit of its own rather than public_rate -- it mints a session, so it is limited per address and far harder than a read. No auth block, because presenting one is what it is for.",
   "tags": ["soma", "pub", "auth"],
   "channel_type": "sync",
   "protocol": "rest",

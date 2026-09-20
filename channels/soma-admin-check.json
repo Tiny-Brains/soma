@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-check",
   "name": "soma-admin-check",
+  "description": "Whether this session is an admin. THE ONE SESSION ROUTE WITH NO RATE LIMIT, deliberately: web's nginx calls it through auth_request on every Orion console request, so limiting it would lock an admin out of the console.",
   "tags": ["soma", "admin", "auth"],
   "channel_type": "sync",
   "protocol": "rest",

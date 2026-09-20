@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-notification-settings-update",
   "name": "soma-user-notification-settings-update",
+  "description": "Changes those settings. Shares its route_pattern with the GET above and differs by method, which Orion allows while the methods do not overlap.",
   "tags": ["soma", "user", "notifications"],
   "channel_type": "sync",
   "protocol": "rest",

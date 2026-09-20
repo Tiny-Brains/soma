@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-me-update",
   "name": "soma-user-me-update",
+  "description": "Edits the signed-in competitor's own profile. Its own path rather than a parameter on the admin route, so no id is ever accepted here.",
   "tags": ["soma", "user", "profile"],
   "channel_type": "sync",
   "protocol": "rest",

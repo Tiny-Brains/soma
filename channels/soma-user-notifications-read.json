@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-notifications-read",
   "name": "soma-user-notifications-read",
+  "description": "Marks notifications read. A POST on its own path, so a read receipt can never be a side effect of fetching.",
   "tags": ["soma", "user", "notifications"],
   "channel_type": "sync",
   "protocol": "rest",

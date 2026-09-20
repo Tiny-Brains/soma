@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-clock-withdraw",
   "name": "soma-clock-withdraw",
+  "description": "Retires versions and closes seasons whose window has passed. Once a minute is enough: nothing here races.",
   "tags": ["soma", "clock", "seasons"],
   "channel_type": "async",
   "protocol": "cron",

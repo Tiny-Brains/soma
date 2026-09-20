@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-gate-start",
   "name": "soma-gate-start",
+  "description": "Claimed becomes running. Fenced on the claim token, and answers `started` so a runner whose lease was reaped learns it here.",
   "tags": ["soma", "gate", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

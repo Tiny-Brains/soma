@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-maps-list",
   "name": "soma-pub-maps-list",
+  "description": "A season's enabled boards. NOT cached, unlike the rest of the public reads: an admin enables and disables a board at any time before the close, and the ladder must pair on the answer as it is now.",
   "tags": ["soma", "pub", "maps"],
   "channel_type": "sync",
   "protocol": "rest",

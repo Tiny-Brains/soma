@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-runner-keys-list",
   "name": "soma-admin-runner-keys-list",
+  "description": "The runner keys and what has used them.",
   "tags": ["soma", "admin", "runners"],
   "channel_type": "sync",
   "protocol": "rest",

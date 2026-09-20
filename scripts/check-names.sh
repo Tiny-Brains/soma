@@ -112,6 +112,9 @@ for p, ch in channels.items():
         bad(p, f"the file name must be the id: {cid}.json")
     if ch.get("name") != cid:
         bad(p, f"name must equal the id ({cid!r}), not {ch.get('name')!r}")
+    if not (ch.get("description") or "").strip():
+        bad(p, "no description; a channel's own line says what IT decides -- the auth mode, the "
+               "rate-limit class, the cache policy -- which the workflow's description does not")
     surface = derive(ch)
     if surface not in SURFACES:
         bad(p, f"the surface cannot be derived: {surface}")

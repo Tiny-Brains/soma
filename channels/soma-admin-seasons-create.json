@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-seasons-create",
   "name": "soma-admin-seasons-create",
+  "description": "Opens a season on a game. The slug is derived from the name here and never changes.",
   "tags": ["soma", "admin", "seasons"],
   "channel_type": "sync",
   "protocol": "rest",

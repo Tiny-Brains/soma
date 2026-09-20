@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-maps-add",
   "name": "soma-admin-maps-add",
+  "description": "Uploads a board into a season. 20s rather than 10: this runs the engine's own worldgen on the file and checks it against the cartridge's limits before storing it, disabled.",
   "tags": ["soma", "admin", "maps"],
   "channel_type": "sync",
   "protocol": "rest",

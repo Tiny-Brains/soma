@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-games-get",
   "name": "soma-pub-games-get",
+  "description": "One game and its live season. season_cache, for the same reason as the list.",
   "tags": ["soma", "pub", "platform"],
   "channel_type": "sync",
   "protocol": "rest",

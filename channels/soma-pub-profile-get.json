@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-profile-get",
   "name": "soma-pub-profile-get",
+  "description": "A competitor's public profile by username. hot_cache.",
   "tags": ["soma", "pub", "profile"],
   "channel_type": "sync",
   "protocol": "rest",

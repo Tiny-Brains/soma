@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-pub-status",
   "name": "soma-pub-status",
+  "description": "The liveness answer, and the only public route that caches nothing: a cached status is a status that cannot tell you the node stopped answering.",
   "tags": ["soma", "pub", "platform"],
   "channel_type": "sync",
   "protocol": "rest",

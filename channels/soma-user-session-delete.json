@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-session-delete",
   "name": "soma-user-session-delete",
+  "description": "Signs this session out. DELETE on /v1/session -- this one, not a named one, which is why it takes no id.",
   "tags": ["soma", "user", "auth"],
   "channel_type": "sync",
   "protocol": "rest",

@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-matches",
   "name": "soma-user-matches",
+  "description": "The signed-in competitor's matches. Uncached: it is per-session, and a shared cache is how one competitor sees another's.",
   "tags": ["soma", "user", "matches"],
   "channel_type": "sync",
   "protocol": "rest",

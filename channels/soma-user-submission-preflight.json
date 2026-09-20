@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-submission-preflight",
   "name": "soma-user-submission-preflight",
+  "description": "What this competitor may submit right now -- weight class, quota, whether a version is already in flight -- so the upload form can refuse before the upload.",
   "tags": ["soma", "user", "models"],
   "channel_type": "sync",
   "protocol": "rest",

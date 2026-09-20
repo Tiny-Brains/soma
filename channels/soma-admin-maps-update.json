@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-admin-maps-update",
   "name": "soma-admin-maps-update",
+  "description": "Enables or disables a board. 20s, because a board being enabled is re-checked the way it was on upload.",
   "tags": ["soma", "admin", "maps"],
   "channel_type": "sync",
   "protocol": "rest",

@@ -1,6 +1,7 @@
 {
   "channel_id": "soma-user-sessions-list",
   "name": "soma-user-sessions-list",
+  "description": "Every live session this competitor holds, so a stolen one can be seen.",
   "tags": ["soma", "user", "auth"],
   "channel_type": "sync",
   "protocol": "rest",
