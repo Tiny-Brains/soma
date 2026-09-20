@@ -1,0 +1,50 @@
+{
+  "workflow_id": "soma-pub-matches-get",
+  "name": "One match with its replay",
+  "description": "Two columns out of Postgres: replay_key for the presign task, and the whole response. `rating_change` is null until count has folded the match, which is why status is shown beside it -- a competitor sees the result before they see what it did to their rating. A cancelled match carries withdrawn_reason and, where a promotion caused it, the successor that replaced the seat; a failed one carries the fault and which seat it was attributed to. replay_url is null for any row that never produced a replay.",
+  "tags": ["soma", "pub", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-matches-get-query.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "presign",
+      "name": "Sign the replay URL",
+      "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-blobs",
+          "method": "GET",
+          "key": { "var": "temp_data.rows.0.replay_key" },
+          "expires_in": "1h",
+          "output": "temp_data.replay_url"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

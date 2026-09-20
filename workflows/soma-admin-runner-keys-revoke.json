@@ -1,0 +1,73 @@
+{
+  "workflow_id": "soma-admin-runner-keys-revoke",
+  "name": "Revoke a runner key",
+  "description": "Admin only, and only over the caller's own keys. Revocation is the mechanism this design leans on instead of short credentials: a runner's ten-minute token expires on its own, but every runner statement JOINs live_runners, which reads through to this row -- so stamping revoked_at here stops every machine started from this key on its NEXT call, not at the end of some window. Matches those machines are holding are not cancelled; their leases lapse and the reap returns them to the queue, which is the same path a crash takes.",
+  "tags": ["soma", "admin", "runners"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "revoke",
+      "name": "Revoke",
+      "description": "The ownership check IS the WHERE clause, so there is no diagnosing read: a key that is not yours and a key that does not exist are one answer on purpose, and an already-revoked key is the same 404 rather than a second state to explain.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE runner_keys k SET revoked_at = now() FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($3)::uuid WHERE k.id = ($2)::uuid AND k.user_id = u.id AND u.id = ($1)::uuid AND u.role = 'admin' AND k.revoked_at IS NULL",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.revoked"
+        }
+      }
+    },
+    {
+      "id": "nothing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } },
+        "status": 404,
+        "body": { "error": "unknown_key" },
+        "name": "Nothing to revoke"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": { "revoked": true, "key_id": { "var": "metadata.params.id" } }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

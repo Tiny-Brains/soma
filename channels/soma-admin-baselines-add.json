@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-admin-baselines-add",
+  "name": "soma-admin-baselines-add",
+  "tags": ["soma", "admin", "baselines"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/baselines",
+  "workflow_id": "soma-admin-baselines-add",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 20000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_admin_board_rate" }
+  }
+}

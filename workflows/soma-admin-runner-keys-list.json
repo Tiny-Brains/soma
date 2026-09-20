@@ -1,0 +1,55 @@
+{
+  "workflow_id": "soma-admin-runner-keys-list",
+  "name": "List my runner keys",
+  "description": "Admin only, and scoped to the caller's OWN keys -- a key is a credential, and a route that returns more to some callers than others is the shape a privacy bug arrives in. The fleet view is GET /v1/runners, which is about machines rather than credentials. Returns key_prefix and never key_hash: the prefix exists so an operator can tell two keys apart before revoking one, and the hash is not a thing any caller has a use for. The runner count per key is what makes 'retire this one' an informed decision.",
+  "tags": ["soma", "admin", "runners"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-runner-keys-list-query.sql" },
+          "params": [{ "var": "metadata.auth.claims.sub" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

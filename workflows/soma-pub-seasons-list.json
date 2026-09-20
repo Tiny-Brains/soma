@@ -1,0 +1,34 @@
+{
+  "workflow_id": "soma-pub-seasons-list",
+  "name": "List a game's seasons",
+  "description": "Every season of the game, newest first. The index of past seasons, whose standings GET /v1/games/{game}/leaderboard?season=<slug> reads and which are kept for ever.",
+  "tags": ["soma", "pub", "seasons"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT coalesce(json_agg(season_json(s) ORDER BY s.number DESC), '[]'::json) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

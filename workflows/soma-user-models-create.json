@@ -1,0 +1,155 @@
+{
+  "workflow_id": "soma-user-models-create",
+  "name": "Create a model",
+  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, and addressed by its id ever after. It used to be a GitHub repository, normalised by repo_path() and confirmed against `GET /repos/{owner}/{name}` before the insert -- and that requirement limited nothing. Every ceiling on a competitor is a season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights) and not one of them mentioned a repository, while the check cost a SQL normaliser, a season predicate, two unique indexes and an outbound call on the create path THAT FAILED CLOSED -- so a rate-limited GitHub meant nobody could create an entry at all. GitHub is now the sign-in identity and nothing else, and this route reaches no host outside the deployment. Write, then diagnose: the insert carries every remaining rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was, through the same functions. A model is created empty; POST /v1/submissions is what puts a version under it.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.name" } },
+        "status": 400,
+        "body": {
+          "error": "name_required",
+          "detail": "name is what you call this model. It has to be unique among your own entries for this game."
+        },
+        "name": "A name, declared"
+      }
+    },
+    {
+      "id": "game",
+      "name": "Find the game",
+      "description": "A game that does not exist is a 404 before any rule is asked. It used to also normalise the repository here, ahead of the call to GitHub; there is no call and no repository now, so the read is the game alone.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT g.id::text AS game_id FROM games g WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }],
+          "output": "temp_data.game"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.game.0.game_id" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Create the entry",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-models-create-insert.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.game" },
+            { "var": "data.req.name" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.written"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was created",
+      "condition": { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-models-create-why.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.name" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "refused",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+            {
+              "or": [
+                { "!": { "var": "temp_data.why.0.body.participant" } },
+                { "!!": { "var": "temp_data.why.0.body.name_taken" } },
+                { "!": { "var": "temp_data.why.0.body.room" } }
+              ]
+            }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": {
+            "if": [
+              { "!": { "var": "temp_data.why.0.body.participant" } },
+              "not_a_participant",
+              { "!!": { "var": "temp_data.why.0.body.name_taken" } },
+              "model_name_taken",
+              "entries_max"
+            ]
+          },
+          "detail": { "var": "temp_data.why.0.body" }
+        },
+        "name": "Refused"
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "Read the entry back",
+      "description": "Keyed on the name, which models_owner_game_name_uniq makes a key: db_write answers only rows_affected, so the created row is read back, and the read-back needs a unique predicate. It used to be the repository.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-models-create-fetch.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.game" },
+            { "var": "data.req.name" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.body" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

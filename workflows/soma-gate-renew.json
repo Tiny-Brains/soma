@@ -1,0 +1,65 @@
+{
+  "workflow_id": "soma-gate-renew",
+  "name": "Renew the lease",
+  "description": "THE LEASE IS THE DATABASE'S CLOCK and always was: now() + $2 seconds is computed here, the runner never sends a timestamp, and moving the caller onto a machine whose clock nobody controls costs nothing because of it. No indexed column changes, so the update stays heap-only -- the reason matches carries fillfactor 70 and the reason lease_expires_at is deliberately not indexed.\n\nANSWERS 200 EVEN WHEN NOTHING MOVED, and that is not sloppiness. Over a WAN a runner must tell two failures apart: applied:false means the statement ran and matched no row, so the claim is genuinely gone and the match should halt; a transport error means almost nothing and should be retried, because the renew interval is roughly a tenth of the lease. A 409 here would collapse the two into one, and the second is the common one.",
+  "tags": ["soma", "gate", "matches"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "renew",
+      "name": "Renew",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-gate-renew-renew.sql" },
+          "params": [
+            { "var": "data.req.claim_token" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.renewed"
+        }
+      }
+    },
+    {
+      "id": "runway",
+      "name": "Read the new lease back",
+      "description": "The runner could not see its own runway before and now needs to: a renew can fail for reasons that have nothing to do with its claim, and the decision to halt is 'has lease_expires_at passed', which is a value only the server holds.",
+      "condition": { ">": [{ "var": "temp_data.renewed.rows_affected" }, 0] },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": "SELECT m.lease_expires_at AS lease_expires_at FROM matches m WHERE m.id = ($1)::uuid AND m.claim_token = ($2)::uuid",
+          "params": [{ "var": "metadata.params.id" }, { "var": "data.req.claim_token" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "applied": { ">": [{ "var": "temp_data.renewed.rows_affected" }, 0] },
+                "lease_expires_at": { "var": "temp_data.rows.0.lease_expires_at" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

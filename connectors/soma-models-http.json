@@ -2,7 +2,7 @@
   "id": "soma-models-http",
   "name": "soma-models-http",
   "connector_type": "http",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "conn", "models"],
   "config": {
     "type": "http",
     "url": "env://MODELS_ENDPOINT",

@@ -20,14 +20,31 @@ import json, pathlib, sys
 
 PACKAGE = json.loads(pathlib.Path("shared/package.json").read_text())["package"]["name"]
 SURFACES = ("pub", "user", "admin", "gate", "clock")
-
-# The clocks split channel from workflow with a `-run` suffix; a REST route shares its id with the
-# workflow it runs. `soma-runner-reap` is a cron that does neither -- it is a clock named and
-# shaped as though it were a gate route, and it is the reason this rule is written down.
-PAIRING_EXCEPTIONS = {"soma-runner-reap"}
+# A connector has no route, no auth and no protocol, so it has no surface to derive. It also
+# serves several at once -- soma-db-gate is read by nine gate routes AND by the reap clock -- so
+# it carries a literal instead, and may not take a surface word as its own second segment.
+CONN = "conn"
+# Frozen on purpose: a new domain should be a deliberate edit here, in both packages, which is
+# what makes `?tag=matches` mean the same thing wherever it is asked.
+DOMAINS = {"platform", "auth", "profile", "notifications", "seasons", "maps", "baselines",
+           "ladder", "matches", "models", "admission", "runners", "users"}
+PAIRING_EXCEPTIONS = set()
 
 errors, notes = [], []
 def bad(p, msg): errors.append(f"{p}: {msg}")
+
+def check_tags(p, doc, surface):
+    """Three tags, in order. `?tag=` matches one exact string, so the three are three independent
+    filters and their ORDER is the contract -- and three is what a list row shows before it
+    collapses the rest into `+N`."""
+    t = doc.get("tags")
+    if not isinstance(t, list) or len(t) != 3 or not all(isinstance(x, str) for x in t):
+        bad(p, f"tags must be exactly three strings [package, surface, domain], not {json.dumps(t)}")
+        return
+    if t[0] != PACKAGE:  bad(p, f"tags[0] must be {PACKAGE!r}, not {t[0]!r}")
+    if t[1] != surface:  bad(p, f"tags[1] must be {surface!r}, not {t[1]!r}")
+    if t[2] not in DOMAINS:
+        bad(p, f"tags[2] {t[2]!r} is not in the domain vocabulary: {sorted(DOMAINS)}")
 
 def load(kind):
     return {p: json.loads(p.read_text()) for p in sorted(pathlib.Path(kind).glob("*.json"))}
@@ -100,6 +117,12 @@ for p, ch in channels.items():
         bad(p, f"the surface cannot be derived: {surface}")
         continue
     census[surface] = census.get(surface, 0) + 1
+    seg = cid.split("-")
+    if len(seg) < 3 or seg[0] != PACKAGE:
+        bad(p, f"an id is {PACKAGE}-<surface>-<name>")
+    elif seg[1] != surface:
+        bad(p, f"the id's second segment is {seg[1]!r}, but the definition is {surface!r}")
+    check_tags(p, ch, surface)
 
     want = cid + "-run" if surface == "clock" else cid
     if ch["workflow_id"] != want:
@@ -118,6 +141,10 @@ for p, ch in channels.items():
         # the list column is the one place a route can say what it is for.
         if wf.get("name") == wf["workflow_id"]:
             bad(wp, "name repeats the id; a workflow's name is prose")
+        # One channel reaches one workflow here, so it inherits its channel's tags verbatim.
+        if wf.get("tags") != ch.get("tags"):
+            bad(wp, f"tags must equal its channel's {json.dumps(ch.get('tags'))}, "
+                    f"not {json.dumps(wf.get('tags'))}")
 
 routed = {ch["workflow_id"] for ch in channels.values()}
 for wid in sorted(set(wf_by_id) - routed):
@@ -128,12 +155,12 @@ for p, cn in connectors.items():
         bad(p, f"the file name must be the id: {cn['id']}.json")
     if cn.get("name") != cn["id"]:
         bad(p, f"name must equal the id ({cn['id']!r}), not {cn.get('name')!r}")
-
-# ---------------------------------------------------------------- tags
-for kind, docs in (("channel", channels), ("workflow", workflows), ("connector", connectors)):
-    for p, d in docs.items():
-        if d.get("tags") != [f"pkg:{PACKAGE}"]:
-            bad(p, f'tags must be ["pkg:{PACKAGE}"], not {json.dumps(d.get("tags"))}')
+    if not cn["id"].startswith(PACKAGE + "-"):
+        bad(p, f"a connector id starts {PACKAGE}-")
+    seg = cn["id"].split("-")
+    if len(seg) > 1 and seg[1] in SURFACES:
+        bad(p, f"a connector may not take a surface word ({seg[1]!r}) as its second segment")
+    check_tags(p, cn, CONN)
 
 # ---------------------------------------------------------------- the sql/ directory
 refs = {}

@@ -57,7 +57,7 @@ UPDATE runners SET revoked_at = now() WHERE id = 'c1000000-0000-0000-0000-000000
 SELECT label, max_in_flight FROM live_runners ORDER BY label;
 
 \echo '--- season maps: three boards uploaded and enabled -- two of two seats, one of four'
--- What soma-season-maps-add leaves behind, less the engine's judgement, which needs a node. The
+-- What soma-admin-maps-add leaves behind, less the engine's judgement, which needs a node. The
 -- boards are stand-ins: nothing in the schema reads inside one, which is the point.
 INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
   ('70000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', 'default',   2, 24, 24, 'sha256:d1', '{"id": "default"}',   true, '00000000-0000-0000-0000-0000000000ad'),

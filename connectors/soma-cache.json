@@ -2,7 +2,7 @@
   "id": "soma-cache",
   "name": "soma-cache",
   "connector_type": "cache",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "conn", "platform"],
   "config": {
     "type": "cache",
     "backend": "redis",

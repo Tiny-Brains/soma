@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-user-models-list",
+  "name": "soma-user-models-list",
+  "tags": ["soma", "user", "models"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/models",
+  "workflow_id": "soma-user-models-list",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

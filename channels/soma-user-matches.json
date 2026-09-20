@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-user-matches",
+  "name": "soma-user-matches",
+  "tags": ["soma", "user", "matches"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/me/matches",
+  "workflow_id": "soma-user-matches",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

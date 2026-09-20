@@ -2,7 +2,7 @@
   "workflow_id": "soma-admin-users-update",
   "name": "Change an account's role",
   "description": "Admin only. `{\"role\": \"admin\"}` promotes an account, `{\"role\": \"competitor\"}` demotes one. The target must have signed in once, because the row is written by the GitHub callback, and the grant is on that row -- its GitHub id -- never on the handle, so a login GitHub later frees and hands to someone else does not carry it. THE CALLER CANNOT CHANGE THEIR OWN ROLE: every change is made by an admin who stays one, so the platform can never be left without one. A baseline is refused: nobody signs in to one. Demotion takes effect on the demoted admin's next request, because every admin route reads `role` off the live session, and it stops the runners on their keys at their next call. An account [vars] admin_github_ids lists is restored by its next sign-in; that is the deployment's way back in, not a bug in this route. WRITE, THEN DIAGNOSE: the UPDATE joins the caller's live admin session inside the statement and changes nothing otherwise, and `why` names the reason. The same role again is a 200 with `changed: false`. Each change tells the account (`account`) and every other admin (`admin`), after the decision and allowed to fail.",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "users"],
   "tasks": [
     {
       "id": "who",

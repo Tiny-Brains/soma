@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-admin-check",
   "name": "soma-admin-check",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "auth"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["GET"],

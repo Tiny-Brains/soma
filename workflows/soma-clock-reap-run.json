@@ -1,0 +1,21 @@
+{
+  "workflow_id": "soma-clock-reap-run",
+  "name": "Return lapsed rows to the queue",
+  "description": "A lapsed lease returns its row to the queue; the third lapse fails it as LEASE_LAPSED rather than passing it round the fleet for ever.\n\nIT IS A CLOCK HERE AND WAS THE FIRST TASK OF EVERY CLAIM BEFORE. That cost was invisible in cluster and is not off-site: at N runners polling four lanes it is 0.8N reaps a second, each scanning an index whose size is itself proportional to N -- quadratic work for a statement that normally matches nothing. Once a second in one place is the same guarantee for a constant cost.\n\nRunning it in Soma's Orion is what makes 'one place' true: that node is in CLUSTER mode, so a cron singleton is singular across the whole state database. This is the exact opposite of the rule for a Kalam replica, which must never share cluster state precisely so that its match channels are not singletons.\n\nIt stays a separate statement rather than a CTE inside the claim because a CTE's writes are invisible to the claim in the same snapshot, so a row reaped that way would wait one more poll before anyone could take it.",
+  "tags": ["soma", "clock", "matches"],
+  "tasks": [
+    {
+      "id": "reap",
+      "name": "Reap",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-clock-reap-run-reap.sql" },
+          "params": [],
+          "output": "temp_data.reaped"
+        }
+      }
+    }
+  ]
+}

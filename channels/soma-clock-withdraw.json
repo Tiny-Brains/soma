@@ -1,0 +1,15 @@
+{
+  "channel_id": "soma-clock-withdraw",
+  "name": "soma-clock-withdraw",
+  "tags": ["soma", "clock", "seasons"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "soma-clock-withdraw-run",
+  "transport_config": {
+    "schedule": "0 * * * * *",
+    "timezone": "UTC",
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid", "key": "withdraw" }
+  },
+  "config": { "timeout_ms": 30000, "tracing": { "$from": "constants.clock_tracing" } }
+}

@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-user-models-list",
+  "name": "My submission history",
+  "description": "The caller's own versions, private rows included. The session check cannot be a join inside the aggregate as it is on the other authed reads: json_agg with no GROUP BY returns one row whatever it is fed, so a revoked session would have got 200 and an empty list -- a rejection indistinguishable from having submitted nothing. live_sessions is therefore the outer FROM, which yields no row at all when the session is dead, and `deny` tests the `session_ok` marker rather than `body`, because an empty list is falsy.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-models-list-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.query.game" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.vars.settled_sigma" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

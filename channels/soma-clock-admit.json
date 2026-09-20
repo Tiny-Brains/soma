@@ -1,0 +1,15 @@
+{
+  "channel_id": "soma-clock-admit",
+  "name": "soma-clock-admit",
+  "tags": ["soma", "clock", "admission"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "soma-clock-admit-run",
+  "transport_config": {
+    "schedule": "*/20 * * * * *",
+    "timezone": "UTC",
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid", "key": "admit" }
+  },
+  "config": { "timeout_ms": 600000, "tracing": { "$from": "constants.clock_tracing" } }
+}

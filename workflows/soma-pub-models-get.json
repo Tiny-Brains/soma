@@ -1,0 +1,34 @@
+{
+  "workflow_id": "soma-pub-models-get",
+  "name": "One model",
+  "description": "One MODEL -- an entry -- and every version of it, addressed by its id. It used to be addressed by the GitHub repository it was published from, on the argument that the repository WAS the key and the permalink was therefore readable and constructible from a GitHub URL. The repository left the submission path because it limited nothing and cost a great deal, so the key is the id, and this route takes the shape /v1/matches/{id} and /v1/versions/{id} already use. The entry's `name` stays free text and display-only, which is what lets it stay free text: it never has to survive a URL. Public, like the version permalink under it, because a ladder nobody can audit is not a ladder. Every version is returned, newest first, with its own ratings: the entry is the lineage and the versions are its history, which is the shape the Model screen prints and the reason this route exists at all -- before the split there was no row to hang it on.",
+  "tags": ["soma", "pub", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-models-get-query.sql" },
+          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.settled_sigma" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

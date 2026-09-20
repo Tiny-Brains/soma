@@ -2,7 +2,7 @@
   "id": "soma-db",
   "name": "soma-db",
   "connector_type": "db",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "conn", "platform"],
   "config": {
     "type": "db",
     "connection_string": "env://SOMA_DB_URL",

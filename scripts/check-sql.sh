@@ -13,7 +13,7 @@
 # THAT LAST PART IS NEW AND IT MATTERS MORE THAN THE REST. This script used to PREPARE everything as
 # the owner, and PREPARE never checks a privilege -- so a gate statement naming a column
 # `runner_gate` has no grant on passed here and failed on the next runner poll. `--role` is what
-# closes it: `soma-runner-db` is checked as `runner_gate`, which is the boundary with Kalam.
+# closes it: `soma-db-gate` is checked as `runner_gate`, which is the boundary with Kalam.
 #
 # IT NEEDS NO STACK, only a PostgreSQL 16+ server to build the scratch schema on, and it starts a
 # throwaway one when SQLCHECK_DATABASE does not name one. So this runs on a laptop with nothing up.
@@ -62,14 +62,14 @@ for f in migrations/*.sql; do
 done
 
 # --role: which role each connector's statements are prepared and planned as. `soma-db` is the
-# owner (the scratch database's own user); `soma-runner-db` is `runner_gate`, the narrow role the
+# owner (the scratch database's own user); `soma-db-gate` is `runner_gate`, the narrow role the
 # gate's match statements run as, which the migration creates. THAT is the grant boundary with
 # Kalam, and this is the only check that proves it.
 echo "==> preparing every statement in the set"
 orion-server sql check . \
   --schema "$SCHEMA" \
   --database "$DATABASE" \
-  --role soma-runner-db=runner_gate
+  --role soma-db-gate=runner_gate
 
 # ---------------------------------------------------------------- the grants a role must NOT have
 # These moved here from kalam/scripts/check-sql.sh when Kalam's `db` mode was removed. Nothing
@@ -115,10 +115,10 @@ SQL
 echo "==> the autoscaler counts demand exactly as pair does"
 python3 - <<'CHECK'
 import difflib, pathlib, sys
-demand = pathlib.Path("sql/tb-pair-run-demand.sql").read_text()
+demand = pathlib.Path("sql/soma-clock-pair-run-demand.sql").read_text()
 auto = pathlib.Path("scripts/autoscaler.sql").read_text()
 if "\nSELECT json_build_object(" not in demand:
-    sys.exit("sql/tb-pair-run-demand.sql: the final `SELECT json_build_object(` split point moved")
+    sys.exit("sql/soma-clock-pair-run-demand.sql: the final `SELECT json_build_object(` split point moved")
 for marker in ("WITH live AS (", "\n), q AS ("):
     if marker not in auto:
         sys.exit(f"scripts/autoscaler.sql: the `{marker.strip()}` split point moved")

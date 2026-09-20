@@ -1,0 +1,67 @@
+{
+  "workflow_id": "soma-clock-withdraw-run",
+  "name": "Clock: withdraw",
+  "description": "The backstop clock, and the season's. Two idempotent statements a minute, neither fenced. The sweep cancels every queued match whose season has closed, whose engine has been retired or whose seats have stopped contesting, recording why and, where there is one, the successor that replaced the seat. The close ends the game's live season when an admin has asked or when its window has closed and every score has settled -- no submission undecided, nothing in flight, every active version at or below settled_sigma with at least burst matches. rows_affected is zero almost every minute in both, which is not a halt. Promotion does its own withdraw and the close cancels its own queue, so a persistently non-zero sweep count is a signal, not routine. A close that wrote is followed by one notification per entrant, keyed on the season, in a task that may fail without failing the close.",
+  "tags": ["soma", "clock", "seasons"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "sweep",
+      "name": "Cancel what can no longer be played",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-sweep.sql" },
+          "params": [],
+          "output": "temp_data.swept"
+        }
+      }
+    },
+    {
+      "id": "game",
+      "name": "Resolve the game",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-shared-game.sql" },
+          "params": [{ "var": "metadata.vars.game" }],
+          "output": "temp_data.game"
+        }
+      }
+    },
+    {
+      "id": "close",
+      "name": "Close the season if it has settled or was asked to",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-close.sql" },
+          "params": [
+            { "var": "temp_data.game.0.id" },
+            { "var": "metadata.vars.settled_sigma" },
+            { "var": "metadata.vars.burst" }
+          ],
+          "output": "temp_data.closed"
+        }
+      }
+    },
+    {
+      "id": "notify_closed",
+      "name": "Tell everyone who entered that the season closed",
+      "condition": { ">": [{ "var": "temp_data.closed.rows_affected" }, 0] },
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-notify_closed.sql" },
+          "params": [{ "var": "temp_data.game.0.id" }],
+          "output": "temp_data.notified_closed"
+        }
+      }
+    }
+  ]
+}

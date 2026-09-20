@@ -1,0 +1,68 @@
+{
+  "workflow_id": "soma-admin-runners-revoke",
+  "name": "Revoke a runner",
+  "description": "Admin only. Stops ONE MACHINE without touching the credential it was started from -- the difference between 'that Mac Mini is misbehaving' and 'that key is compromised'. Any admin may revoke any runner, because the fleet is the deployment's and a wedged machine is not its owner's private business. The runner's next call fails at the live_runners JOIN inside each statement; rows it is holding lapse and requeue, which is the same recovery a power cut gets. It can come back: the token exchange upserts on (key_id, label), so revoking is not a delete and a returning machine is the same row.",
+  "tags": ["soma", "admin", "runners"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "revoke",
+      "name": "Revoke",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE runners r SET revoked_at = now() WHERE r.id = ($1)::uuid AND r.revoked_at IS NULL",
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.revoked"
+        }
+      }
+    },
+    {
+      "id": "nothing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } },
+        "status": 404,
+        "body": { "error": "unknown_runner" },
+        "name": "Nothing to revoke"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": { "revoked": true, "runner_id": { "var": "metadata.params.id" } }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

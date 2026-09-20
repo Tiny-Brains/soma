@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-admin-seasons-close",
+  "name": "soma-admin-seasons-close",
+  "tags": ["soma", "admin", "seasons"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/close",
+  "workflow_id": "soma-admin-seasons-close",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "channel_id": "soma-clock-reap",
+  "name": "soma-clock-reap",
+  "tags": ["soma", "clock", "matches"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "soma-clock-reap-run",
+  "transport_config": {
+    "schedule": "*/5 * * * * *",
+    "timezone": "UTC",
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid", "key": "runner-reap" }
+  },
+  "config": { "timeout_ms": 10000, "tracing": { "$from": "constants.clock_tracing" } }
+}

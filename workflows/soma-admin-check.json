@@ -2,7 +2,7 @@
   "workflow_id": "soma-admin-check",
   "name": "Is the caller a signed-in admin",
   "description": "An AUTHORIZATION PROBE, and the only route here whose body nobody reads: it answers 204, 401 or 403 and nothing else. It exists so a reverse proxy can put a gate in front of something that is not Soma -- today the Orion console, which is a static SPA with nowhere to hold a credential -- using nginx's `auth_request`, which allows on 2xx and denies on 401/403 and treats every other status as a server error. That is why `deny` and `forbid` keep the statuses the rest of the package uses rather than collapsing both to one. It is a near-copy of soma-seasons-create's first three tasks ON PURPOSE: the same join is the same revocation check, and a second way of asking `is this an admin` is a second thing to keep right. The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the NEXT request -- which for a proxy gate means the next page load, not the next sign-in. IT IS ALSO THE ONE CHANNEL WITH NO `rate_limit`, and that is the same fact: its caller is never a browser but the console's own nginx, running an `auth_request` subrequest that forwards no `X-Forwarded-For`. An address-keyed limit would put every console user in one bucket keyed on a single container, so the only thing it could ever do is lock the console out of itself. `principal_rate_limit` on `auth.sub` is the correct key here and is what it keeps.",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "auth"],
   "tasks": [
     {
       "id": "who",

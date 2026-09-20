@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-admin-users-update",
   "name": "soma-admin-users-update",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "users"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["PATCH"],

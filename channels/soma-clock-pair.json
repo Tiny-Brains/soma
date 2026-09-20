@@ -1,0 +1,15 @@
+{
+  "channel_id": "soma-clock-pair",
+  "name": "soma-clock-pair",
+  "tags": ["soma", "clock", "matches"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "soma-clock-pair-run",
+  "transport_config": {
+    "schedule": "*/15 * * * * *",
+    "timezone": "UTC",
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid", "key": "pair" }
+  },
+  "config": { "timeout_ms": 60000, "tracing": { "$from": "constants.clock_tracing" } }
+}

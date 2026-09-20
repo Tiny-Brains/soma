@@ -1,0 +1,54 @@
+{
+  "workflow_id": "soma-user-submission-preflight",
+  "name": "May this competitor submit?",
+  "description": "The refusal, on load, so /submit reads as an explanation rather than a door that is shut. The verdict is the one soma-submissions-create computes, in the same words, so the page cannot say one thing before the POST and another after it. THREE OF THE FOUR REFUSALS ARE KNOWABLE HERE; the fourth is not, because weights_already_entered depends on a hash the competitor has not typed yet. Like soma-models-list, live_sessions is the outer FROM: a NULL body is an unknown game and a 404, no row at all is a dead session and a 401, and the two must not be confused.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-submission-preflight-query.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.query.model" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "Reject an unknown game"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

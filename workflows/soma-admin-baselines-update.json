@@ -1,0 +1,169 @@
+{
+  "workflow_id": "soma-admin-baselines-update",
+  "name": "Enable or disable a season baseline",
+  "description": "Admin only: `{\"enabled\": true}` puts an admitted baseline in play and `false` takes it out, at any time before the close. There is no delete: a baseline's matches and ratings name its version. ENABLING moves it `disabled` -> `active`: from the next pair run it is paired, rated, on the ladder and seated opposite trials, and the first enable seeds its two ratings at the season's prior with their seq-0 events, so it starts in placement like any promoted version; enabling it again keeps the ratings it had. DISABLING moves it back, which takes it off the ladder and out of pairing, and cancels in the same statement the matches seating it that nobody has claimed (BASELINE_DISABLED); a claimed or running one finishes and is counted. A cancelled trial is re-paired against the baselines still in play. Both bump the roster epoch and write a baseline_events row. A baseline still being admitted, or one admission refused, cannot be enabled. Asking for the state it is already in changes nothing and answers 200 with it.",
+  "tags": ["soma", "admin", "baselines"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Who is asking",
+      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.who.0.body" }
+    },
+    {
+      "id": "forbid",
+      "use": "refuse",
+      "with": {
+        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+        "status": 403,
+        "body": { "error": "admin_only" },
+        "name": "Admins only",
+        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "stated",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!==": [{ "var": "data.req.enabled" }, true] },
+            { "!==": [{ "var": "data.req.enabled" }, false] }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "enabled_required",
+          "detail": "The body is {\"enabled\": true} or {\"enabled\": false}."
+        },
+        "name": "A state, stated"
+      }
+    },
+    {
+      "id": "ctx",
+      "name": "The baseline and its season",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-baselines-update-ctx.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.params.baseline" }
+          ],
+          "output": "temp_data.ctx"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.ctx.0.body.found" } },
+        "status": 404,
+        "body": { "error": "unknown_baseline" },
+        "name": "No such baseline in this season"
+      }
+    },
+    {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": { "var": "temp_data.ctx.0.body.closed" },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "A closed season's baselines are its record; none is enabled or disabled after the close."
+        },
+        "name": "The season has closed"
+      }
+    },
+    {
+      "id": "admitting",
+      "use": "refuse",
+      "with": {
+        "when": { "===": [{ "var": "temp_data.ctx.0.body.status" }, "testing"] },
+        "status": 409,
+        "body": {
+          "error": "baseline_admitting",
+          "detail": "It is still being admitted. It can be enabled once admission has passed it."
+        },
+        "name": "Admitted first"
+      }
+    },
+    {
+      "id": "rejected",
+      "use": "refuse",
+      "with": {
+        "when": { "===": [{ "var": "temp_data.ctx.0.body.status" }, "rejected"] },
+        "status": 409,
+        "body": {
+          "error": "baseline_rejected",
+          "detail": { "var": "temp_data.ctx.0.body.reject_reason" }
+        },
+        "name": "Admission refused it"
+      }
+    },
+    {
+      "id": "flip",
+      "name": "Flip it, and seed or cancel what that means",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-baselines-update-flip.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.params.baseline" },
+            { "var": "data.req.enabled" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.vars.prior_mu" },
+            { "var": "metadata.vars.prior_sigma" }
+          ],
+          "output": "temp_data.flipped"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-baselines-update-read.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.params.baseline" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "workflow_id": "soma-user-sessions-list",
+  "name": "Your live sessions",
+  "description": "Every session that could be used to act as you, so that one you do not recognise can be ended. It reads live_sessions rather than sessions: a revoked or expired row is not a way in, and listing it would only invite someone to revoke what is already dead. `current` marks the session asking -- the one row the page must not offer to end casually, since ending it is signing out and DELETE /v1/session is the door marked for that. user_agent is returned verbatim; naming the browser is the page's job.",
+  "tags": ["soma", "user", "auth"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-sessions-list-query.sql" },
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

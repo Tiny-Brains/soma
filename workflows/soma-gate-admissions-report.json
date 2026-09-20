@@ -1,0 +1,86 @@
+{
+  "workflow_id": "soma-gate-admissions-report",
+  "name": "Report what admitting a submission found",
+  "description": "FACTS, NEVER A VERDICT. The runner sends Orion's admission record from its own node (`admission`: state, stage, reason), the stats Orion measured (`stats`) and its tally of the probe over the reference observations (`probe`), and this route stores them as they came. The admit clock reads them through admission_facts(), which types every value, and decides; a runner's role can write this row's report and nothing on model_versions.\n\nFENCED ON THE CLAIM TOKEN, and idempotent under a duplicate delivery the way finish is: the route writes, then reads back. Reported and still mine is 200 {applied: false} -- a runner that reported, lost the response and retried did nothing wrong. Anything else is 409 claim_lost: the lease lapsed and another runner holds the row, the submission was decided or expired meanwhile, or the runner was revoked. A report after the lease lapsed is still taken while nobody else has claimed the row: the work is as good as it was.",
+  "tags": ["soma", "gate", "admission"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "report",
+      "name": "Store the report under the claim",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-gate-admissions-report-report.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "data.req.claim_token" },
+            { "var": "data.req.admission" },
+            { "var": "data.req.stats" },
+            { "var": "data.req.probe" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Diagnose what the row says now",
+      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": "SELECT json_build_object('mine', a.claim_token = ($2)::uuid, 'reported', a.report IS NOT NULL) AS body FROM admissions a WHERE a.version_id = ($1)::uuid",
+          "params": [{ "var": "metadata.params.id" }, { "var": "data.req.claim_token" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "conflict",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            {
+              "!": {
+                "and": [
+                  { "!!": { "var": "temp_data.why.0.body.mine" } },
+                  { "!!": { "var": "temp_data.why.0.body.reported" } }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 409,
+        "body": { "error": "claim_lost", "applied": false },
+        "name": "The claim really is gone",
+        "description": "Reached when the row is not reported under this token: a lapsed lease another runner took, a submission decided or expired meanwhile, a revoked runner."
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": { "applied": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-admin-users-list",
   "name": "soma-admin-users-list",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "users"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["GET"],

@@ -1,0 +1,118 @@
+{
+  "workflow_id": "soma-gate-claim",
+  "name": "Claim one match",
+  "description": "THE ONLY COORDINATOR THERE IS. No scheduler, no assignment table, no registry consulted at pairing time, and no runner knows another one exists: FOR UPDATE SKIP LOCKED with LIMIT 1 means two runners racing do not queue behind each other -- the second skips the locked row and takes the next -- and Postgres is the arbiter whether the callers are four cron lanes in one process or forty across ten machines. The lease is what recovers a row from a runner that vanished, and it cannot tell that case from a slow one, which is the point: pull-plus-lease is self-healing where an assigning coordinator would need a liveness model and a rebalancer.\n\nTHREE ADDITIONS TO THE STATEMENT KALAM SHIPPED, all about the runner rather than the match. The live_runners EXISTS is the demotion check, inside the statement rather than in a guard task. The in-flight count is the ceiling that stops a wedged machine sitting on rows until their leases lapse -- uncorrelated, so it is an InitPlan evaluated once per claim and not per candidate row. And played_by is written here, at the one moment the answer is known, because without it 'which machine played this' and 'which machine is wedged' are both unanswerable.\n\nTHE IDLE ANSWER IS THE ONE TO MAKE CHEAP. An idle runner polling four lanes every five seconds is 0.8 requests a second whatever the ladder is doing, so an empty queue costs one indexed probe and answers 200 {\"idle\": true} -- not a 204; the `idle` task says why. TRIALS FIRST, ALWAYS, and within trials and within ranked matches a refused row sinks behind a fresh one. A refused trial must not fall behind ranked matches: pair keeps the queue topped up with fresh ones, so a trial that did would wait for as long as the ladder is busy.",
+  "tags": ["soma", "gate", "matches"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": { "and": [{ "var": "data.req.engine_digest" }, { "var": "data.req.seat_count" }] }
+        },
+        "status": 400,
+        "body": { "error": "engine_digest_and_seat_count_required" },
+        "name": "A claim states what it can play",
+        "description": "Both are properties of the caller, not of the queue: the digest partitions the queue so a mixed-engine rollout works at all, and seat_count is how many seats this runner's task list has. A 6-seat board claimed by a 4-lane runner would be a match played short a seat, which is worse than one nobody claimed."
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the claim token",
+      "description": "MINTED HERE, not by the runner. Off-site that matters: a runner that picks its own token could collide with another's, and a uuid is free to generate at either end. Every later route takes it back in the body and passes it as the fence, so a stale attempt writes nothing and learns so from rows_affected.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.token", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "claim",
+      "name": "Claim one row",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-gate-claim-claim.sql" },
+          "params": [
+            { "var": "data.req.engine_digest" },
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "data.req.seat_count" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.claimed"
+        }
+      }
+    },
+    {
+      "id": "row",
+      "name": "Read the claimed row",
+      "description": "Reads back only under the claim token, and builds THE EXECUTION CONTRACT in the same statement. THE BOARD RIDES THE ROW: `map` is the season_maps row the match was paired on, whole, because the component carries no boards and a runner fetches nothing -- the same reason the contract rides it. Each value is coalesce(season rule, games.manifest limits, [vars]) taken from THE ROW'S OWN SEASON, the shape admission already uses for adapter_ops_max -- so a season that declares nothing plays by the cartridge's published limits, and a queued match keeps the terms it was queued under because seasons.rules is immutable once submissions open. The `enabled` flag is honoured rather than ignored: a block turned off falls through to the defaults, because a rule that reads as on when its author turned it off is the failure season_rules_ok exists to prevent. renew_every_n_turns is DERIVED, not sent: it is the deployment's target clamped by floor(lease_seconds * 1000 / ((seat_count + 1) * turn_ms)) -- a turn can cost every seat's deadline and the step, so the row's own seat count is the multiplier -- and a season raising turn_ms, or a map seating eight, cannot leave the lease expiring before the renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads as a wedged runner. A range check cannot close that: the safe ceiling depends on lease_seconds, which lives in another file.",
+      "condition": { ">": [{ "var": "temp_data.claimed.rows_affected" }, 0] },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-gate-claim-row.sql" },
+          "params": [
+            { "var": "temp_data.token" },
+            { "var": "metadata.vars.model_prefix" },
+            { "var": "metadata.vars.replay_prefix" },
+            { "var": "metadata.vars.renew_every_n_turns" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "metadata.vars.turn_ms" },
+            { "var": "metadata.vars.max_turns" },
+            { "var": "metadata.vars.refusal_ceiling" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "idle",
+      "name": "Nothing to play",
+      "description": "AN EMPTY QUEUE IS 200 {\"idle\": true}, NOT 204, and the change was forced by running it. A 204 carries no body, and an HTTP client that expects JSON -- which every caller of this route is, because every other answer is JSON -- fails parsing it: `EOF while parsing a value at line 1 column 0`, once per poll per lane. The runner survived that (the call is soft and the idle branch is reached either way) but it logged an error 0.8 times a second per runner for the COMMON case, which is the shape of failure this platform is most careful about elsewhere: a healthy fleet that reads as a broken one. The saving 204 bought over this body is fourteen bytes. The cost of the status code being the whole answer is that the answer needs a client that treats it specially, and nothing else here does.",
+      "condition": { "!": { "var": "temp_data.rows.0.row" } },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "idle": true } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "description": "THE CONTRACT RIDES THE ROW. turn_ms, max_turns and the rest used to be [vars] on each replica that web's scripts/check/configs.sh asserted equal by reading the other repositories -- which cannot read a machine on somebody's desk. Sending them from the one place that owns them deletes that whole class of failure. engine_digest comes off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "match": { "var": "temp_data.rows.0.row" },
+                "contract": { "var": "temp_data.rows.0.contract" },
+                "claim": {
+                  "token": { "var": "temp_data.token" },
+                  "lease_expires_at": { "var": "temp_data.rows.0.lease_expires_at" }
+                }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

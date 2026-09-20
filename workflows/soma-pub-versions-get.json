@@ -1,0 +1,34 @@
+{
+  "workflow_id": "soma-pub-versions-get",
+  "name": "One version",
+  "description": "One VERSION of one model, by id -- what GET /v1/models/{id} answered before an entry and a version became different things. It is a permalink and stays public: a rating nobody can audit is not a rating. The successor is THE SAME ENTRY'S next version, in the same season, which is the only reading that is true now that a competitor holds several models: scoped by owner it would name a sibling entry's version and tell someone their v3 was replaced by a v7 belonging to a different model of theirs. `class_max_bytes` comes from the version's own season, because a cap is the season's and a closed season's standing cannot be read against today's table.",
+  "tags": ["soma", "pub", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-versions-get-query.sql" },
+          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.settled_sigma" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

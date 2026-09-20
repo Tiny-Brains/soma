@@ -1,0 +1,16 @@
+{
+  "channel_id": "soma-gate-token",
+  "name": "soma-gate-token",
+  "tags": ["soma", "gate", "auth"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/runner/token",
+  "workflow_id": "soma-gate-token",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.runner_token_rate" },
+    "tracing": { "$from": "constants.gate_tracing" }
+  }
+}

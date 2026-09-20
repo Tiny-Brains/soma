@@ -1,0 +1,78 @@
+{
+  "workflow_id": "soma-user-notifications",
+  "name": "The caller's notifications",
+  "description": "The feed behind the bell and the notifications page: newest first, optionally one `category`, only `unread=true`, only items created after `since` (what the bell polls with), keyset-paged on (created_at, id) exactly as GET /v1/me/matches is, so a page boundary is total even when one clock statement wrote many rows in one instant. `limit` defaults to 25 and is clamped to 1..100 in the statement. `unread` is the count across EVERY category whatever the filters say, because it is the number on the bell and the bell has no filter. A private route of its own, never a parameter on a public one. Nothing here filters by the settings: a writer never inserts what the settings skip, so the feed shows what was said, and a category turned back on does not surface what was skipped while it was off. An unknown category is a 400 naming the known ones rather than an empty page, because an empty page is also what a real category with nothing in it looks like.",
+  "tags": ["soma", "user", "notifications"],
+  "tasks": [
+    {
+      "id": "defaults",
+      "name": "Apply query defaults",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.q.limit",
+              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-notifications-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.category" },
+            { "var": "metadata.query.unread" },
+            { "var": "metadata.query.since" },
+            { "var": "metadata.query.cursor" },
+            { "var": "temp_data.q.limit" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.category_ok" } },
+        "status": 400,
+        "body": {
+          "error": "unknown_category",
+          "detail": {
+            "category": { "var": "metadata.query.category" },
+            "known": { "var": "temp_data.rows.0.categories" }
+          }
+        },
+        "name": "No such category"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,184 @@
+{
+  "workflow_id": "soma-clock-pair-run",
+  "name": "Clock: pair",
+  "description": "Inserts the matches the ladder wants. Reads the roster epoch, the demand document and the waiting trials at sweep 0, asks the pairing plugin to fill the room, and puts the trial pairings first in the plan so a candidate waiting on its trial is never crowded out by the queue. Every insert checks the epoch FOR SHARE and halts the run if it has moved -- that, not a run fence, is pair's guarantee: a stale run can overfill by at most one run's worth, which the depth target bounds and the next run absorbs, but it can never pair a version that has left. The trial pairings are chosen in SQL, not by the plugin: the choice is mechanical and must not depend on the plugin's state.",
+  "tags": ["soma", "clock", "matches"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 200 },
+  "tasks": [
+    {
+      "id": "when_game",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "game",
+          "name": "Resolve the game",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-shared-game.sql" },
+              "params": [{ "var": "metadata.vars.game" }],
+              "output": "temp_data.game"
+            }
+          }
+        },
+        {
+          "id": "epoch",
+          "name": "Read the roster epoch",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-pair-run-epoch.sql" },
+              "params": [],
+              "output": "temp_data.roster"
+            }
+          }
+        },
+        {
+          "id": "demand",
+          "name": "Read demand, the pool and the room",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-pair-run-demand.sql" },
+              "params": [
+                { "var": "temp_data.game.0.id" },
+                { "var": "metadata.vars.burst" },
+                { "var": "metadata.vars.steady_cap" },
+                { "var": "metadata.vars.settled_sigma" },
+                { "var": "metadata.vars.pair_depth_target" },
+                { "var": "metadata.vars.cross_class_fraction" }
+              ],
+              "output": "temp_data.demand"
+            }
+          }
+        },
+        {
+          "id": "boards",
+          "name": "Halt while no board is in play",
+          "function": {
+            "name": "filter",
+            "input": {
+              "condition": { "!!": [{ "var": "temp_data.demand.0.body.limits.maps.0.id" }] },
+              "on_reject": "halt"
+            }
+          }
+        },
+        {
+          "id": "trials",
+          "name": "Find candidates waiting for a trial",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-pair-run-trials.sql" },
+              "params": [{ "var": "temp_data.game.0.id" }, { "var": "metadata.vars.repair_cap" }],
+              "output": "temp_data.trials"
+            }
+          }
+        },
+        {
+          "id": "pair",
+          "name": "Choose the room's pairings",
+          "function": {
+            "name": "tb.pairing.pair",
+            "input": {
+              "demand": { "var": "temp_data.demand.0.body" },
+              "seed": { "var": "metadata.trigger.occurrence_id" },
+              "output": "temp_data.paired"
+            }
+          }
+        },
+        {
+          "id": "plan",
+          "name": "Trials first, then the room",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.plan",
+                  "logic": {
+                    "merge": [
+                      { "var": "temp_data.trials.0.body.pairings" },
+                      { "var": "temp_data.paired.pairings" }
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.n",
+                  "logic": {
+                    "+": [{ "var": "temp_data.trials.0.body.n" }, { "var": "temp_data.paired.n" }]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop when the plan runs out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "item",
+      "name": "Take pairing i",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.it",
+              "logic": { "val": ["temp_data", "plan", { "val": ["temp_data", "i"] }] }
+            },
+            { "path": "temp_data.pairing_id", "logic": { "random": ["uuid"] } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Insert the match and its seats",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-pair-run-insert.sql" },
+          "params": [
+            { "var": "temp_data.roster.0.epoch" },
+            { "var": "metadata.vars.game" },
+            { "var": "temp_data.it.seed" },
+            { "var": "temp_data.it.map" },
+            { "var": "temp_data.it.seats" },
+            { "var": "temp_data.it.trial" },
+            { "var": "temp_data.pairing_id" },
+            { "var": "metadata.vars.forfeit_strikes" }
+          ],
+          "output": "temp_data.inserted"
+        }
+      }
+    },
+    {
+      "id": "held",
+      "name": "Halt if the roster moved under the insert",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { ">": [{ "var": "temp_data.inserted.rows_affected" }, 0] },
+          "on_reject": "halt"
+        }
+      }
+    }
+  ]
+}

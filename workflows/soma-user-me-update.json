@@ -1,0 +1,83 @@
+{
+  "workflow_id": "soma-user-me-update",
+  "name": "Edit your own profile",
+  "description": "The one field a competitor may change. The handle is not among them -- it is GitHub's, it is the profile's URL, and it is re-read on every sign-in. Empty or blank clears it back to null rather than storing a name made of spaces, and the profile then falls back to the handle. The UPDATE joins live_sessions so a revoked session cannot write, and the row is read back so the response is what was stored rather than what was sent.",
+  "tags": ["soma", "user", "profile"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "toolong",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.display_name" }, ""] }
+              ]
+            },
+            60
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "display_name_too_long",
+          "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography."
+        },
+        "name": "Refuse an unusable name"
+      }
+    },
+    {
+      "id": "update",
+      "name": "Update",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE users u SET display_name = nullif(btrim(coalesce(($3)::text, '')), '') FROM live_sessions ls WHERE u.id = ($1)::uuid AND ls.sid = ($2)::uuid AND ls.user_id = u.id",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.display_name" }
+          ],
+          "output": "temp_data.updated"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-me-update-read.sql" },
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

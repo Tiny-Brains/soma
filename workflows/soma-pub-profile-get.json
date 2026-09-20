@@ -1,0 +1,47 @@
+{
+  "workflow_id": "soma-pub-profile-get",
+  "name": "A competitor's public page",
+  "description": "One person's versions, GROUPED BY GAME AND SEASON, newest season first: someone who entered two seasons of one game has two standings, not one. PUBLIC, AND RETURNS ONLY WHAT IS PUBLIC -- `active` and `superseded`. A candidate mid-trial is a version nobody else may know exists and a rejection is nobody else's business, so the owner's own view is this response merged with GET /v1/models and GET /v1/me/matches rather than this route returning more to some callers.",
+  "tags": ["soma", "pub", "profile"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-profile-get-query.sql" },
+          "params": [
+            { "var": "metadata.params.username" },
+            { "var": "metadata.vars.settled_sigma" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_user" },
+        "name": "Reject an unknown handle"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

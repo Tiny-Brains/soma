@@ -2,7 +2,7 @@
   "id": "soma-blobs",
   "name": "soma-blobs",
   "connector_type": "storage",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "conn", "matches"],
   "config": {
     "type": "storage",
     "provider": "s3",

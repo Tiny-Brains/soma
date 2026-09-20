@@ -2,7 +2,7 @@
   "workflow_id": "soma-admin-users-list",
   "name": "List accounts for role changes",
   "description": "Admin only: the page an admin promotes and demotes from. Two lists, because they answer two questions: `admins` is every admin, always whole, so the one to demote is never behind a search; `users` is the competitors matching `?q=` (a substring of the handle or display name), most recently seen first, at most 50, with `matching` saying how many there are. Baselines are left out: they are uploaded opponents and nobody signs in to one. `by_deployment` marks an account [vars] admin_github_ids lists: demoting one lasts only until its next sign-in, and the page says so rather than letting it look permanent. `you` marks the caller, whose own role PATCH refuses. live_sessions is the OUTER FROM, so a caller who is not a live admin gets no row at all rather than an empty list.",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "admin", "users"],
   "tasks": [
     {
       "id": "who",

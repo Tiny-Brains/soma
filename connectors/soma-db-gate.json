@@ -1,0 +1,15 @@
+{
+  "id": "soma-db-gate",
+  "name": "soma-db-gate",
+  "connector_type": "db",
+  "tags": ["soma", "conn", "matches"],
+  "config": {
+    "type": "db",
+    "connection_string": "env://RUNNER_GATE_DB_URL",
+    "max_connections": 10,
+    "connect_timeout_ms": 5000,
+    "query_timeout_ms": 15000,
+    "operations": { "delete": false },
+    "allow_private_urls": "var://allow_private_urls"
+  }
+}

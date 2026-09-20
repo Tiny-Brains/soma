@@ -1,0 +1,71 @@
+{
+  "workflow_id": "soma-user-sessions-revoke",
+  "name": "End one session, or all the others",
+  "description": "{sid} names one session to end; the literal `others` ends every session but the one asking, which is \"sign out everywhere\" written honestly -- it cannot log you out of the browser you are holding, so it does not claim to. THE OWNERSHIP CHECK IS THE WHERE CLAUSE, not a guard task: the UPDATE matches only rows whose user_id is the caller's, so a sid belonging to somebody else touches nothing and answers 404 -- the same answer as a sid that does not exist, which is the point. The session doing the asking is verified first and separately, so \"nothing was revoked\" and \"you are not signed in\" never arrive as the same status.",
+  "tags": ["soma", "user", "auth"],
+  "tasks": [
+    {
+      "id": "who",
+      "name": "Verify the caller",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT ls.sid AS session_ok FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "revoke",
+      "name": "Revoke",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": "UPDATE sessions s SET revoked_at = now() WHERE s.user_id = ($1)::uuid AND s.revoked_at IS NULL AND s.expires_at > now() AND CASE WHEN ($3)::text = 'others' THEN s.sid <> ($2)::uuid ELSE s.sid = ($3)::uuid END",
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.sid" }
+          ],
+          "output": "temp_data.revoked"
+        }
+      }
+    },
+    {
+      "id": "nothing",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!=": [{ "var": "metadata.params.sid" }, "others"] },
+            { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_session" },
+        "name": "Nothing to revoke"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body.revoked", "logic": { "var": "temp_data.revoked.rows_affected" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "workflow_id": "soma-user-matches",
+  "name": "The caller's own matches, in every state",
+  "description": "The half GET /v1/matches cannot do. The public listing is finished and rated with no trials, and that is right; on your own page a queued pairing, a cancellation naming the version that replaced you and a trial are exactly what you came to see. ORDERED BY coalesce(played_at, created_at), because a queued match has never been played and would otherwise sort last under a NULL when it is the newest thing on the page; the cursor keys on the same expression so it stays total. `seats.mine` marks which seat is the caller's.",
+  "tags": ["soma", "user", "matches"],
+  "tasks": [
+    {
+      "id": "defaults",
+      "name": "Apply query defaults",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.q.limit",
+              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-matches-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.game" },
+            { "var": "metadata.query.cursor" },
+            { "var": "temp_data.q.limit" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,220 @@
+{
+  "workflow_id": "soma-user-notification-settings-update",
+  "name": "Change a notification setting",
+  "description": "`{category, app?, push?, level?}`, one category per request, and a partial body is MERGED into the effective setting rather than replacing it -- in the upsert's DO UPDATE against the stored row, so two tabs changing `app` and `push` at once do not undo each other. The answer is the whole settings list, read back, so the page redraws from what was stored. WRITE, THEN DIAGNOSE: one statement refuses everything the spec refuses -- a locked category turned off, a level outside the category's vocabulary, a category this account cannot receive -- and `why` reads the spec to say which, so the rule lives in notification_category_spec() once and not again in JSONLogic. The refusals are 401 session_revoked, 400 unknown_category, 403 admin_only, 409 category_locked, and 400 invalid_level or level_not_applicable; a value that is not a boolean, or a level that is not a string, is 400 invalid_setting before anything is written. A body naming a category and nothing to change writes nothing and answers the settings.",
+  "tags": ["soma", "user", "notifications"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [
+            {
+              "and": [
+                { "!==": [{ "var": "data.req.app" }, null] },
+                { "!==": [{ "var": "data.req.app" }, true] },
+                { "!==": [{ "var": "data.req.app" }, false] }
+              ]
+            },
+            {
+              "and": [
+                { "!==": [{ "var": "data.req.push" }, null] },
+                { "!==": [{ "var": "data.req.push" }, true] },
+                { "!==": [{ "var": "data.req.push" }, false] }
+              ]
+            },
+            {
+              "and": [
+                { "!==": [{ "var": "data.req.level" }, null] },
+                { "!==": [{ "cat": [{ "var": "data.req.level" }] }, { "var": "data.req.level" }] }
+              ]
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "invalid_setting",
+          "detail": "app and push are true or false; level is a string."
+        },
+        "name": "Refuse a value of the wrong type"
+      }
+    },
+    {
+      "id": "update",
+      "name": "Upsert the category",
+      "condition": {
+        "or": [
+          { "!==": [{ "var": "data.req.app" }, null] },
+          { "!==": [{ "var": "data.req.push" }, null] },
+          { "!==": [{ "var": "data.req.level" }, null] }
+        ]
+      },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-notification-settings-update-update.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.category" },
+            { "var": "data.req.app" },
+            { "var": "data.req.push" },
+            { "var": "data.req.level" }
+          ],
+          "output": "temp_data.updated"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was written",
+      "condition": { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-notification-settings-update-why.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.category" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.session_ok" } }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "Reject a revoked session"
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.known" } }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "unknown_category",
+          "detail": { "category": { "var": "data.req.category" } }
+        },
+        "name": "No such category"
+      }
+    },
+    {
+      "id": "admin",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.receivable" } }
+          ]
+        },
+        "status": 403,
+        "body": { "error": "admin_only", "detail": { "category": { "var": "data.req.category" } } },
+        "name": "Not this account's category"
+      }
+    },
+    {
+      "id": "locked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+            { "var": "temp_data.why.0.body.locked" },
+            { "===": [{ "var": "data.req.app" }, false] }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "category_locked",
+          "detail": { "category": { "var": "data.req.category" }, "locked": true }
+        },
+        "name": "A locked category stays on"
+      }
+    },
+    {
+      "id": "level",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] } },
+            { "!==": [{ "var": "data.req.level" }, null] }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": {
+            "if": [
+              { "var": "temp_data.why.0.body.levels" },
+              "invalid_level",
+              "level_not_applicable"
+            ]
+          },
+          "detail": {
+            "category": { "var": "data.req.category" },
+            "level": { "var": "data.req.level" },
+            "levels": { "var": "temp_data.why.0.body.levels" }
+          }
+        },
+        "name": "Not a level this category has"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the settings back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT ls.sid AS session_ok, json_build_object('settings', notification_settings_json(ls.user_id)) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

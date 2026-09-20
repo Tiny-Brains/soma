@@ -2,7 +2,7 @@
   "id": "soma-models-internal",
   "name": "soma-models-internal",
   "connector_type": "storage",
-  "tags": ["pkg:soma"],
+  "tags": ["soma", "conn", "models"],
   "config": {
     "type": "storage",
     "provider": "s3",

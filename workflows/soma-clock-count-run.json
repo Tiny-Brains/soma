@@ -1,0 +1,278 @@
+{
+  "workflow_id": "soma-clock-count-run",
+  "name": "Clock: count",
+  "description": "The only writer of a ladder. Claims its run fence at the first task and halts if it lost, then walks one document of work: every unmarked finished match in finish order, followed by every trial that has reached a terminal state. A fold is one plugin call and one fenced statement; a verdict is promotion (two statements) or rejection or nothing at all. Folds come first so a trial is decided after every result that arrived before it. A fold that affects zero rows halts the run -- the fence moved, or the row was already counted -- and the next occurrence starts from a clean read. A pass that affects zero rows does not halt: a concurrent run decided the candidate, and the withdraw after it is idempotent. The loop's `max` is a bound, never the terminator; the `more` filter is. Each fold, pass and rejection is followed by its notification -- a separate, keyed, continue_on_error statement that reads the decision off the row, so a notification can be lost to a crash between the two but never costs a fold or a verdict.",
+  "tags": ["soma", "clock", "ladder"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 400 },
+  "tasks": [
+    {
+      "id": "when_fence",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "fence",
+          "name": "Claim the run fence",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-fence.sql" },
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" }
+              ],
+              "output": "temp_data.fence"
+            }
+          }
+        },
+        {
+          "id": "fenced",
+          "name": "Halt if a newer run holds it",
+          "function": {
+            "name": "filter",
+            "input": {
+              "condition": { ">": [{ "var": "temp_data.fence.rows_affected" }, 0] },
+              "on_reject": "halt"
+            }
+          }
+        },
+        {
+          "id": "batch",
+          "name": "Read this run's work",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-batch.sql" },
+              "params": [
+                { "var": "metadata.vars.count_batch" },
+                { "var": "metadata.vars.repair_cap" }
+              ],
+              "output": "temp_data.rows"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop when the work runs out",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "temp_data.rows.0.body.n" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "item",
+      "name": "Take item i",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.it",
+              "logic": {
+                "val": ["temp_data", "rows", 0, "body", "items", { "val": ["temp_data", "i"] }]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when_priors",
+      "condition": { "==": [{ "var": "temp_data.it.kind" }, "fold"] },
+      "tasks": [
+        {
+          "id": "priors",
+          "name": "Read the seats' priors",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-priors.sql" },
+              "params": [
+                { "var": "temp_data.it.id" },
+                { "var": "metadata.vars.ts_beta" },
+                { "var": "metadata.vars.ts_tau" },
+                { "var": "metadata.vars.ts_draw_probability" }
+              ],
+              "output": "temp_data.match"
+            }
+          }
+        },
+        {
+          "id": "rate",
+          "name": "TrueSkill",
+          "function": {
+            "name": "tb.rating.trueskill",
+            "input": {
+              "match": { "var": "temp_data.match.0.row" },
+              "beta": { "var": "temp_data.match.0.beta" },
+              "tau": { "var": "temp_data.match.0.tau" },
+              "draw_probability": { "var": "temp_data.match.0.draw_probability" },
+              "output": "temp_data.post"
+            }
+          }
+        },
+        {
+          "id": "fold",
+          "name": "Mark rated and apply the posteriors",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-fold.sql" },
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.id" },
+                { "var": "temp_data.post" }
+              ],
+              "output": "temp_data.folded"
+            }
+          }
+        },
+        {
+          "id": "held",
+          "name": "Halt if the fence moved under the fold",
+          "function": {
+            "name": "filter",
+            "input": {
+              "condition": { ">": [{ "var": "temp_data.folded.rows_affected" }, 0] },
+              "on_reject": "halt"
+            }
+          }
+        },
+        {
+          "id": "notify_result",
+          "name": "Tell each seat's owner how it went",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-notify_result.sql" },
+              "params": [{ "var": "temp_data.it.id" }],
+              "output": "temp_data.notified_result"
+            }
+          }
+        },
+        {
+          "id": "notify_rank",
+          "name": "Tell each seat's owner a settled rank that moved",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-notify_rank.sql" },
+              "params": [{ "var": "temp_data.it.id" }, { "var": "metadata.vars.settled_sigma" }],
+              "output": "temp_data.notified_rank"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "when_pass",
+      "condition": { "==": [{ "var": "temp_data.it.decision" }, "pass"] },
+      "tasks": [
+        {
+          "id": "pass",
+          "name": "Promote and seed",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-pass.sql" },
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.trial_id" },
+                { "var": "temp_data.it.model_id" },
+                { "var": "metadata.vars.prior_mu" },
+                { "var": "metadata.vars.prior_sigma" },
+                { "var": "metadata.vars.sigma_inflation" }
+              ],
+              "output": "temp_data.promoted"
+            }
+          }
+        },
+        {
+          "id": "withdraw",
+          "name": "Withdraw the predecessor's queue",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-withdraw.sql" },
+              "params": [
+                { "var": "temp_data.it.predecessor_id" },
+                { "var": "temp_data.it.model_id" }
+              ],
+              "output": "temp_data.withdrawn"
+            }
+          }
+        },
+        {
+          "id": "notify_promoted",
+          "name": "Tell the owner it is on the ladder",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-shared-notify.sql" },
+              "params": [{ "var": "temp_data.it.model_id" }],
+              "output": "temp_data.notified_promoted"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "when_reject",
+      "condition": { "==": [{ "var": "temp_data.it.decision" }, "reject"] },
+      "tasks": [
+        {
+          "id": "reject",
+          "name": "Reject, with the reason a competitor reads",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-count-run-reject.sql" },
+              "params": [
+                { "var": "metadata.trigger.scheduled_for" },
+                { "var": "metadata.trigger.attempt" },
+                { "var": "temp_data.it.trial_id" },
+                { "var": "temp_data.it.model_id" },
+                { "var": "temp_data.it.reason" }
+              ],
+              "output": "temp_data.rejected"
+            }
+          }
+        },
+        {
+          "id": "notify_rejected",
+          "name": "Tell the owner the trial failed",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-shared-notify.sql" },
+              "params": [{ "var": "temp_data.it.model_id" }],
+              "output": "temp_data.notified_rejected"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-user-submission-preflight",
+  "name": "soma-user-submission-preflight",
+  "tags": ["soma", "user", "models"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/games/{game}/submission",
+  "workflow_id": "soma-user-submission-preflight",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}
