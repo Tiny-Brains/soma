@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # The Soma NODE: orion-server with the Soma package inside it -- the public /v1 HTTP API, the runner
-# gate, the four clocks (admit, pair, count, withdraw) and the probe, their connectors, the two wasm
+# gate, the five clocks (admit, pair, count, withdraw, reap), their connectors, the two wasm
 # plugins that are the only arithmetic on this platform which writes a ladder -- and the Postgres
 # migrations everything shares, with the command that applies them.
 #
@@ -149,7 +149,7 @@ RUN set -eux; \
 FROM debian:${DEBIAN_VERSION}
 LABEL org.opencontainers.image.title="soma" \
       org.opencontainers.image.source="https://github.com/Tiny-Brains/soma" \
-      org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the four clocks on orion-server -- no model runs here -- with the schema and the command that applies it"
+      org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the five clocks on orion-server -- no model runs here -- with the schema and the command that applies it"
 
 # curl for the healthcheck; postgresql-client and jq for `bootstrap`. No python3: the set is
 # compiled by orion-server and applied by the node itself, so nothing here stages or patches JSON.
