@@ -97,8 +97,8 @@ game = "ants"
 engine_digest = "${SOMA_ENGINE_DIGEST:-}"
 
 # pair_depth_target is a staleness cap, never the signal -- demand is the signal. It is also why
-# the autoscaler must never read queue depth: this caps the queue, so depth would cap the fleet at
-# pair_depth_target/wave_k and look correct doing it.
+# NOTHING THAT SIZES THE RUNNER FLEET MAY READ QUEUE DEPTH: this caps the queue, so depth would cap
+# the fleet at pair_depth_target over a runner's lanes and look correct doing it.
 count_batch       = 50
 pair_depth_target = 64
 

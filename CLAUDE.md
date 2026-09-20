@@ -95,10 +95,6 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `compile` expands it all.
 - `group_runs()` folds consecutive tasks sharing a condition into a task group. **Anything that
   walks a clock workflow must descend into groups**, or it silently skips most of the statements.
-- **`scripts/autoscaler.sql` carries pair's demand CTEs verbatim**, up to its final
-  `SELECT json_build_object(`, so keep that split point and the CTE names `wants` and `depth`.
-  The CTEs bind `$1`–`$4` and `$6`; pair's `$5` (the depth target) is only in its final SELECT,
-  which is why the autoscaler can take `$5` for itself. A new CTE parameter changes both.
 - **Soma runs no model.** `[models]` is off. `soma-clock-admit` prepares a submission (HEAD, manifest,
   rebuilt registration) and queues an `admissions` row; an admitting kalam runner claims it through
   `/v1/runner/admissions/*`, runs Orion's admission and the probe, and reports; the clock judges the

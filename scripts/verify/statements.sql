@@ -8,7 +8,7 @@
 --   c_pass_reversed  the promotion with its two updates in the opposite order, which the deferred
 --                    one-active rule must still commit
 --   a_chain          the audit of the rating chain
---   d_demand         the demand view on its own, the shape scripts/autoscaler.sql reads
+--   d_demand         the demand view on its own, pair's CTEs without the pairing that follows
 --   s_history        a version's rating history
 --   s_match_change   a match's rating movements
 --

@@ -280,9 +280,14 @@ its next sign-in, so removing someone for good means removing their id too.
 - **Role passwords** (`RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD`) come from a secret store.
 - **`SOMA_ADMIN_GITHUB_IDS`** holds the owner's GitHub numeric id and nothing more. Empty, nobody
   can reach an admin page; every other admin is granted on the Users page.
-- **Scale runners on demand, never on queue depth**: pair caps the queue at `pair_depth_target`.
-  `scripts/autoscaler.sql` is pair's own demand CTEs plus the scaling arithmetic. `check-sql.sh`
-  prepares it AND asserts its CTE block is pair's, verbatim; its header lists the nine parameters.
+- **Scale runners on demand, never on queue depth.** Pair caps the queue at `pair_depth_target`, so
+  a scaler reading depth caps the fleet at `pair_depth_target` over a runner's lanes and looks
+  correct doing it. Demand is what pair itself reads (`sql/soma-clock-pair-run-demand.sql`): the
+  seats the roster wants, which LEAD the queue -- a runner is wanted before the rows it will claim
+  exist. The fleet is about `(demand + outstanding) / lanes`, where lanes is a runner's
+  `RUNNER_CRON_WORKERS`, plus one runner while the oldest `pending` row has waited too long. Count
+  only the live season's rows on its own `engine_digest`, or a rolling engine change asks for
+  runners to drain rows nothing will claim.
 - **Timeouts:** a channel's `timeout_ms` bounds a whole run (admit: 600 s for up to `admit_batch`
   submissions), `admit_timeout_s` (180 s) bounds this clock's hold on one submission before another
   run may re-claim it, and `admit_lease_s` (600 s) bounds an admitting runner's.
@@ -328,7 +333,6 @@ scripts/check-sql.sh        orion-server sql check, as each connector's role
 scripts/smoke.sh            every route, against a running stack
 scripts/verify/             run.sh (reads the shipped statements), statements.sql (only what does
                             NOT ship), scenario.sql, the race files
-scripts/autoscaler.sql      how many runners the ladder wants; its CTEs are pair's, diffed by check-sql.sh
 ```
 
 ## Invariants
@@ -352,8 +356,6 @@ scripts/autoscaler.sql      how many runners the ladder wants; its CTEs are pair
   once the ceiling is spent and the row has waited `refusal_grace_secs` since it was paired, and a
   refused trial spends no repair: it has a ceiling of its own, which rejects `RUNNER_UNAVAILABLE`,
   never `UNPLAYABLE`.
-- **The autoscaler counts demand exactly as pair does.** `check-sql.sh` compares its CTE block
-  against `sql/soma-clock-pair-run-demand.sql` and fails on a difference.
 - **A shape many routes return is defined once, in the migration** (`season_json`, `season_state`,
   `current_season`, `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`, the
   `season_admits*` predicates). A second copy is two pages that disagree.

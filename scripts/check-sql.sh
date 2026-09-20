@@ -104,43 +104,4 @@ END
 ROLLBACK;
 SQL
 
-# ---------------------------------------------------------------- the autoscaler's CTEs are pair's
-# scripts/autoscaler.sql is not shipped in the package: it is the query a scaler runs to decide how
-# many runners the ladder wants. Its answer is only meaningful if it counts demand the way PAIR
-# counts it, so its CTE block is pair's, verbatim, with a different final SELECT.
-#
-# A generator used to paste one into the other. The clocks are authored now, so the rule is checked:
-# a change to pair's demand statement is a change to both files. Pair's block closes its WITH with
-# `)`; the autoscaler's continues into `, q AS (`, which is the only difference allowed.
-echo "==> the autoscaler counts demand exactly as pair does"
-python3 - <<'CHECK'
-import difflib, pathlib, sys
-demand = pathlib.Path("sql/soma-clock-pair-run-demand.sql").read_text()
-auto = pathlib.Path("scripts/autoscaler.sql").read_text()
-if "\nSELECT json_build_object(" not in demand:
-    sys.exit("sql/soma-clock-pair-run-demand.sql: the final `SELECT json_build_object(` split point moved")
-for marker in ("WITH live AS (", "\n), q AS ("):
-    if marker not in auto:
-        sys.exit(f"scripts/autoscaler.sql: the `{marker.strip()}` split point moved")
-want = demand.split("\nSELECT json_build_object(")[0].rstrip().rstrip(")").rstrip()
-have = auto[auto.index("WITH live AS ("):auto.index("\n), q AS (")].rstrip()
-if want != have:
-    print("the autoscaler's CTEs are not pair's -- a change to one is a change to both:", file=sys.stderr)
-    for line in list(difflib.unified_diff(want.split("\n"), have.split("\n"),
-                                          "pair demand", "autoscaler", lineterm="", n=2))[:40]:
-        print("  " + line, file=sys.stderr)
-    sys.exit(1)
-CHECK
-
-# Held to the same schema as everything the package ships. `sql check` sees only the set, so this
-# one is prepared by hand against the same scratch schema.
-echo "==> preparing scripts/autoscaler.sql"
-psql "$DATABASE" -q -v ON_ERROR_STOP=1 > /dev/null <<SQL
-BEGIN;
-$(cat "$SCHEMA"/0001_init.sql "$SCHEMA"/0002_sessions.sql)
-PREPARE chk_autoscaler AS
-$(cat scripts/autoscaler.sql);
-ROLLBACK;
-SQL
-
 echo "==> all shipped SQL parses, plans and is within its role's grants"
