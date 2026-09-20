@@ -53,7 +53,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO models (owner_id, game_id, name) SELECT ($1)::uuid, g.id, btrim(($3)::text) FROM games g JOIN live_sessions ls ON ls.sid = ($4)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($2)::text AND btrim(($3)::text) <> '' AND length(btrim(($3)::text)) <= 64 AND (s.id IS NULL OR season_admits(s, ($1)::uuid)) AND (s.id IS NULL OR season_admits_entry(s, ($1)::uuid)) AND NOT EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($1)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))",
+          "query": { "$sql": "../sql/soma-models-create-insert.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.params.game" },
@@ -72,7 +72,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'name', btrim(($3)::text), 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'room', s.id IS NULL OR season_admits_entry(s, ($2)::uuid), 'entries_max', (s.rules -> 'entries' ->> 'max_per_user')::int, 'entries_used', (SELECT count(*) FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND e.retired_at IS NULL), 'name_taken', EXISTS (SELECT 1 FROM models e WHERE e.owner_id = ($2)::uuid AND e.game_id = g.id AND lower(e.name) = lower(btrim(($3)::text)))) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": { "$sql": "../sql/soma-models-create-why.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.auth.claims.sub" },
@@ -122,7 +122,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'versions', '[]'::json) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND lower(e.name) = lower(btrim(($3)::text))",
+          "query": { "$sql": "../sql/soma-models-create-fetch.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.params.game" },

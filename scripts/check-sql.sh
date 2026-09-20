@@ -1,84 +1,113 @@
 #!/usr/bin/env bash
-# PREPARE every statement the package ships, against a schema built from the migrations.
+# PREPARE every statement the package ships, against a schema built from the migrations, AS THE
+# ROLE ITS CONNECTOR CONNECTS AS.
 #
-#   soma/scripts/check-sql.sh            # needs the db container up
+#   soma/scripts/check-sql.sh
 #
-# Every endpoint's SQL is written inline in its workflow, so a schema change can break one silently:
-# the workflow still loads and the channel only fails when someone calls it. PREPARE resolves every
-# relation, column and function and builds a plan, so a typo, a dropped column or a renamed table
-# cannot survive it. It earned itself the day the match table became two tables, with two workflows
-# still selecting `matches.model_ids`.
+# `orion-server sql check` walks the set -- task groups included -- resolves each connector exactly
+# as the server does, builds a scratch schema from migrations/ in ONE TRANSACTION THAT IS ALWAYS
+# ROLLED BACK, and prepares every statement in its own savepoint. Nothing is executed: the sessions
+# are READ ONLY. On PostgreSQL 16+ it also plans each statement with EXPLAIN (GENERIC_PLAN), which
+# is what proves the role's table and column GRANTS.
 #
-# It walks INTO TASK GROUPS. The clocks' generator folds each run of tasks sharing a condition into
-# a group, and a walker that reads only the top-level list misses most of the clocks' statements.
+# THAT LAST PART IS NEW AND IT MATTERS MORE THAN THE REST. This script used to PREPARE everything as
+# the owner, and PREPARE never checks a privilege -- so a gate statement naming a column
+# `runner_gate` has no grant on passed here and failed on the next runner poll. `--role` is what
+# closes it: `soma-runner-db` is checked as `runner_gate`, which is the boundary with Kalam.
+#
+# IT NEEDS NO STACK, only a PostgreSQL 16+ server to build the scratch schema on, and it starts a
+# throwaway one when SQLCHECK_DATABASE does not name one. So this runs on a laptop with nothing up.
 #
 # What each statement DOES is scripts/verify/run.sh's walk; that a workflow answers at all is
 # scripts/smoke.sh.
 #
-#   DB_CONTAINER  the postgres container   (default tinybrains-db-1)
-#   DB_USER       its superuser            (default: read from the container)
+# `soma-db` is reported as "grants not proven", and that is correct rather than missing: it connects
+# as the schema's OWNER, which holds every grant by construction, so there is nothing a role check
+# could prove about it. The boundary worth proving is `runner_gate`'s, and that one is.
+#
+#   SQLCHECK_DATABASE   a PostgreSQL 16+ superuser URL. Unset starts and removes a container.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The clock workflows are generated and committed. A hand edit to one of them is caught here rather
-# than reverted by the next person who regenerates -- and it would be checked below as if it shipped.
-echo "==> the clock files match scripts/gen-clocks.py"
-python3 scripts/gen-clocks.py --check
+DATABASE="${SQLCHECK_DATABASE:-}"
+CONTAINER=""
+if [ -z "$DATABASE" ]; then
+  command -v docker > /dev/null || {
+    echo "set SQLCHECK_DATABASE to a PostgreSQL 16+ URL, or install docker to start one" >&2
+    exit 1
+  }
+  CONTAINER="soma-sqlcheck-$$"
+  PORT=$(( 15432 + (RANDOM % 1000) ))
+  echo "==> starting a throwaway postgres on :$PORT"
+  docker run -d --rm --name "$CONTAINER" -p "$PORT:5432" \
+    -e POSTGRES_PASSWORD=sqlcheck -e POSTGRES_DB=sqlcheck postgres:16-alpine > /dev/null
+  # shellcheck disable=SC2064
+  trap "docker rm -f '$CONTAINER' > /dev/null 2>&1 || true; rm -rf \"\${SCHEMA:-}\"" EXIT
+  DATABASE="postgres://postgres:sqlcheck@127.0.0.1:$PORT/sqlcheck"
+  for _ in $(seq 60); do
+    docker exec "$CONTAINER" pg_isready -U postgres -d sqlcheck > /dev/null 2>&1 && break
+    sleep 1
+  done
+fi
 
-DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
-DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
-SCRATCH=soma_sqlcheck
-SQL=$(mktemp)
-trap 'rm -f "$SQL"' EXIT
-psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
+# THE SCRATCH SCHEMA IS BUILT FROM A COPY WITH THE MIGRATIONS' OWN `BEGIN;`/`COMMIT;` REMOVED.
+# Each migration wraps itself so `bootstrap` applies it atomically through psql; `sql check` builds
+# the schema inside ONE transaction it always rolls back, and a `COMMIT` in the middle of that would
+# end it. The shipped files are not touched -- `bootstrap` hashes them byte for byte, comments
+# included, and refuses a database built from other bytes.
+SCHEMA=$(mktemp -d)
+[ -n "$CONTAINER" ] || trap 'rm -rf "$SCHEMA"' EXIT
+for f in migrations/*.sql; do
+  grep -vxE '\s*(BEGIN|COMMIT);\s*' "$f" > "$SCHEMA/$(basename "$f")"
+done
 
-psql -d postgres -q -v ON_ERROR_STOP=1 \
-    -c "DROP DATABASE IF EXISTS $SCRATCH" -c "CREATE DATABASE $SCRATCH" 2>/dev/null
-cat migrations/0001_init.sql migrations/0002_sessions.sql \
-    | psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1
+# --role: which role each connector's statements are prepared and planned as. `soma-db` is the
+# owner (the scratch database's own user); `soma-runner-db` is `runner_gate`, the narrow role the
+# gate's match statements run as, which the migration creates. THAT is the grant boundary with
+# Kalam, and this is the only check that proves it.
+echo "==> preparing every statement in the set"
+orion-server sql check . \
+  --schema "$SCHEMA" \
+  --database "$DATABASE" \
+  --role soma-runner-db=runner_gate
 
-# Parameter types are left to Postgres: every statement writes its placeholders as ($1)::type, so
-# inference has what it needs -- and a statement that stopped doing that would be ambiguous to the
-# server too, which is worth failing on.
-python3 - workflows/*.json > "$SQL" <<'PY'
-import json, sys
+# ---------------------------------------------------------------- the autoscaler's CTEs are pair's
+# scripts/autoscaler.sql is not shipped in the package: it is the query a scaler runs to decide how
+# many runners the ladder wants. Its answer is only meaningful if it counts demand the way PAIR
+# counts it, so its CTE block is pair's, verbatim, with a different final SELECT.
+#
+# A generator used to paste one into the other. The clocks are authored now, so the rule is checked:
+# a change to pair's demand statement is a change to both files. Pair's block closes its WITH with
+# `)`; the autoscaler's continues into `, q AS (`, which is the only difference allowed.
+echo "==> the autoscaler counts demand exactly as pair does"
+python3 - <<'CHECK'
+import difflib, pathlib, sys
+demand = pathlib.Path("sql/tb-pair-run-demand.sql").read_text()
+auto = pathlib.Path("scripts/autoscaler.sql").read_text()
+if "\nSELECT json_build_object(" not in demand:
+    sys.exit("sql/tb-pair-run-demand.sql: the final `SELECT json_build_object(` split point moved")
+for marker in ("WITH live AS (", "\n), q AS ("):
+    if marker not in auto:
+        sys.exit(f"scripts/autoscaler.sql: the `{marker.strip()}` split point moved")
+want = demand.split("\nSELECT json_build_object(")[0].rstrip().rstrip(")").rstrip()
+have = auto[auto.index("WITH live AS ("):auto.index("\n), q AS (")].rstrip()
+if want != have:
+    print("the autoscaler's CTEs are not pair's -- a change to one is a change to both:", file=sys.stderr)
+    for line in list(difflib.unified_diff(want.split("\n"), have.split("\n"),
+                                          "pair demand", "autoscaler", lineterm="", n=2))[:40]:
+        print("  " + line, file=sys.stderr)
+    sys.exit(1)
+CHECK
 
-def statements(tasks):
-    """Every query in the list, descending into task groups."""
-    for task in tasks:
-        yield from statements(task.get("tasks", []))
-        query = task.get("function", {}).get("input", {}).get("query")
-        if query:
-            yield task["id"], query
-
-# Orion caps a workflow description at 2048 characters and refuses the create past it. Lint says
-# so too, but it is cheaper to fail here, beside the statements, than halfway through an apply.
-long_descriptions = []
-n = 0
-for path in sys.argv[1:]:
-    doc = json.load(open(path))
-    if len(doc.get("description", "")) > 2048:
-        long_descriptions.append((path, len(doc["description"])))
-    for task_id, query in statements(doc.get("tasks", [])):
-        n += 1
-        name = f"chk_{doc['workflow_id'].replace('-', '_')}_{task_id.replace('.', '_')}"
-        print(rf"\echo '  {doc['workflow_id']} / {task_id}'")
-        print(f"PREPARE {name} AS {query};")
-print(rf"\echo '-- {n} statements'")
-for path, length in long_descriptions:
-    print(f"  {path}: description is {length} characters, Orion's limit is 2048", file=sys.stderr)
-if long_descriptions:
-    sys.exit(f"==> {len(long_descriptions)} workflow description(s) too long")
-PY
-
-echo "==> preparing every query in workflows/*.json"
-psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1 < "$SQL"
-
-# Not shipped in the package, but generated from pair's demand statement for an autoscaler to run,
-# so it is held to the same schema.
+# Held to the same schema as everything the package ships. `sql check` sees only the set, so this
+# one is prepared by hand against the same scratch schema.
 echo "==> preparing scripts/autoscaler.sql"
-{ printf 'PREPARE chk_autoscaler AS\n'; cat scripts/autoscaler.sql; printf ';\n'; } \
-    | psql -d "$SCRATCH" -q -v ON_ERROR_STOP=1
+psql "$DATABASE" -q -v ON_ERROR_STOP=1 > /dev/null <<SQL
+BEGIN;
+$(cat "$SCHEMA"/0001_init.sql "$SCHEMA"/0002_sessions.sql)
+PREPARE chk_autoscaler AS
+$(cat scripts/autoscaler.sql);
+ROLLBACK;
+SQL
 
-psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH"
-echo "==> all shipped SQL parses and plans against the current schema"
+echo "==> all shipped SQL parses, plans and is within its role's grants"

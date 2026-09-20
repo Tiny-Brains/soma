@@ -4,20 +4,19 @@
 #
 #   ./scripts/check-defs.sh
 #
-# Three gates, and they do not overlap:
+# Two gates, and between them they are everything:
 #
-#   lint     the set resolves -- every reference, every function input schema, every declared
-#            env var. `--deny-warnings` because a warning here is a definition that will not
-#            behave as written.
-#   clippy   what lint cannot prove but can be certain of: a run of steps repeating one
-#            condition, an object copied across the set, an input key the function ignores.
-#            An ignored input key is silent at run time and a whole feature stops working, which
-#            is why it runs with --deny-warnings.
-#   fmt      the house style, so a diff is the change and not a reformat -- over the generated
-#            clock files too, which the generator formats as it writes them.
+#   clippy   RUNS LINT'S GATE FIRST -- the set resolves, every reference, every function input
+#            schema, every declared env var -- and stops on it ("N lint error(s) -- fix those
+#            first; clippy's rules did not run"). So `lint` is not run separately: it would be the
+#            same work twice. Then clippy's own rules: what lint cannot prove but can be certain
+#            of -- a run of steps repeating one condition, an object copied across the set, an
+#            input key the function ignores. An ignored input key is silent at run time and a
+#            whole feature stops working, which is why it is --deny-warnings.
+#   fmt      the house style, so a diff is the change and not a reformat.
 #
-# Before all three, the clocks' channels and workflows must equal what scripts/gen-clocks.py
-# generates: they are committed, and a hand edit is reverted by the next person who regenerates.
+# clippy runs TWICE, and the second run is not a repeat: three rules say nothing without the
+# serving config, and "said nothing" reads exactly like "found nothing".
 #
 # What this does NOT check is whether the SQL inside those definitions resolves against the
 # schema -- that is ./scripts/check-sql.sh, which needs the database -- or the plugins' arithmetic,
@@ -26,40 +25,37 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 command -v orion-server > /dev/null || {
-  echo "orion-server is not on PATH -- this repo is an Orion 1.8.1 package and the binary is its compiler" >&2
+  echo "orion-server is not on PATH -- this repo is an Orion package and the binary is its compiler" >&2
   exit 1
 }
 
-have=$(orion-server --version | head -1 | awk '{print $2}')
-case "$have" in
-  1.8.*) ;;
-  *) echo "orion-server $have is not 1.8.x: it does not understand this package's blocks and will report misleading schema errors" >&2; exit 1 ;;
-esac
+# WHICH orion-server is not asked here. shared/package.json declares `requires.orion`, and lint,
+# clippy, fmt and compile each check the running binary against it before anything else -- one
+# declaration instead of a version test per script, and it travels with the package to `apply`.
 
-echo "==> the clock files match scripts/gen-clocks.py"
-python3 scripts/gen-clocks.py --check
-
-echo "==> lint"
-orion-server lint . --deny-warnings
-
-echo "==> clippy"
-orion-server clippy . --deny-warnings 
+echo "==> clippy (lint's gate, then the rules that need no config)"
+orion-server clippy . --deny-warnings
 
 echo "==> fmt"
 orion-server fmt --check .
 
-# ---------------------------------------------------------------- the one-character check
-# `auth.source.scheme` IS A LITERAL PREFIX AND THE TRAILING SPACE BELONGS TO IT. Orion strips
-# exactly that string, so "Bearer" leaves a leading space on the token and refuses EVERY runner
-# with a bare 401 -- the same code as an absent, expired, revoked or wrong-audience token.
+# ---------------------------------------------------------------- the serving config's rules
+# Three clippy rules need the config the node will actually serve with, because what they prove is
+# a definition against a setting: a `[vars]` name nothing declares, a `secret` nothing supplies,
+# and a `model_infer` deadline `[models]` would silently clamp. Without -c they are SKIPPED, which
+# reads as a pass -- so they are run again here against the template the image ships.
 #
-# NOTHING ABOVE CATCHES IT. "Bearer" is a valid string, so lint, clippy and fmt all pass; the
-# smoke checks that assert 401 on the runner routes stay green because they are getting the 401
-# they asked for; and a replica goes on minting tokens and claiming nothing, which on the admin
-# Runners screen reads as "calling in" with nothing played. It has been lost twice now -- once by
-# being typed without the space, once to a `git checkout` of a fix that was not committed yet --
-# and the second time it stopped a live fleet for eleven minutes. Hence a check that costs nothing.
-echo "==> the Bearer scheme keeps its trailing space"
-python3 scripts/check-auth-scheme.py
+# STAND-IN VALUES FOR WHAT THE TEMPLATE REQUIRES: the two `${NAME:?message}` placeholders and the
+# two `env://` references the config itself resolves. `${NAME:?message}` stops a boot when the
+# variable is unset or empty, which is what it is for -- and this is a static check, not a boot, so
+# it supplies something shaped right and obviously fake. Everything else in the template has a
+# default. Note that a variable named only in a COMMENT is NOT required: Orion skips the file's
+# comments when it substitutes, so the prose here can spell a form out without demanding it.
+echo "==> clippy against the shipped instance config"
+ORION_ADMIN_KEY=check-defs-not-a-key \
+TB_TRUST_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI= \
+ORION_STATE_DB_URL=postgres://check-defs/orion_state \
+REDIS_URL=redis://check-defs:6379/0 \
+  orion-server clippy . -c docker/soma.toml.tmpl --deny-warnings
 
 echo "==> Soma's definitions are clean"

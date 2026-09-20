@@ -1,0 +1,65 @@
+WITH ctx AS (
+    SELECT g.id AS game_id, g.slug, s.id AS season_id, s.slug AS season_slug, s.name AS season_name,
+        s.submissions_open_at, s.submissions_close_at, CASE
+    WHEN s.id IS NOT NULL THEN season_state(s)
+    END AS state, (s.id IS NOT NULL
+        AND now() >= s.submissions_open_at
+        AND now() < s.submissions_close_at) AS season_open, (s.id IS NOT NULL
+        AND season_admits(s, ($2)::uuid)) AS participant, (SELECT json_build_object('model_id', e.id,
+                'model', e.name, 'retired', e.retired_at IS NOT NULL, 'next_version', (SELECT coalesce(max(v.version),
+                        0) + 1
+                FROM model_versions v
+                WHERE v.model_id = e.id), 'in_flight', (SELECT json_build_object('version_id', f.id,
+                        'version', f.version, 'phase', model_phase(f))
+                FROM model_versions f
+                WHERE f.model_id = e.id
+                AND f.status IN ('testing', 'verified')), 'cooldown_until', season_cooldown_until(s,
+                    e.id), 'versions_ok', s.id IS NULL
+            OR season_admits_version(s, ($2)::uuid, e.id))
+        FROM models e
+        WHERE e.game_id = g.id
+        AND e.owner_id = ($2)::uuid
+        AND e.id = ($3)::uuid) AS model, (SELECT coalesce(json_agg(json_build_object('model_id', e.id,
+                        'model', e.name, 'retired', e.retired_at IS NOT NULL)
+                ORDER BY e.name), '[]'::json)
+        FROM models e
+        WHERE e.game_id = g.id
+        AND e.owner_id = ($2)::uuid) AS models, (s.id IS NULL
+        OR season_admits_entry(s, ($2)::uuid)) AS may_add_model, (s.id IS NULL
+        OR season_admits_in_flight(s, ($2)::uuid)) AS in_flight_ok, (SELECT count(*)
+        FROM model_versions f
+        JOIN models fe ON fe.id = f.model_id
+        WHERE fe.owner_id = ($2)::uuid
+        AND fe.game_id = g.id
+        AND f.status IN ('testing', 'verified')) AS in_flight_used, (s.rules -> 'entries' ->> 'in_flight_max')::int
+        AS in_flight_max, (s.rules -> 'entries' ->> 'max_per_user')::int AS entries_max, (SELECT count(*)
+        FROM models e
+        WHERE e.owner_id = ($2)::uuid
+        AND e.game_id = g.id
+        AND e.retired_at IS NULL) AS entries_used
+    FROM games g
+    LEFT JOIN seasons s ON s.game_id = g.id
+    AND s.closed_at IS NULL
+    WHERE g.slug = ($1)::text )
+SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'season', CASE
+        WHEN ctx.season_id IS NULL THEN NULL
+        ELSE json_build_object( 'slug', ctx.season_slug, 'name', ctx.season_name, 'state', ctx.state,
+                'submissions_open_at', ctx.submissions_open_at, 'submissions_close_at', ctx.submissions_close_at)
+        END, 'participant', ctx.participant, 'models', ctx.models, 'model', ctx.model, 'may_add_model',
+            ctx.may_add_model, 'entries_used', ctx.entries_used, 'entries_max', ctx.entries_max, 'in_flight_used',
+            ctx.in_flight_used, 'in_flight_max', ctx.in_flight_max, 'refusal', CASE
+        WHEN NOT ctx.season_open THEN 'season_not_open'
+        WHEN NOT ctx.participant THEN 'not_a_participant'
+        WHEN ($3)::text IS NOT NULL
+        AND ctx.model IS NULL THEN 'unknown_model'
+        WHEN (ctx.model ->> 'retired')::bool THEN 'model_retired'
+        WHEN ctx.model -> 'in_flight' IS NOT NULL
+        AND jsonb_typeof((ctx.model -> 'in_flight')::jsonb) <> 'null' THEN 'version_in_flight'
+        WHEN NOT ctx.in_flight_ok THEN 'too_many_in_flight'
+        WHEN NOT coalesce((ctx.model ->> 'versions_ok')::bool, true) THEN 'too_many_versions'
+        WHEN (ctx.model ->> 'cooldown_until')::timestamptz > now() THEN 'cooling_down'
+        END)
+    FROM ctx) AS body
+FROM live_sessions ls
+WHERE ls.sid = ($4)::uuid
+AND ls.user_id = ($2)::uuid

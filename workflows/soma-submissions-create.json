@@ -47,7 +47,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO model_versions (model_id, game_id, season_id, version, weights_hash, manifest_hash) SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($5)::text, ($6)::text FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL AND s.submissions_open_at <= now() AND now() < s.submissions_close_at JOIN models e ON e.game_id = g.id AND e.owner_id = ($1)::uuid AND e.retired_at IS NULL AND e.id = ($3)::uuid JOIN live_sessions ls ON ls.sid = ($4)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN model_versions v ON v.model_id = e.id WHERE g.slug = ($2)::text AND season_admits(s, ($1)::uuid) AND season_admits_weights(s, ($1)::uuid, ($5)::text, e.id) AND season_admits_in_flight(s, ($1)::uuid) AND season_admits_version(s, ($1)::uuid, e.id) AND season_admits_cooldown(s, e.id) AND NOT EXISTS (SELECT 1 FROM model_versions f WHERE f.model_id = e.id AND f.status IN ('testing', 'verified')) GROUP BY e.id, g.id, s.id",
+          "query": { "$sql": "../sql/soma-submissions-create-insert.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "data.req.game" },
@@ -68,7 +68,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object( 'season', s.slug, 'state', CASE WHEN s.id IS NOT NULL THEN season_state(s) END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at, 'model', (SELECT json_build_object('model_id', e.id, 'model', e.name, 'retired', e.retired_at IS NOT NULL) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND e.id = ($4)::uuid), 'participant', s.id IS NULL OR season_admits(s, ($2)::uuid), 'in_flight', coalesce((SELECT json_agg(json_build_object('version_id', f.id, 'model_id', f.model_id, 'model', fe.name, 'version', f.version, 'phase', model_phase(f)) ORDER BY fe.name) FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.owner_id = ($2)::uuid AND fe.game_id = g.id AND f.status IN ('testing', 'verified')), '[]'::json), 'same_submission', EXISTS (SELECT 1 FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.game_id = g.id AND fe.owner_id = ($2)::uuid AND fe.id = ($4)::uuid AND f.status = 'testing' AND f.weights_hash = ($3)::text AND f.manifest_hash = ($5)::text), 'entry_in_flight', EXISTS (SELECT 1 FROM model_versions f JOIN models fe ON fe.id = f.model_id WHERE fe.game_id = g.id AND fe.owner_id = ($2)::uuid AND fe.id = ($4)::uuid AND f.status IN ('testing', 'verified')), 'in_flight_ok', s.id IS NULL OR season_admits_in_flight(s, ($2)::uuid), 'versions_ok', s.id IS NULL OR (SELECT season_admits_version(s, ($2)::uuid, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND e.id = ($4)::uuid), 'cooldown_until', (SELECT season_cooldown_until(s, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND e.id = ($4)::uuid), 'unique_weights_scope', coalesce(s.rules -> 'unique_weights' ->> 'scope', 'game'), 'unique_weights', s.id IS NULL OR (SELECT season_admits_weights(s, ($2)::uuid, ($3)::text, e.id) FROM models e WHERE e.game_id = g.id AND e.owner_id = ($2)::uuid AND e.id = ($4)::uuid)) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL WHERE g.slug = ($1)::text",
+          "query": { "$sql": "../sql/soma-submissions-create-why.sql" },
           "params": [
             { "var": "data.req.game" },
             { "var": "metadata.auth.claims.sub" },
@@ -174,7 +174,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('version_id', v.id, 'model_id', e.id, 'model', e.name, 'version', v.version, 'status', v.status, 'season', se.slug, 'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash) AS body FROM model_versions v JOIN models e ON e.id = v.model_id JOIN games g ON g.id = e.game_id JOIN seasons se ON se.id = v.season_id AND se.closed_at IS NULL JOIN live_sessions s ON s.sid = ($4)::uuid AND s.user_id = e.owner_id WHERE e.owner_id = ($1)::uuid AND g.slug = ($2)::text AND e.id = ($3)::uuid AND v.status = 'testing' AND v.weights_hash = ($5)::text",
+          "query": { "$sql": "../sql/soma-submissions-create-fetch.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "data.req.game" },

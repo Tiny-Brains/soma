@@ -65,7 +65,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE notifications n SET read_at = now() FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid AND n.user_id = ls.user_id AND n.read_at IS NULL AND (($4)::text IS NULL OR n.category = ($4)::text) AND (($3)::boolean OR n.id IN (SELECT x::uuid FROM jsonb_array_elements_text( CASE WHEN jsonb_typeof(($5)::jsonb) = 'array' THEN ($5)::jsonb ELSE '[]'::jsonb END) AS x WHERE x ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))",
+          "query": { "$sql": "../sql/soma-me-notifications-read-mark.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },
@@ -84,7 +84,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT ls.sid AS session_ok, (($3)::text IS NULL OR notification_category_ok(($3)::text)) AS category_ok, (SELECT json_agg(sp.category ORDER BY sp.ord) FROM notification_category_spec() sp) AS categories, json_build_object('unread', (SELECT count(*) FROM notifications n WHERE n.user_id = ls.user_id AND n.read_at IS NULL)) AS body FROM live_sessions ls WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid",
+          "query": { "$sql": "../sql/soma-me-notifications-read-read.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },

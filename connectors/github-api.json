@@ -5,7 +5,7 @@
   "tags": ["pkg:soma"],
   "config": {
     "type": "http",
-    "url": "https://api.github.com",
+    "url": "env://GITHUB_API_BASE",
     "headers": { "accept": "application/vnd.github+json", "user-agent": "soma" },
     "retry": { "max_retries": 2, "retry_delay_ms": 500 }
   }

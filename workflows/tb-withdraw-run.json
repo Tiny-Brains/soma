@@ -12,7 +12,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE matches m SET status = 'cancelled', closed_at = now(), withdrawn_reason = CASE WHEN s.closed_at IS NOT NULL THEN 'SEASON_CLOSED' WHEN m.engine_digest <> s.engine_digest THEN 'ENGINE_RETIRED' ELSE (SELECT CASE v.status WHEN 'superseded' THEN 'SUPERSEDED' WHEN 'rejected' THEN 'REJECTED' WHEN 'disabled' THEN 'BASELINE_DISABLED' ELSE 'SEAT_LEFT' END FROM match_seats st JOIN model_versions v ON v.id = st.version_id WHERE st.match_id = m.id AND NOT (v.status = 'active' OR (v.status = 'verified' AND v.id = m.trial_version_id)) ORDER BY st.seat LIMIT 1) END, successor_version_id = (SELECT succ.id FROM match_seats st JOIN model_versions gone ON gone.id = st.version_id AND gone.status = 'superseded' JOIN model_versions succ ON succ.model_id = gone.model_id AND succ.season_id = gone.season_id AND succ.status = 'active' WHERE st.match_id = m.id ORDER BY st.seat LIMIT 1) FROM seasons s WHERE s.id = m.season_id AND m.status = 'pending' AND (s.closed_at IS NOT NULL OR m.engine_digest <> s.engine_digest OR EXISTS (SELECT 1 FROM match_seats st JOIN model_versions v ON v.id = st.version_id WHERE st.match_id = m.id AND NOT (v.status = 'active' OR (v.status = 'verified' AND v.id = m.trial_version_id))))",
+          "query": { "$sql": "../sql/tb-withdraw-run-sweep.sql" },
           "params": [],
           "output": "temp_data.swept"
         }
@@ -25,7 +25,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT id FROM games WHERE slug = ($1)::text",
+          "query": { "$sql": "../sql/tb-shared-game.sql" },
           "params": [{ "var": "metadata.vars.game" }],
           "output": "temp_data.game"
         }
@@ -38,7 +38,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "WITH live AS ( SELECT s.id FROM seasons s WHERE s.game_id = ($1)::uuid AND s.closed_at IS NULL AND (s.close_requested_at IS NOT NULL OR (s.submissions_close_at <= now() AND coalesce(s.rules -> 'closure' ->> 'policy', 'settle') <> 'admin' AND ( (coalesce(s.rules -> 'closure' ->> 'policy', 'settle') = 'deadline' AND s.submissions_close_at + make_interval(days => coalesce((s.rules -> 'closure' ->> 'settle_grace_days')::int, 0)) <= now()) OR ( NOT EXISTS (SELECT 1 FROM model_versions v WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')) AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.season_id = s.id AND m.status NOT IN ('rated', 'cancelled', 'failed')) AND NOT EXISTS (SELECT 1 FROM model_versions v LEFT JOIN ratings r ON r.version_id = v.id LEFT JOIN LATERAL ( SELECT count(*) AS n FROM model_versions o WHERE o.season_id = v.season_id AND o.status = 'active' AND o.weight_class = v.weight_class AND o.id <> v.id ) reach ON true WHERE v.season_id = s.id AND v.status = 'active' GROUP BY v.id HAVING count(r.version_id) = 0 OR max(r.sigma) FILTER (WHERE r.ladder = 'open' OR reach.n > 0) > coalesce((s.rules -> 'rating' ->> 'settled_sigma')::float8, ($2)::float8) OR min(r.matches_played) FILTER (WHERE r.ladder = 'open' OR reach.n > 0) < coalesce((s.rules -> 'pairing' ->> 'burst')::int, ($3)::int)))))) ), closed AS ( UPDATE seasons s SET closed_at = now() FROM live WHERE s.id = live.id RETURNING s.id ), rejected AS ( UPDATE model_versions md SET status = 'rejected', reject_reason = 'SEASON_CLOSED' FROM closed WHERE md.season_id = closed.id AND md.status IN ('testing', 'verified') RETURNING md.id ), withdrawn AS ( UPDATE matches m SET status = 'cancelled', withdrawn_reason = 'SEASON_CLOSED', closed_at = now() FROM closed WHERE m.season_id = closed.id AND m.status = 'pending' RETURNING m.id ) UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now() FROM closed WHERE c.key = 'roster'",
+          "query": { "$sql": "../sql/tb-withdraw-run-close.sql" },
           "params": [
             { "var": "temp_data.game.0.id" },
             { "var": "metadata.vars.settled_sigma" },
@@ -57,7 +57,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "WITH closed AS ( SELECT s.id, s.slug AS season, s.name AS season_name, g.slug FROM seasons s JOIN games g ON g.id = s.game_id WHERE s.game_id = ($1)::uuid AND s.closed_at IS NOT NULL ORDER BY s.closed_at DESC LIMIT 1 ), standing AS ( SELECT f.owner_id, min(f.rank) AS rank, max(f.field) AS field FROM (SELECT lf.owner_id, row_number() OVER (ORDER BY lf.conservative DESC, lf.version_id) AS rank, count(*) OVER () AS field FROM closed, ladder_field(closed.id, 'open') lf) f GROUP BY f.owner_id ), entrants AS ( SELECT DISTINCT e.owner_id FROM closed JOIN model_versions v ON v.season_id = closed.id JOIN models e ON e.id = v.model_id ) INSERT INTO notifications (user_id, category, kind, tone, subject, description, link, game, season, data, dedupe_key) SELECT en.owner_id, 'season', 'season', 'info', closed.season_name || ' has closed', CASE WHEN st.rank IS NULL THEN 'The final standings are in.' ELSE 'You finished ' || (st.rank)::text || CASE WHEN (st.rank) % 100 IN (11, 12, 13) THEN 'th' WHEN (st.rank) % 10 = 1 THEN 'st' WHEN (st.rank) % 10 = 2 THEN 'nd' WHEN (st.rank) % 10 = 3 THEN 'rd' ELSE 'th' END || ' of ' || st.field || ' on the open ladder.' END, '/leaderboard?season=' || closed.season, closed.slug, closed.season, jsonb_strip_nulls(jsonb_build_object('rank', st.rank, 'of', st.field, 'ladder', 'open')), 'season-closed:' || closed.id FROM closed CROSS JOIN entrants en LEFT JOIN standing st ON st.owner_id = en.owner_id WHERE notification_wanted(en.owner_id, 'season') ON CONFLICT (user_id, dedupe_key) DO NOTHING",
+          "query": { "$sql": "../sql/tb-withdraw-run-notify_closed.sql" },
           "params": [{ "var": "temp_data.game.0.id" }],
           "output": "temp_data.notified_closed"
         }

@@ -3,5 +3,10 @@
   "name": "soma-cache",
   "connector_type": "cache",
   "tags": ["pkg:soma"],
-  "config": { "type": "cache", "backend": "redis", "url": "redis://redis:6379/1" }
+  "config": {
+    "type": "cache",
+    "backend": "redis",
+    "url": "env://SOMA_CACHE_URL",
+    "allow_private_urls": true
+  }
 }

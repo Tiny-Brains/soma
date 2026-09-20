@@ -16,7 +16,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE models e SET name = coalesce(btrim(($4)::text), e.name), retired_at = CASE WHEN ($5)::bool IS NULL THEN e.retired_at WHEN ($5)::bool THEN coalesce(e.retired_at, now()) ELSE NULL END FROM live_sessions ls WHERE ls.sid = ($3)::uuid AND ls.user_id = ($2)::uuid AND e.owner_id = ($2)::uuid AND e.id = ($1)::uuid AND (($4)::text IS NULL OR (btrim(($4)::text) <> '' AND length(btrim(($4)::text)) <= 64 AND NOT EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($4)::text)))))",
+          "query": { "$sql": "../sql/soma-models-update-edit.sql" },
           "params": [
             { "var": "metadata.params.id" },
             { "var": "metadata.auth.claims.sub" },
@@ -36,7 +36,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'name_taken', ($2)::text IS NOT NULL AND EXISTS (SELECT 1 FROM models o WHERE o.owner_id = e.owner_id AND o.game_id = e.game_id AND o.id <> e.id AND lower(o.name) = lower(btrim(($2)::text)))) AS body FROM models e WHERE e.id = ($1)::uuid AND e.owner_id = ($3)::uuid",
+          "query": { "$sql": "../sql/soma-models-update-why.sql" },
           "params": [
             { "var": "metadata.params.id" },
             { "var": "data.req.name" },
@@ -87,7 +87,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT json_build_object('model_id', e.id, 'model', e.name, 'game', g.slug, 'owner', u.handle, 'created_at', e.created_at, 'retired', e.retired_at IS NOT NULL, 'retired_at', e.retired_at) AS body FROM models e JOIN games g ON g.id = e.game_id JOIN users u ON u.id = e.owner_id WHERE e.id = ($1)::uuid AND e.owner_id = ($2)::uuid",
+          "query": { "$sql": "../sql/soma-models-update-read.sql" },
           "params": [{ "var": "metadata.params.id" }, { "var": "metadata.auth.claims.sub" }],
           "output": "temp_data.rows"
         }

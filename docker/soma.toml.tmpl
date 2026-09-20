@@ -1,10 +1,11 @@
 # Orion config for the SOMA unit: the REST surface, the runner gate and the four clocks, in cluster mode.
-# Requires 1.8.1. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
+# Requires 1.9.0. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
 # kalam's docker/runner.toml.tmpl.
 #
 # ${NAME:-default} is substituted by orion-server from the container's environment before the file
 # is parsed, so one image serves every environment and nothing is written to disk. Credentials are
-# env:// references the server resolves itself, after parsing.
+# env:// references the server resolves itself, after parsing. A ${NAME:?why} stops the boot with
+# that sentence when NAME is unset OR empty, and the three forms nest.
 #
 # Values that must agree with kalam's runner.toml.tmpl (model_prefix, orion_version) are asserted by
 # web's scripts/check/configs.sh.
@@ -76,6 +77,12 @@ season_gap_days    = ${SEASON_GAP_DAYS:-1}
 # register. Everyone else is promoted and demoted by an admin through PATCH /v1/admin/users/{id}.
 # entrypoint.sh refuses anything but digits and commas, so a pasted login fails at boot.
 admin_github_ids   = "${SOMA_ADMIN_GITHUB_IDS:-}"
+# MAY A CONNECTOR DIAL A PRIVATE ADDRESS. Orion's SSRF guard refuses a host that resolves to one,
+# which both localhost:5432 and a compose service name like db:5432 are -- so a local stack needs
+# this on and a deployment with a managed database does not. Every connector but soma-cache reads
+# it as `var://allow_private_urls`; until Orion 1.9.0 a boolean could not be a reference and this
+# was written into a staged copy of the package at load time instead.
+allow_private_urls = ${SOMA_ALLOW_PRIVATE_URLS:-false}
 
 # ------------------------------------------------------------------------------- CLOCKS
 # Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here
@@ -136,7 +143,7 @@ model_prefix = "tb.v"
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
 # a different thing that moves for different reasons. AN ADMITTING RUNNER MUST RUN THIS ONE: the
 # admission claim refuses any other, because the stats a verdict is judged on are its Orion's.
-orion_version = "${ORION_VERSION:-1.8.1}"
+orion_version = "${ORION_VERSION:-1.9.0}"
 
 # ADMISSION. The admit clock prepares up to admit_batch submissions a tick and holds each for
 # admit_timeout_s; the model itself is admitted on an ADMITTING RUNNER (kalam, RUNNER_ROLE=admit),
@@ -233,16 +240,13 @@ renew_every_n_turns = 30
 # from the signed URL and re-prefixes with `kalam-blobs-put`'s own. THOSE TWO MUST BE THE SAME
 # ADDRESS, which is why the gate sends it rather than the runner holding a private copy.
 replay_prefix = "replays"
-#
-# NO NESTED DEFAULT: `${A:-${B}}` leaves a literal `}` on the value here, which is how a runner came
-# to be registered as `kalam-2}` an hour before this line was written. Compose supplies the value.
 blob_endpoint = "${RUNNER_BLOB_ENDPOINT:-http://minio:9000}"
 
 # An entry is the key or `sha256:<64 hex>` of it, so a deployment keeps the digest in config and
 # the key in its secret store. The list exists for zero-downtime rotation.
 [admin_auth]
 enabled = true
-api_keys = ["${ORION_ADMIN_KEY}"]
+api_keys = ["${ORION_ADMIN_KEY:?this node's admin key; the package is applied over it}"]
 
 # NO MODEL RUNS ON THIS NODE. Admission registers, admits and probes a submission on an ADMITTING
 # RUNNER (kalam, RUNNER_ROLE=admit), and matches are played on runners, so the node that serves the
@@ -252,6 +256,28 @@ api_keys = ["${ORION_ADMIN_KEY}"]
 [models]
 enabled = false
 
+# THIS NODE APPLIES ITS OWN PACKAGE, and answers /readyz 503 until it is serving (Orion #345).
+# entrypoint.sh compiles the set this image carries into the artifact named here, before it execs
+# the server; the server stages it, activates it in dependency order, reloads once and only then
+# reports ready. Any failure -- a file that is not there, a lint error, a refused import, a member
+# the reload quarantines -- stops the node non-zero.
+#
+# THAT IS THE WHOLE OF WHAT USED TO BE A SELF-LOAD FORK: wait for /readyz, run a loader over the
+# admin API, read /health back for plugins and quarantines, `kill -TERM 1` on anything wrong. The
+# failure it existed for -- a node answering ready while serving no route and no clock, which reads
+# as healthy capacity and does nothing -- is now the server's own invariant.
+#
+# `apply` is idempotent by content, so a restart on the same image writes nothing and every node of
+# a cluster may list it; one node per package applies and the others wait on its receipt. It does
+# NOT prune: a release that DROPS a channel, workflow, connector or plugin needs one
+# `scripts/load-package.sh --prune` against the cluster, which is a deliberate step and not a boot.
+[packages]
+apply = ["${SOMA_ARTIFACT:-/var/lib/orion/soma.package.json}"]
+# The detached Ed25519 signatures, attached to each plugin in memory as the artifact is applied --
+# the artifact, its version and its hash do not move. A signature belongs to whoever holds the
+# trust key, not to the package, which ships as an image several deployments share.
+signatures_dir = "${PLUGIN_SIG_DIR:-/sig}"
+
 [plugins]
 enabled = true
 
@@ -259,7 +285,7 @@ enabled = true
 # the unchecked node is the one nobody remembers. Minted by scripts/setup/trust-keygen.sh, applied
 # by scripts/setup/sign-plugins.sh.
 [plugins.trust]
-public_keys = ["${TB_TRUST_PUBLIC_KEY}"]
+public_keys = ["${TB_TRUST_PUBLIC_KEY:?the Ed25519 trust root; web/scripts/setup/trust-keygen.sh mints one}"]
 
 [cron]
 # An INNER deadline under server.shutdown_force_timeout_secs, so it can only make the wait shorter.

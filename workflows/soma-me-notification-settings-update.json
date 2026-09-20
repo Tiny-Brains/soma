@@ -59,7 +59,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "INSERT INTO notification_settings AS ns (user_id, category, app, push, level, updated_at) SELECT ls.user_id, cur.category, coalesce(($4)::boolean, cur.app), coalesce(($5)::boolean, cur.push), CASE WHEN sp.levels IS NOT NULL THEN coalesce(($6)::text, cur.level) END, now() FROM live_sessions ls JOIN LATERAL notification_settings_of(ls.user_id) cur ON cur.category = ($3)::text JOIN notification_category_spec() sp ON sp.category = cur.category WHERE ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid AND NOT (sp.locked AND ($4)::boolean IS FALSE) AND (($6)::text IS NULL OR ($6)::text = ANY (sp.levels)) ON CONFLICT (user_id, category) DO UPDATE SET app = coalesce(($4)::boolean, ns.app), push = coalesce(($5)::boolean, ns.push), level = CASE WHEN ns.level IS NULL THEN NULL ELSE coalesce(($6)::text, ns.level) END, updated_at = now()",
+          "query": { "$sql": "../sql/soma-me-notification-settings-update-update.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },
@@ -80,7 +80,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT ls.sid AS session_ok, json_build_object('category', ($3)::text, 'known', sp.category IS NOT NULL, 'receivable', cur.category IS NOT NULL, 'locked', coalesce(sp.locked, false), 'levels', sp.levels) AS body FROM (SELECT 1) AS one LEFT JOIN live_sessions ls ON ls.sid = ($2)::uuid AND ls.user_id = ($1)::uuid LEFT JOIN notification_category_spec() sp ON sp.category = ($3)::text LEFT JOIN LATERAL notification_settings_of(ls.user_id) cur ON cur.category = sp.category",
+          "query": { "$sql": "../sql/soma-me-notification-settings-update-why.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },

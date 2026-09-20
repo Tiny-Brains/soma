@@ -7,11 +7,11 @@
 #                     seasons, their boards and baselines, and runner keys are made on the admin
 #                     pages, and no image carries a model
 #
-# THE PACKAGE IS IN THE IMAGE, AND THE NODE LOADS IT. There is no loader service: `serve` forks the
-# load before it execs, so the exec still happens and SIGTERM still reaches Orion directly, and the
-# fork waits for /readyz, applies /pkg/soma through the package's own scripts/load-package.sh and
-# then asserts the result. `package apply` is idempotent by content, so a restart with the same image
-# is a no-op and every node of a cluster may do it.
+# THE PACKAGE IS IN THE IMAGE, AND THE NODE APPLIES IT ITSELF. There is no loader service and no
+# loader fork: `serve` compiles the set into an artifact and `[packages] apply` in soma.toml.tmpl
+# does the rest, holding /readyz at 503 until the package is serving and stopping the node if it
+# cannot be. `apply` is idempotent by content, so a restart with the same image is a no-op and
+# every node of a cluster may list it.
 #
 # BOOTSTRAP IS A SEPARATE COMMAND BECAUSE OF ONE ORDERING FACT: a cluster-mode orion-server cannot
 # start until `orion_state` EXISTS -- migrate does not create a database, it migrates into one. So
@@ -27,8 +27,18 @@ serve() {
   # is rendered to disk.
   CFG="${ORION_CONFIG_TEMPLATE:-/etc/orion/soma.toml.tmpl}"
   [ -r "$CFG" ] || { echo "instance config not readable at $CFG" >&2; exit 1; }
-  : "${ORION_STATE_DB_URL:?ORION_STATE_DB_URL is required -- Orion's own state database (orion_state)}"
+  : "${ORION_STATE_DB_URL:?ORION_STATE_DB_URL is required -- the Orion state database (orion_state)}"
   : "${ORION_ADMIN_KEY:?ORION_ADMIN_KEY is required -- the package is loaded over the admin API}"
+
+  # [vars] allow_private_urls must substitute to a bare TOML BOOLEAN, and `${X:-false}` falls back
+  # only when X is UNSET -- an empty value substitutes as empty and the line stops being TOML. Every
+  # connector but soma-cache reads it, so this is normalised here rather than trusted to a caller:
+  # a deployment writing `1`, `yes` or nothing at all gets a boolean either way.
+  case "${SOMA_ALLOW_PRIVATE_URLS:-}" in
+    1|true|yes|on) SOMA_ALLOW_PRIVATE_URLS=true ;;
+    *)             SOMA_ALLOW_PRIVATE_URLS=false ;;
+  esac
+  export SOMA_ALLOW_PRIVATE_URLS
 
   # [vars] cookie_secure must substitute to a bare TOML boolean. Browsers refuse to store a Secure
   # cookie from an http:// origin, so a plain-http stack sets 0.
@@ -60,64 +70,26 @@ serve() {
 
   # Doubles as the readiness probe for Postgres. soma.toml.tmpl sets auto_migrate = false, because a
   # cluster may not migrate at boot from every node at once; this is the step that satisfies it.
+  #
+  # `--wait` retries only what means "not accepting connections yet" -- a refused or reset
+  # connection, an unresolvable host, a server starting up -- and stops at once on a wrong password
+  # or an unknown database, which is what `has soma bootstrap run?` used to be guessed from. It
+  # says what it is waiting for on each retry, so a stuck boot names its own reason.
   echo "==> migrating state"
-  i=0
-  until orion-server -c "$CFG" migrate > /dev/null 2>&1; do
-    i=$((i + 1))
-    if [ "$i" -ge 30 ]; then
-      echo "the state database did not become reachable in time -- has soma bootstrap run?" >&2
-      orion-server -c "$CFG" migrate    # once more, unsilenced, to show why
-      exit 1
-    fi
-    sleep 2
-  done
+  orion-server -c "$CFG" migrate --wait 60s
 
-  # A FAILED LOAD IS LOUD AND FATAL. /readyz goes green before a package loads, so a node whose load
-  # failed answers 200, carries no route and no clock, and looks healthy to everything that checks.
-  # So the load's own result is asserted, and a node that cannot serve Soma stops rather than idles.
-  if [ "${SOMA_SELF_LOAD:-1}" = "1" ]; then
-    (
-      i=0
-      until curl -fsS http://127.0.0.1:8080/readyz > /dev/null 2>&1; do
-        i=$((i + 1))
-        if [ "$i" -ge 60 ]; then
-          echo "self-load: orion did not become ready in 120s" >&2
-          kill -TERM 1 2>/dev/null
-          exit 1
-        fi
-        sleep 2
-      done
-      echo "==> loading the soma package into this node"
-      # R2_ENDPOINT here is the models bucket at its INTERNAL address -- soma-models-http's base,
-      # which the admit clock fetches through. The node's own R2_ENDPOINT is the PUBLIC one a
-      # browser fetches a replay from, so it is overridden for the load and nowhere else.
-      if ORION_ADMIN=http://127.0.0.1:8080/api/v1/admin \
-         ORION_ADMIN_API_KEY="$ORION_ADMIN_KEY" \
-         R2_ENDPOINT="${MODELS_ENDPOINT:-}" \
-         sh "$PKG/scripts/load-package.sh"; then
-        # AUTHENTICATED: with admin_auth on, an unauthenticated /health omits `plugins`, and the
-        # assertion would read "not loaded" on a node that has them.
-        h=$(curl -fsS -H "Authorization: Bearer $ORION_ADMIN_KEY" http://127.0.0.1:8080/health || true)
-        rating=$(printf '%s' "$h" | grep -c '"tb.rating"' || true)
-        pairing=$(printf '%s' "$h" | grep -c '"tb.pairing"' || true)
-        ants=$(printf '%s' "$h" | grep -c '"tb.ants"' || true)
-        quarantined=$(printf '%s' "$h" | python3 -c 'import json,sys; print(len((json.load(sys.stdin).get("channels") or {}).get("quarantined") or []))' 2>/dev/null || echo 1)
-        if [ "$rating" -ge 1 ] && [ "$pairing" -ge 1 ] && [ "$ants" -ge 1 ] && [ "$quarantined" = "0" ]; then
-          echo "==> loaded: tb.rating, tb.pairing and tb.ants are live, no channel is quarantined"
-        else
-          echo "self-load: tb.rating=$rating tb.pairing=$pairing tb.ants=$ants quarantined=$quarantined -- a plugin" >&2
-          echo "           signature that does not verify quarantines the channels that call it:" >&2
-          echo "           re-sign the plugins in this image with the deployment's trust key." >&2
-          kill -TERM 1 2>/dev/null
-          exit 1
-        fi
-      else
-        echo "self-load: the package did not load -- this node serves nothing" >&2
-        kill -TERM 1 2>/dev/null
-        exit 1
-      fi
-    ) &
-  fi
+  # THE PACKAGE THIS IMAGE CARRIES, compiled into the artifact `[packages] apply` names. Applying
+  # it is the server's own job now (soma.toml.tmpl): it holds /readyz at 503 until the package is
+  # serving and stops the node if it cannot be. So there is no fork here, nothing polling /readyz,
+  # and no /health assertion -- the failure those existed to catch is an invariant of the boot.
+  #
+  # `--version content` names the version after the artifact's content hash, so an unchanged image
+  # compiles to the version already applied and the apply is a no-op. `--name` is not passed:
+  # shared/package.json carries it, with the `requires.orion` range this binary is checked against.
+  ARTIFACT="${SOMA_ARTIFACT:-/var/lib/orion/soma.package.json}"
+  export SOMA_ARTIFACT="$ARTIFACT"
+  echo "==> compiling the soma package"
+  orion-server compile "$PKG" --version content -o "$ARTIFACT" > /dev/null
 
   echo "==> starting orion-server with $CFG"
   exec orion-server -c "$CFG"

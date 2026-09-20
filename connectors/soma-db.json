@@ -9,6 +9,7 @@
     "max_connections": 20,
     "connect_timeout_ms": 5000,
     "query_timeout_ms": 15000,
-    "operations": { "delete": false }
+    "operations": { "delete": false },
+    "allow_private_urls": "var://allow_private_urls"
   }
 }

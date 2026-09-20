@@ -22,7 +22,7 @@
 # amd64 and arm64 images carry identical components -- a plugin digest is what a signature is over,
 # and one signature must verify on both. Only the runtime stage is per platform.
 
-ARG ORION_VERSION=1.8.1
+ARG ORION_VERSION=1.9.0
 ARG RUST_VERSION=1.98.1
 ARG WASM_TOOLS_VERSION=1.258.0
 ARG CURL_VERSION=8.22.0
@@ -151,10 +151,10 @@ LABEL org.opencontainers.image.title="soma" \
       org.opencontainers.image.source="https://github.com/Tiny-Brains/soma" \
       org.opencontainers.image.description="the Soma node: the public /v1 API, the runner gate and the four clocks on orion-server -- no model runs here -- with the schema and the command that applies it"
 
-# curl for the healthcheck and the self-load; python3 because load-package.sh stages the set with
-# it; postgresql-client and jq for `bootstrap`.
+# curl for the healthcheck; postgresql-client and jq for `bootstrap`. No python3: the set is
+# compiled by orion-server and applied by the node itself, so nothing here stages or patches JSON.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl python3 postgresql-client jq \
+ && apt-get install -y --no-install-recommends ca-certificates curl postgresql-client jq \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin orion \
  && install -d -o orion -g orion /var/lib/orion
@@ -168,7 +168,7 @@ COPY workflows/  /pkg/soma/workflows/
 COPY connectors/ /pkg/soma/connectors/
 COPY migrations/ /pkg/soma/migrations/
 COPY shared/     /pkg/soma/shared/
-COPY scripts/load-package.sh scripts/stage-set.py /pkg/soma/scripts/
+COPY scripts/load-package.sh /pkg/soma/scripts/
 # plugin.toml is what `orion-server compile` reads a set's plugins from, and what web's
 # sign-plugins.sh reads; plugin.json is its generated JSON twin.
 COPY plugins/tb-pairing/plugin.toml /pkg/soma/plugins/tb-pairing/
@@ -189,8 +189,9 @@ EXPOSE 8080
 # idles at ~70 MB with this. Measured on the local stack; a deployment may override it.
 ENV MALLOC_ARENA_MAX=2
 
-# 200 once startup has finished and the state database answers. A package that failed to load does
-# not fail this; the entrypoint's self-load stops the node instead.
+# 200 once startup has finished, the state database answers AND this node's package is serving:
+# `[packages] apply` holds /readyz at 503 (`components.packages: "applying"`) until it is, and stops
+# the node if it cannot be. So this is now a real readiness check and not just "the process is up".
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
   CMD curl -fsS http://127.0.0.1:8080/readyz > /dev/null || exit 1
 

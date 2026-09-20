@@ -1,21 +1,22 @@
 # CLAUDE.md
 
-Soma is an Orion 1.8.1 package plus the Postgres migrations every TinyBrains package shares, shipped
+Soma is an Orion 1.9.0 package plus the Postgres migrations every TinyBrains package shares, shipped
 as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour is JSON channel and
-workflow definitions with inline SQL, generated clock files, connectors and two Rust/wasm plugins,
-so `orion-server lint`/`clippy` and the SQL checks act as the compiler. `README.md` is the human
-guide: routes, clocks, configuration, operating a season, production requirements, invariants and
+workflow definitions whose statements live in `sql/*.sql`, generated clock files, connectors and two
+Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares
+the Orion it needs in `shared/package.json`, and every offline command checks the binary against it.
+
+`README.md` is the human guide: routes, clocks, configuration, operating a season, production requirements, invariants and
 known gaps. The parent `tinybrains/CLAUDE.md` holds the contracts that cross into kalam, ants, web and
 the cli. When you close a gap or find one, update README's **Known gaps**.
 
 ## Checks
 
 ```sh
-./scripts/check-defs.sh                          # every change: generator drift, lint, clippy, fmt, the Bearer space; no stack
-python3 scripts/gen-clocks.py                    # after editing a clock; commit the regenerated tb-*.json with it
+./scripts/check-defs.sh                          # every change: generator drift, lint, clippy, fmt, clippy -c; no stack
 cargo test --manifest-path plugins/Cargo.toml    # after touching plugins/ (clippy there is clean; the allows are deliberate)
-./scripts/check-sql.sh                           # after any SQL or schema change; needs tinybrains-db-1
-./scripts/verify/run.sh                          # after a gate, clock, notification or schema change; needs tinybrains-db-1
+./scripts/check-sql.sh                           # after any SQL or schema change; starts its own postgres
+./scripts/verify/run.sh                          # after a gate, clock, notification or schema change; needs a postgres container (DB_CONTAINER)
 ./scripts/smoke.sh                               # against a running stack with the package loaded
 docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/soma --deny-warnings
 ```
@@ -24,16 +25,18 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - **`verify/run.sh` exits 0 through a scenario error.** Read the output, not the exit code. Many
   `ERROR` lines are deliberate negative fixtures, so diff against a run from a `git archive HEAD`
   copy to tell a new error from an old one.
-- `check-sql.sh` echoes `workflow / task` before each `PREPARE`, so a failure names the task.
-  `smoke.sh` has no filter: curl the one route instead. Script env: `DB_CONTAINER`, `DB_USER`,
-  `BASE`, `SMOKE_HANDLE`, `SOMA_ENV_FILE`.
-- **`orion-server` must be 1.8.x.** An older binary reports misleading schema errors on correct
-  definitions (`unknown variant 'cron'`, unknown plugin functions), and `check-defs.sh` and the
-  generator both refuse to run on one. The pinned source of truth is the Orion checkout at
-  `~/Development/Plasmatic/Orion-Projects/Orion`, not the local binary.
+- `check-sql.sh` names the file, connector and role behind every finding, and starts a throwaway
+  postgres when `SQLCHECK_DATABASE` does not name one — so it needs no stack. `verify/run.sh` and
+  `smoke.sh` still do. `smoke.sh` has no filter: curl the one route instead. Script env:
+  `SQLCHECK_DATABASE`, `DB_CONTAINER`, `DB_USER`, `BASE`, `SMOKE_HANDLE`, `SOMA_ENV_FILE`.
+- **Which `orion-server` is declared, not tested.** `shared/package.json` carries
+  `requires.orion`, and `lint`, `clippy`, `fmt` and `compile` each check the running binary against
+  it first, with one line naming both — so no script here has a version test, and `compile` writes
+  the range into the artifact for `apply` to check the node against. The pinned source of truth is
+  the Orion checkout at `~/Development/Plasmatic/Orion-Projects/Orion`, not the local binary.
 - A plugin's digest moves only when its source does. When it moves, web's
-  `scripts/setup/sign-plugins.sh` must run again, or the self-load stops the node on a quarantined
-  channel.
+  `scripts/setup/sign-plugins.sh` must run again, or `[packages] apply` stops the node on a
+  quarantined channel — which is the point: it will not serve the site without its plugins.
 
 ## Rules
 
@@ -60,19 +63,28 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   parameter on a public route.
 - **Only a caller-invariant route may declare `cache`.** The response-cache key carries method,
   path params and query, and nothing about the caller.
-- Every definition, and the generator's output, keeps `"tags": ["pkg:soma"]`. `load-package.sh`
-  retires by that tag whatever the artifact no longer carries, so an untagged object holds its route
-  for ever.
+- Every definition keeps `"tags": ["pkg:soma"]`. A node's boot apply
+  ADDS and UPDATES only: retiring what a version dropped is `scripts/load-package.sh --prune`, which
+  reads the receipt's own inventory rather than sweeping by tag, and is a deliberate operator step
+  because it removes routes. So a release that drops a channel needs that one run against the
+  cluster; until it happens the old route is still served.
 - `/v1/admin-check`'s 204/401/403 and its missing body are a contract with nginx `auth_request`.
 - No route hard-codes a callback host or the cookie's Secure policy: `app_url`,
   `oauth_redirect_uri` and `cookie_secure` are deployment `[vars]`.
 
 ### Clocks
 
-- **`scripts/gen-clocks.py` is the source.** The generated `channels|workflows/tb-*.json` are
-  committed and loaded, but never hand-edited: a hand edit is reverted by the next regeneration, and
-  `--check` fails on it first. `sql()` strips `--` comments, so comments inside clock SQL never reach
-  the JSON.
+- **The clocks are AUTHORED, like every route.** `channels|workflows/tb-*.json` and the
+  `sql/tb-*.sql` they name are edited directly; there is no generator and nothing to regenerate.
+  A statement keeps the comments and alignment it is written with — Orion's `$sql` normal form
+  collapses both when `compile` inlines the file, so a comment costs nothing and a comment edit
+  moves neither the statement nor the package's content hash. A statement two tasks share is ONE
+  file (`sql/tb-shared-<task>.sql`) named from each.
+- **A run of tasks that differ only by an index is `$each`, not a copy.** `{"$each": {"n": {"$from":
+  "constants.<list>"}}, "do": …}` writes the element once; `{{n}}` interpolates into a string and
+  `{"$param": "n"}` inserts it typed. A repeated condition or shape is a value fragment in
+  `shared/soma.json`, spliced with `{"$use": …, "with": {…}}`. None of it reaches the server:
+  `compile` expands it all.
 - `group_runs()` folds consecutive tasks sharing a condition into a task group. **Anything that
   walks a clock workflow must descend into groups**, or it silently skips most of the statements.
 - **`scripts/autoscaler.sql` is generated from `P_DEMAND_DOC`**, pair's CTEs up to its final
@@ -145,31 +157,37 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   grant is argued on the grant block, and `kalam` is never widened.
 - A season's `weight_classes` are validated strictly ascending, because admission takes the first
   class a size fits, and no cap above 64 MiB, because every node's `max_artifact_bytes` refuses a
-  larger artifact first. Never reintroduce a class table in a workflow, the generator or config.
+  larger artifact first. Never reintroduce a class table in a workflow or in config.
 - **Season rule ceilings are what a node can honour.** `execution.max_turns` stops at 1000 (Kalam's
   match loop is 1010 sweeps) and `execution.turn_ms` at 60000 (every template's
   `models.max_timeout_ms`). web's `configs.sh` reads both bounds out of the migration; raise one
   only with the thing it protects.
 - Every placeholder is cast explicitly, `($n)::type`.
-- **Never hand-transcribe a statement into `scripts/verify/`.** Copy it from the shipped workflow.
-  `run.sh` compares the flattened text and refuses to run on a difference.
+- **Never transcribe a shipped statement into `scripts/verify/`.** `run.sh` READS each one out of
+  the workflow that ships it -- through its `$sql` file -- and emits the `PREPARE` itself, so the
+  harness walks what ships by construction. `statements.sql` holds only what NOTHING ships: the
+  harness-only variants and reads. Adding a shipped statement back is refused by name. A statement
+  listed against several tasks (`n_version` ships from three) asserts they are the same statement.
 - A negative fixture must reach the predicate it names: stage the row into the state the statement
   requires, and keep a positive case beside it.
 
 ### Runner gate
 
-- The match statements' home is `workflows/soma-runner-*.json`. Kalam's `gen-kalam.py` holds
-  db-mode copies that **no check compares**, so change both together. The admission routes have no
+- The match statements' home is `workflows/soma-runner-*.json`. Kalam's `sql/tb-match-run-*.sql`
+  holds db-mode copies that **no check compares**, so change both together. The admission routes have no
   db-mode copy: only an `api` runner admits.
 - A gate route's `data.req.*` field names are the contract with the runner. Diff them against the
-  body `kalam/scripts/gen-kalam.py` sends.
+  body `kalam/workflows/tb-match-run.json` sends.
 - `live_runners` is joined **inside** every statement. A JSONLogic guard fails open.
 - `finish` writes, then reads back under the same token: `200 {applied: false}` is a duplicate
   delivery, and `409` is a lost claim. Never conflate them.
-- **`auth.source.scheme` is a literal prefix and the trailing space belongs to it** (`"Bearer "`).
-  Without it every runner gets a bare 401 and every offline gate passes, so
-  `check-auth-scheme.py` enforces it. An auth route's smoke coverage needs one round trip that gets
-  a 2xx, because a refusal only proves the channel loaded.
+- **`auth.source.scheme` is a scheme NAME, parsed as RFC 9110 defines it.** `"Bearer"` and
+  `"Bearer "` are the same scheme, the comparison is case-insensitive, and any run of spaces
+  separates it from the credential — so the trailing space no longer decides whether every runner
+  gets a bare 401, and the check that enforced it is gone. A value that is not a token (`"Key="`,
+  `"Bearer:"`) is refused at create, by `lint`, and by `preflight`'s `channel-auth`. An auth route's
+  smoke coverage still needs one round trip that gets a 2xx, because a refusal only proves the
+  channel loaded.
 
 ### Policy
 
@@ -188,13 +206,21 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   refused in `db_read`.
 - `params` elements fold `{"var": ...}` and nothing else. A `??` or `cat` inline is passed through as
   a literal object, so compute it in a `map` first (`lint` reports `logic.unresolvable`).
-- **`${...}` is substituted in instance-template comments too**, before parsing. Only `${X}` and
-  `${X:-default}` work (`${X:?msg}` is refused). A mention in a comment makes the variable required,
-  which is why `soma.toml.tmpl` needs `R2_ENDPOINT` at parse. Describe forms in words.
+- **`${...}` in an instance template takes three forms and skips comments.** `${X}`, `${X:-default}`
+  and `${X:?message}` (which stops the boot with that sentence, and the file, line and column, when X
+  is unset OR empty); a default or a message may nest another placeholder. The file's `#` comments
+  are NOT substituted, so a form may be written out in prose without making its variable required —
+  which is why `soma.toml.tmpl` no longer needs `R2_ENDPOINT` at parse. Anything else (`${X:+y}`,
+  `${X-y}`) is refused by name.
 - A connector resolves `env://NAME` only when it is the whole string, hence `ORION_ADMIN_BEARER`
-  (`Bearer <key>`). `allow_private_urls` and connector URLs are checked by the offline gates before
-  `var://` resolves, and a cache connector's `url` cannot be `env://`, so `load-package.sh` writes
-  them into a staged copy.
+  (`Bearer <key>`); `lint` warns (`env.embedded_reference`) on a reference inside a longer string.
+  An http or cache `url` MAY be `env://` and any connector boolean may be a reference
+  (`allow_private_urls` is `var://allow_private_urls`, from `[vars]`), so nothing stages a copy of
+  the set any more — the deployment's settings are declarations in the committed connectors.
+- **An `env://` that resolves to an empty string is now REFUSED, not accepted.** A connector's
+  endpoint is scheme-checked again AFTER its references resolve, so `""` fails as `ftp://` would,
+  the connector is skipped, and a workflow naming it cannot activate. Setting a variable empty to
+  "switch a connector off" no longer works: give it a well-formed URL that routes nowhere.
 - Every admin API reply is wrapped in `{"data": ...}`. Reading around it yields null, and
   `null != "passed"` is true.
 - `channel_call` **ignores** an unknown input key (the payload field is `data`), and delivers its
@@ -232,7 +258,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   quarantine detail unless the request carries the key.
 - Repeated auth failures put a client IP into a 401 backoff. Retest from another address before
   believing a second failure.
-- `package apply` adds and updates and never removes, which is why `load-package.sh` retires by tag.
+- `package apply` adds and updates and never removes; `--prune` removes what the applied version
+  carried and this artifact does not, from the receipt's inventory. The boot apply does NOT prune.
+- **`package apply` now FAILS when the reload quarantines what it carries**, naming each member,
+  before the receipt flips — so "applied" means "serving". Re-applying the version a node already
+  runs is checked the same way rather than reported as nothing to do.
 - Two REST channels may share a `route_pattern` when their methods do not overlap.
 - `[models]` device `metal` measured 36× slower than `cpu`. Use `cpu`.
 
@@ -250,8 +280,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - **`ratings.matches_played` is the `rating_events` seq.** Resetting it makes count fail every fold
   on the primary key and keep failing. Anything restoring a rating row must set it to at least
   `max(seq)`.
-- `PREPARE` (what `check-sql.sh` does, as the owner) never checks privileges. `EXPLAIN` does
-  without executing: `SET ROLE runner_gate; EXPLAIN ...` proves a gate statement's grants.
+- `PREPARE` never checks privileges; `EXPLAIN` does, without executing. `orion-server sql check`
+  is built on exactly that — it prepares each statement as its connector's role and, on PostgreSQL
+  16+, plans it with `EXPLAIN (GENERIC_PLAN)`, which is what proves `runner_gate`'s grants.
+  `soma-db` is reported "grants not proven" because it connects as the owner, which holds every
+  grant by construction.
 - A bare `ON CONFLICT` is refused on a table with a deferrable constraint, so name the arbiter.
 - A JSON number with a decimal part will not bind to an int8 placeholder. Cast `($n)::float8::bigint`.
 - `{"<": [x, null]}` is falsy, so a missing ceiling passes every gate unless the null is guarded.

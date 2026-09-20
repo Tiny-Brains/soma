@@ -17,21 +17,27 @@ set -euo pipefail
 cd "$(dirname "$0")"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
 DB_USER="${DB_USER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER)}"
+SHIPPED=$(mktemp)
+trap 'rm -f "$SHIPPED"' EXIT
 SCRATCH=soma_verify
 DEPLOYED=soma_verify_deployed
 MIGRATIONS=../../migrations
 psql() { docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" "$@"; }
 strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 
-# The match statements in statements.sql are copies of what workflows/soma-runner-*.json ship, and a
-# copy nobody compares is a copy that drifts: a race "proved" against a stale copy proves a statement
-# that does not exist. Comparing them costs a second and makes that impossible rather than unlikely.
+# THE STATEMENTS UNDER TEST ARE READ OUT OF THE WORKFLOWS THAT SHIP THEM, not copied beside them.
+# They used to be transcribed into statements.sql and compared, because a copy nobody compares is a
+# copy that drifts -- a race "proved" against a stale copy proves a statement that does not exist.
+# Since the statements live in `sql/*.sql` (Orion #332) the harness can simply read them, so there
+# is no copy and nothing to drift: walking what ships is structural rather than asserted.
 #
-# The clock, notification, season-map, season-baseline and admission statements are compared the
-# same way, against the workflows that ship them (n_version against all three tasks that ship
-# it). The clock tasks live inside TASK GROUPS, which is why the lookup below descends.
+# statements.sql keeps only what NOTHING SHIPS -- the harness-only variants and reads.
+#
+# A name may be listed against SEVERAL tasks (n_version ships from three). That is an assertion of
+# its own: the three must be the same statement, and one PREPARE is emitted for them.
+# The clock tasks live inside TASK GROUPS, which is why the lookup below descends.
 echo "===== the statements under test are the statements that ship ====="
-python3 - <<'PY'
+python3 - "$SHIPPED" <<'PY'
 import json, re, sys, pathlib
 PAIRS = [("k_reap", "soma-runner-reap", "reap"), ("k_claim", "soma-runner-claim", "claim"),
          ("k_row", "soma-runner-claim", "row"), ("k_start", "soma-runner-start", "start"),
@@ -68,20 +74,75 @@ def tasks(ts):
     for t in ts:
         yield t
         yield from tasks(t.get("tasks", []))
-flat = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(";")
-bad = []
+def flat(sql):
+    """Orion's `$sql` normal form: comments and runs of whitespace become one space.
+
+    Both sides go through it, so a statement compares equal whether it is written inline, laid out
+    over lines in a `.sql` file, or carries comments there -- which is exactly what `compile` does
+    when it inlines the file, and why a comment edit moves no hash.
+    """
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c in "'\"":                                  # a literal or a quoted identifier
+            j = i + 1
+            while j < n:
+                if sql[j] == c:
+                    if j + 1 < n and sql[j + 1] == c:
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j]); i = j
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            out.append(" "); i = n if j == -1 else j
+        elif sql.startswith("/*", i) and not sql.startswith(("/*+", "/*!"), i):
+            j = sql.find("*/", i + 2)
+            out.append(" "); i = n if j == -1 else j + 2
+        else:
+            out.append(c); i += 1
+    return re.sub(r"\s+", " ", "".join(out)).strip().rstrip(";").strip()
+
+
+def statement(query, wf):
+    """The statement a task ships, whether it is written inline or in a `.sql` file.
+
+    A long statement is `{"$sql": "../sql/<name>.sql"}`, resolved relative to the workflow that
+    names it. Collapsing the file the way `flat()` collapses an inline string is the same normal
+    form Orion's compile applies, so the comparison below is unaffected by which form is used.
+    """
+    if isinstance(query, dict):
+        ref = query["$sql"]
+        return (pathlib.Path("../../workflows") / wf).parent.joinpath(ref).resolve().read_text()
+    return query
+
+bad, out, seen = [], [], {}
 for name, wf, task in PAIRS:
     doc = json.load(open(f"../../workflows/{wf}.json"))
-    shipped = next(t["function"]["input"]["query"] for t in tasks(doc["tasks"]) if t["id"] == task)
-    m = re.search(rf"^PREPARE {name}(?: \([^)]*\))? AS\n(.*?);$", prepared, re.S | re.M)
-    if not m:
-        bad.append(f"{name}: no PREPARE in statements.sql")
-    elif flat(m.group(1)) != flat(shipped):
-        bad.append(f"{name}: statements.sql differs from workflows/{wf}.json / {task}")
+    found = [t for t in tasks(doc["tasks"]) if t["id"] == task]
+    if not found:
+        bad.append(f"{name}: workflows/{wf}.json ships no task '{task}'")
+        continue
+    shipped = statement(found[0]["function"]["input"]["query"], wf)
+    if name in seen:
+        # The same name from a second task: they must be the same statement.
+        if flat(seen[name][0]) != flat(shipped):
+            bad.append(f"{name}: workflows/{wf}.json / {task} differs from "
+                       f"workflows/{seen[name][1]}.json / {seen[name][2]}")
+        continue
+    seen[name] = (shipped, wf, task)
+    out.append(f"-- workflows/{wf}.json / {task}\nPREPARE {name} AS\n{shipped.strip()};\n")
+    if re.search(r"^PREPARE %s\b" % re.escape(name), prepared, re.M):
+        bad.append(f"{name}: statements.sql also PREPAREs it — it ships, so it is read, not copied")
+
 for b in bad:
-    print(f"  DRIFT {b}")
-print("  " + ("the harness walks what ships: OK" if not bad else "FAILED"))
-sys.exit(1 if bad else 0)
+    print(f"  FAIL {b}")
+if bad:
+    sys.exit(1)
+pathlib.Path(sys.argv[1]).write_text("\n".join(out))
+print(f"  {len(out)} shipped statement(s) read from the workflows that ship them: OK")
 PY
 
 psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $SCRATCH" -c "CREATE DATABASE $SCRATCH"
@@ -90,18 +151,18 @@ cat "$MIGRATIONS/0001_init.sql" "$MIGRATIONS/0002_sessions.sql" \
 echo "migrations 0001+0002: OK"
 
 echo "===== the walk ====="
-cat statements.sql scenario.sql | psql -d "$SCRATCH" 2>&1 | strip
+cat "$SHIPPED" statements.sql scenario.sql | psql -d "$SCRATCH" 2>&1 | strip
 
 echo "===== race 1: a newer claim holds the fence row; the stale fold must block, then write nothing ====="
-( cat statements.sql race1_hold.sql | psql -d "$SCRATCH" -q > race1_hold.log 2>&1 ) &
+( cat "$SHIPPED" statements.sql race1_hold.sql | psql -d "$SCRATCH" -q > race1_hold.log 2>&1 ) &
 sleep 2
-cat statements.sql race1_probe.sql | psql -d "$SCRATCH" -q 2>&1 | strip
+cat "$SHIPPED" statements.sql race1_probe.sql | psql -d "$SCRATCH" -q 2>&1 | strip
 wait; strip < race1_hold.log
 
 echo "===== race 2: the live fold holds FOR SHARE; the newer claim must block, then succeed ====="
-( cat statements.sql race2_hold.sql | psql -d "$SCRATCH" -q > race2_hold.log 2>&1 ) &
+( cat "$SHIPPED" statements.sql race2_hold.sql | psql -d "$SCRATCH" -q > race2_hold.log 2>&1 ) &
 sleep 2
-cat statements.sql race2_probe.sql | psql -d "$SCRATCH" -q 2>&1 | strip
+cat "$SHIPPED" statements.sql race2_probe.sql | psql -d "$SCRATCH" -q 2>&1 | strip
 wait; strip < race2_hold.log
 
 rm -f race1_hold.log race2_hold.log
@@ -184,7 +245,7 @@ INSERT INTO models (owner_id, game_id, name)
 SELECT u.id, g.id, substr(u.handle, 10) FROM users u, games g WHERE u.role = 'baseline' AND g.slug = 'ants';
 INSERT INTO model_versions (model_id, game_id, season_id, version, status, weight_class,
                             weights_hash, manifest_hash, orion_version)
-SELECT e.id, e.game_id, s.id, 1, 'active', 'nano', 'sha256:w-' || e.name, 'sha256:m-' || e.name, '1.8.1'
+SELECT e.id, e.game_id, s.id, 1, 'active', 'nano', 'sha256:w-' || e.name, 'sha256:m-' || e.name, '1.9.0'
   FROM models e JOIN seasons s ON s.game_id = e.game_id AND s.closed_at IS NULL;
 INSERT INTO season_maps (season_id, map_id, players, rows, cols, digest, board, enabled, added_by)
 SELECT s.id, 'fixture', 2, 24, 24, 'sha256:fixture', '{"id": "fixture"}', true,
