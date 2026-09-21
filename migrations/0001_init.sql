@@ -1,11 +1,11 @@
 -- Soma -- the platform schema. One initial file rather than a migration chain: nothing is
 -- released, so 0001 is rewritten in place until it is. Postgres 13+.
 --
--- Three roles write this database (grants at the bottom of the file):
+-- Two roles write this database (grants at the bottom of the file):
 --   soma         -- the owner. The routes (users, sessions, an entry and a version) and the clocks
 --                   (the version life cycle: matches, match_seats, ratings, rating_events, clocks).
---   kalam        -- the match player. SELECT on two tables, UPDATE on the columns it reports.
---   runner_gate  -- the eight runner routes: kalam's columns plus runner identity.
+--   runner_gate  -- the runner gate's routes and the reap clock: the columns a match player
+--                   reports, runner identity, and the admission queue.
 -- Nothing above is trusted to enforce one-active-version, one-submission-in-flight or
 -- one-live-trial. The partial unique indexes and the exclusion constraint are.
 --
@@ -178,12 +178,9 @@ LANGUAGE sql IMMUTABLE AS $$
     -- ---- execution: THE TERMS A MODEL COMPETES UNDER, sent to a runner on the claim.
     --      A speed season is `{"execution": {"enabled": true, "turn_ms": 250}}` and nothing else.
     --
-    --      These were [vars] on every Kalam replica until the runner gate, and the reason is a
-    --      GRANT: the `kalam` role has no privilege on `seasons`, so the process that needed them
-    --      could not read the table they belong in. That is also why matches.strike_ceiling is
-    --      pinned per row (decision 54) rather than read here. The gate assembles the claim at the
-    --      centre, where `matches -> seasons` is one join it already has, so a value no longer has
-    --      to be copied onto a match row to reach the process that plays it.
+    --      The gate assembles the claim at the centre, where `matches -> seasons` is one join it
+    --      already has, and sends these terms with it, so no runner keeps a copy and none has to
+    --      be written onto a match row. matches.strike_ceiling is pinned per row (decision 54).
     --
     --      READ `coalesce(rule, games.manifest -> 'limits', [vars])`: a season that declares
     --      nothing plays by the cartridge's own published limits, which is where turn_ms and
@@ -449,11 +446,9 @@ CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 
 -- ------------------------------------------------------------------- runners
 
--- WHO PLAYS A MATCH IS NOW A ROW. A replica used to be a process holding the `kalam` Postgres role,
--- so "which machine played this" was answered by which container was up. A runner reaches the
--- platform over /v1/runner/* instead, from hardware that may be nowhere near the deployment, and
--- these two tables are the whole of its identity: a credential an admin holds, and a process that
--- presented it.
+-- WHO PLAYS A MATCH IS A ROW. A runner reaches the platform over /v1/runner/*, from hardware that
+-- may be nowhere near the deployment, and these two tables are the whole of its identity: a
+-- credential an admin holds, and a process that presented it.
 
 -- An admin's runner credential. A TABLE rather than a column on users, so an admin can hold two
 -- keys and retire one without a gap -- rotation with no window in which nothing works.
@@ -908,9 +903,8 @@ CREATE TABLE matches (
 
     -- WHICH MACHINE HOLDS IT, written at claim. Not a security control -- a runner is operated by
     -- an admin -- but without it every operational question about the fleet is unanswerable: which
-    -- machine played this match, and which machine is wedged. Nullable because an in-cluster
-    -- replica claiming over `kalam-db` writes no runner id, and because a reaped row keeps the
-    -- attribution of the attempt that lapsed.
+    -- machine played this match, and which machine is wedged. Null until a runner claims the
+    -- row; a reaped row keeps the attribution of the attempt that lapsed.
     played_by            uuid         REFERENCES runners (id),
 
     -- ---- what Kalam reports
@@ -940,8 +934,9 @@ CREATE TABLE matches (
     CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
 
     -- The status and the columns that go with it cannot disagree. This is also half of what
-    -- confines Kalam: with UPDATE granted on its own columns only, there is no state it can reach
-    -- that is not one of its own -- it cannot mark a row 'rated', because it cannot write rated_at.
+    -- confines a runner: `runner_gate` holds UPDATE on the match player's columns only, so there is
+    -- no state it can reach that is not one of its own -- it cannot mark a row 'rated', because it
+    -- cannot write rated_at.
     CONSTRAINT matches_status_shape
         CHECK (CASE status
             WHEN 'pending'   THEN claim_token IS NULL AND lease_expires_at IS NULL
@@ -1695,76 +1690,27 @@ ALTER TABLE matches SET (fillfactor = 70);
 -- ------------------------------------------------------------------ the roles
 
 -- Confine each writer by grant rather than by convention. No password is set: the credential is
--- deployment configuration and lives in devops/, so the committed migration ships no secret, and
--- until one is set neither role can log in. Roles are cluster-global while this schema is
--- per-database, which is why each create is guarded.
-
--- ONE WRITER IS NOT CONFINED HERE, AND IT IS DELIBERATE. The /v1/runner/* routes run the eight
--- match statements from inside Soma's package, over `soma-db` -- the OWNER connection. So a runner's
--- claim, start, renew and finish are executed with full rights, and the column-level grant below is
--- not what stops one writing a rating; review is. That is a real weakening of the boundary and it
--- buys one package instead of two.
---
--- What still holds: a runner never reaches the database at all. It holds no credential, and every
--- statement it triggers is one of the eight shipped in soma/workflows/soma-runner-*.json, each
--- fenced on its claim token. The exposure is a bad statement in this repository, not a bad actor on
--- a desk -- which is the same class of risk every other Soma route already carries.
---
--- NARROWED, and the role that does it is `runner_gate` below. The paragraph that used to stand here
--- proposed a `soma-runner-db` connector on env://KALAM_DB_URL -- that is, on the `kalam` role --
--- and then forbade adding a grant to `kalam` in its own next sentence. Both halves were right and
--- together they were impossible: the routes need `played_by`, `live_runners` and the `runners`
--- upsert, none of which `kalam` may have. A third role is what satisfies both.
---
--- Do not add a grant to the `kalam` role to make a runner route work -- if it needs one, it is on
--- the wrong connector.
-
--- Kalam plays matches. It can read the two tables it plays from and write only the columns it
--- reports, so "Kalam writes no rating" is a fact of the grant: it cannot rate a match, cancel one,
--- pair one, or touch models, model_versions, ratings, users or clocks at all. It reads
--- matches.strike_ceiling off the row it claimed and keeps no copy of that number in its own config.
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kalam') THEN
-        CREATE ROLE kalam LOGIN;
-    END IF;
-END $$;
-
-GRANT USAGE ON SCHEMA public TO kalam;
-GRANT SELECT ON matches, match_seats TO kalam;
--- The board its claimed row is played on (N28), which db mode's K_ROW joins exactly as the gate's
--- claim does. The board and its id, and nothing about who uploaded it or when.
-GRANT SELECT (id, map_id, board) ON season_maps TO kalam;
--- The roster a replica registers on its own node (decision R8): the manifest, where the bytes are
--- and the digest they must hash to. COLUMN-LEVEL on purpose -- `weight_class`, `param_count`,
--- `infer_us`, `reject_reason` and every admission column stay out of reach, so "Kalam reads no
--- competitive decision" survives it being able to name a model at all. It still cannot reach
--- ratings, users, seasons or clocks.
-GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
-    ON model_versions TO kalam;
-GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
-              reason, turns, played_ms, engine_digest_played, orion_version,
-              replay_key, played_at, fault_reason, fault_seat, closed_at)
-    ON matches TO kalam;
-GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
-    ON match_seats TO kalam;
--- NOT `played_by`: an in-cluster replica writing over kalam-db is not a runner and has no runner id
--- to name. The column stays null for it, which is exactly the right answer to "which machine".
+-- deployment configuration, which `bootstrap` sets from RUNNER_GATE_DB_PASSWORD, so the committed
+-- migration ships no secret. Roles are cluster-global while this schema is per-database, which is
+-- why the create is guarded.
 
 -- ------------------------------------------------------------ the runner gate
 
--- THE ROLE THE MACHINE-FACING ROUTES RUN AS, and the repair of the one boundary the gate
--- weakened when it shipped inside this package instead of a second one (N7 -> N17).
+-- THE ROLE THE MACHINE-FACING ROUTES RUN AS. The /v1/runner/* routes run inside Soma's package,
+-- over `soma-db-gate`, which connects as this role. A runner never reaches the database: it holds
+-- no credential, and every statement it triggers is one Soma ships in
+-- soma/workflows/soma-gate-*.json, fenced on its claim token.
 --
--- It is a THIRD ROLE and not the `kalam` one, and that distinction is the whole point. The routes
--- need three things `kalam` deliberately does not have -- `played_by`, `live_runners`, and the
--- `runners` upsert the token exchange performs -- and widening `kalam` to supply them would widen
--- the role an IN-CLUSTER REPLICA still holds, which is what the paragraph above forbids. So the
--- grant that was going to be bent is copied instead, and the copy gets exactly the three additions.
+-- WHAT IT CAN DO: read the two tables a match is played from, the board, the roster columns and
+-- the row's season terms; write the columns a match player reports; claim and report an
+-- admission; and hold runner identity -- `played_by`, `live_runners`, and the `runners` upsert the
+-- token exchange performs.
 --
--- WHAT IT CANNOT DO, and this is the list that matters: rate a match, cancel one, pair one, or
--- touch `ratings`, `rating_events`, `users`, `seasons`, `clocks`, `models` or `model_versions`
--- beyond the roster columns and a version's game, and so decide no admission. "A runner statement
--- cannot write a rating" is a fact of this grant again, rather than a fact of review.
+-- WHAT IT CANNOT DO, and this is the list that matters: rate a match, cancel one or pair one; read
+-- or write `ratings`, `rating_events`, `users`, `clocks` or `models`; or write `seasons`, `games` or
+-- `model_versions`, and so decide no admission. "A runner statement cannot write a rating" is a
+-- fact of this grant rather than of review. Do not widen it to make a route work: a route that
+-- needs a grant is on the wrong connector.
 --
 -- THE FIVE ADMIN ROUTES STAY ON `soma-db`. `runner_keys` creation and revocation are Soma's auth
 -- surface, the same as sessions, and they are session-authed rather than runner-authed.
@@ -1783,14 +1729,14 @@ GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
 -- only, and on the two columns that carry it: a runner's terms are read here, never decided here.
 GRANT SELECT (id, game_id, rules, engine_digest, closed_at) ON seasons TO runner_gate;
 GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
--- `kalam`'s match columns, plus `played_by`, which the claim writes and which `kalam` must not have.
+-- The match player's columns, plus `played_by`, which the claim writes.
 GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
               reason, turns, played_ms, engine_digest_played, orion_version,
               replay_key, played_at, fault_reason, fault_seat, closed_at, played_by)
     ON matches TO runner_gate;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO runner_gate;
--- Runner identity, which the gate needs and a replica must not have: the key lookup the token
+-- Runner identity, which the gate needs: the key lookup the token
 -- exchange probes by, the self-registration it performs, and the liveness JOIN every statement
 -- carries. INSERT on `runners` because a runner self-registers; there is no enrolment flow.
 GRANT SELECT ON live_runners, live_runner_keys TO runner_gate;
@@ -1820,15 +1766,10 @@ GRANT SELECT ON admissions TO runner_gate;
 GRANT UPDATE (runner_id, claim_token, lease_expires_at, attempts, report, reported_at)
     ON admissions TO runner_gate;
 
--- THE `kalam` ROLE IS GRANTED NOTHING ON runner_keys, runners, live_runners OR sessions, and the
--- absence is deliberate: runner identity is Soma's auth surface, the same as session identity, and
--- a replica has no more business reading who may start a runner than it has reading who may sign in.
---
--- THERE IS NO CLOCK ROLE. The clocks -- admit, pair, count, withdraw -- run as the owner over
--- `soma-db`, the connector the routes use. Until 16 September 2026 they were a separate package
--- over a `jodi` role with no DELETE anywhere, nothing on `sessions` and no UPDATE on `models`; the
--- package merged into this one and the role went with it. What still confines them is
--- `soma-db`'s `operations.delete = false` and review: a clock statement that deletes, reads
+-- THERE IS NO CLOCK ROLE. Four clocks -- admit, pair, count, withdraw -- run as the owner over
+-- `soma-db`, the connector the routes use, and reap runs as `runner_gate` over `soma-db-gate`,
+-- because returning a lapsed lease writes only the match player's columns. What confines the four
+-- is `soma-db`'s `operations.delete = false` and review: a clock statement that deletes, reads
 -- `sessions` or rewrites an entry is a review failure, not a grant error.
 
 COMMIT;

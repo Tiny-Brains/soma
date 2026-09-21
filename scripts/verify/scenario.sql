@@ -362,18 +362,18 @@ SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 \echo '--- soma: a version''s history is one join (expect the rated row 43 for alice v1; the cancelled row 46 is not listed)'
 EXECUTE s_history ('20000000-0000-0000-0000-000000000001', 10);
 
-\echo '--- the kalam role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); read model_versions, read or write events (expect denied)'
+\echo '--- the runner_gate role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); count model_versions (ok: its roster columns are granted); read or write events (expect denied)'
 EXECUTE p_insert (2, 'ants', 52, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m52 FROM matches WHERE seed = 52 \gset
-SET ROLE kalam;
+SET ROLE runner_gate;
 UPDATE matches SET withdrawn_reason = 'x' WHERE seed = 52;
 UPDATE matches SET status = 'cancelled', closed_at = now() WHERE seed = 52;
 UPDATE matches SET status = 'rated', rated_at = now() WHERE seed = 52;
 UPDATE match_seats SET version_id = '20000000-0000-0000-0000-000000000001' WHERE match_id = :'m52' AND seat = 0;
 UPDATE match_seats SET rank = 1 WHERE match_id = :'m52' AND seat = 0;
-SELECT count(*) AS kalam_reads_matches FROM matches;
-SELECT count(*) AS kalam_reads_seats FROM match_seats;
+SELECT count(*) AS gate_reads_matches FROM matches;
+SELECT count(*) AS gate_reads_seats FROM match_seats;
 SELECT count(*) FROM model_versions;
 SELECT count(*) FROM rating_events;
 UPDATE rating_events SET mu_after = 0;

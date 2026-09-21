@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Walk the schema: every statement the two packages run against it, the scenario, the two fence
-# races, and the Kalam role exercised rather than asserted.
+# races, and the runner gate's role exercised rather than asserted.
 #
 #   soma/scripts/verify/run.sh            # from anywhere; needs the db container up
 #
 # Creates a scratch database beside `soma`, applies the shipped migrations, PREPAREs every statement
 # in statements.sql, walks scenario.sql, runs the two fence races with concurrent sessions, then
 # applies the migrations alone to a second scratch database, checks they seed nothing an admin makes,
-# and exercises the `kalam` role there. Both databases are dropped at the end, and the `kalam` role with them where nothing else grants to it. Nothing in
+# and exercises the `runner_gate` role there. Both databases are dropped at the end. Nothing in
 # `soma` or `orion_state` is touched.
 #
 # check-sql.sh checks that what Soma ships PARSES; this checks what the SCHEMA promises -- the
 # runner gate's match statements (Kalam's, served here), the clocks' ladder statements, and the
-# `kalam` role a db-mode replica still holds.
+# grants of `runner_gate`, the role every runner statement runs as.
 set -euo pipefail
 cd "$(dirname "$0")"
 DB_CONTAINER="${DB_CONTAINER:-tinybrains-db-1}"
@@ -193,46 +193,57 @@ BEGIN
     SELECT count(*) INTO n FROM ratings;        ASSERT n = 0, format('the migrations wrote %s ratings', n);
     SELECT count(*) INTO n FROM runner_keys;    ASSERT n = 0, format('the migrations wrote %s runner keys', n);
 
-    -- Kalam reads two tables and writes only its own columns of them.
+    -- The runner gate reads the tables a match and an admission are played from, holds runner
+    -- identity, and writes only the columns a runner reports. The one table-wide write is INSERT
+    -- on `runners`: a runner self-registers.
     SELECT count(*) INTO n FROM information_schema.table_privileges
-      WHERE grantee = 'kalam' AND privilege_type <> 'SELECT';
-    ASSERT n = 0, format('kalam holds %s non-SELECT table-wide privileges; it must hold none', n);
+      WHERE grantee = 'runner_gate' AND privilege_type <> 'SELECT'
+        AND (table_name, privilege_type) <> ('runners', 'INSERT');
+    ASSERT n = 0, format('runner_gate holds %s table-wide writes beyond INSERT on runners', n);
 
     SELECT count(*) INTO n FROM information_schema.table_privileges
-      WHERE grantee = 'kalam' AND privilege_type = 'SELECT'
-        AND table_name NOT IN ('matches', 'match_seats');
-    ASSERT n = 0, format('kalam can read %s tables it must not', n);
+      WHERE grantee = 'runner_gate' AND privilege_type = 'SELECT'
+        AND table_name NOT IN ('matches', 'match_seats', 'runners', 'live_runners',
+                               'live_runner_keys', 'admissions');
+    ASSERT n = 0, format('runner_gate can read %s tables whole that it must not', n);
 
-    -- What an account was told and how it wants to be told are Soma's, like its sessions: neither
-    -- role that plays matches may read or write either table, and 0002 grants nothing so they cannot.
+    -- What an account was told and how it wants to be told are Soma's, like its sessions: the role
+    -- that plays matches may not read or write either table, and 0002 grants nothing so it cannot.
     SELECT count(*) INTO n
-      FROM (VALUES ('kalam'), ('runner_gate')) AS r (role),
-           (VALUES ('notifications'), ('notification_settings')) AS t (tbl),
+      FROM (VALUES ('notifications'), ('notification_settings')) AS t (tbl),
            (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS p (priv)
-     WHERE has_table_privilege(r.role, t.tbl, p.priv);
-    ASSERT n = 0, format('kalam or runner_gate holds %s privileges on the notification tables', n);
+     WHERE has_table_privilege('runner_gate', t.tbl, p.priv);
+    ASSERT n = 0, format('runner_gate holds %s privileges on the notification tables', n);
 
     SELECT count(*) INTO n FROM information_schema.column_privileges
-      WHERE grantee = 'kalam' AND privilege_type = 'UPDATE'
+      WHERE grantee = 'runner_gate' AND privilege_type = 'UPDATE'
         AND (table_name, column_name) NOT IN (
             ('matches','status'), ('matches','claim_token'), ('matches','lease_expires_at'),
             ('matches','lapses'), ('matches','refusals'), ('matches','reason'),
             ('matches','turns'), ('matches','played_ms'), ('matches','engine_digest_played'),
             ('matches','orion_version'), ('matches','replay_key'), ('matches','played_at'),
             ('matches','fault_reason'), ('matches','fault_seat'), ('matches','closed_at'),
+            ('matches','played_by'),
             ('match_seats','rank'), ('match_seats','score'), ('match_seats','strikes'),
             ('match_seats','infer_us_total'), ('match_seats','infer_us_max'),
-            ('match_seats','infer_turns'));
-    ASSERT n = 0, format('kalam can write %s columns outside its grant', n);
+            ('match_seats','infer_turns'),
+            ('runner_keys','last_used_at'),
+            ('runners','label'), ('runners','engine_digest'), ('runners','node_version'),
+            ('runners','orion_version'), ('runners','ops_budget'), ('runners','arch'),
+            ('runners','last_seen_at'),
+            ('admissions','runner_id'), ('admissions','claim_token'),
+            ('admissions','lease_expires_at'), ('admissions','attempts'), ('admissions','report'),
+            ('admissions','reported_at'));
+    ASSERT n = 0, format('runner_gate can write %s columns outside its grant', n);
 
     RAISE NOTICE 'nothing seeded, grants: OK';
 END $$;
 SQL
 
-# What the Kalam role can and cannot do, run rather than read off information_schema. The grants
-# above say the right words; this proves they bite. `SET ROLE` rather than a login, because the
-# migration deliberately sets no password -- the credential is deployment configuration.
-echo "===== the Kalam role, exercised ====="
+# What the runner gate's role can and cannot do, run rather than read off information_schema. The
+# grants above say the right words; this proves they bite. `SET ROLE` rather than a login, because
+# the migration deliberately sets no password -- the credential is deployment configuration.
+echo "===== the runner_gate role, exercised ====="
 psql -d "$DEPLOYED" -q -v ON_ERROR_STOP=1 <<'SQL'
 \pset footer off
 -- The game as bootstrap registers it and a live season as an admin creates it; two baselines in play
@@ -266,7 +277,7 @@ SELECT '11111111-1111-1111-1111-111111111111', row_number() OVER (ORDER BY m.id)
 DO $$
 DECLARE denied text;
 BEGIN
-    SET LOCAL ROLE kalam;
+    SET LOCAL ROLE runner_gate;
 
     -- What it MUST be able to do: claim, start, and finish its own rows.
     UPDATE matches SET status = 'claimed', claim_token = gen_random_uuid(),
@@ -274,61 +285,53 @@ BEGIN
      WHERE id = '11111111-1111-1111-1111-111111111111';
     UPDATE match_seats SET rank = 1, score = 10, strikes = 0
      WHERE match_id = '11111111-1111-1111-1111-111111111111' AND seat = 0;
-    RAISE NOTICE 'kalam can claim a match and report a seat: OK';
+    RAISE NOTICE 'runner_gate can claim a match and report a seat: OK';
 
-    -- What it MUST NOT be able to do. Each of these is a way the match player could reach into
+    -- What it MUST NOT be able to do. Each of these is a way a runner could reach into
     -- the ladder if the grant were wrong, and each must be refused by Postgres, not by convention.
     BEGIN  UPDATE ratings SET mu = 99;                    denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'ratings'; END;
-    ASSERT denied = 'ratings', 'kalam must not be able to write a rating';
+    ASSERT denied = 'ratings', 'runner_gate must not be able to write a rating';
 
     BEGIN  UPDATE model_versions SET status = 'active';   denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'model_versions'; END;
-    ASSERT denied = 'model_versions', 'kalam must not be able to promote a version';
+    ASSERT denied = 'model_versions', 'runner_gate must not be able to promote a version';
     -- and it cannot reach the entry either, which is Soma's alone
     BEGIN  PERFORM count(*) FROM models;                  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'models'; END;
-    ASSERT denied = 'models', 'kalam must not be able to read the entries';
+    ASSERT denied = 'models', 'runner_gate must not be able to read the entries';
 
     BEGIN  UPDATE clocks SET epoch = 99;                  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'clocks'; END;
-    ASSERT denied = 'clocks', 'kalam must not be able to move a fence';
+    ASSERT denied = 'clocks', 'runner_gate must not be able to move a fence';
 
     BEGIN  INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after)
            SELECT id, 'open', 9, 1, 1 FROM model_versions LIMIT 1;  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'rating_events'; END;
-    ASSERT denied = 'rating_events', 'kalam must not be able to write a rating event';
+    ASSERT denied = 'rating_events', 'runner_gate must not be able to write a rating event';
 
     BEGIN  SELECT count(*) INTO denied FROM users;        denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'users'; END;
-    ASSERT denied = 'users', 'kalam must not be able to read users';
+    ASSERT denied = 'users', 'runner_gate must not be able to read users';
 
     BEGIN  SELECT count(*) INTO denied FROM notifications; denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'notifications'; END;
-    ASSERT denied = 'notifications', 'kalam must not be able to read notifications';
+    ASSERT denied = 'notifications', 'runner_gate must not be able to read notifications';
 
     -- And the column grant, not just the table one: it may write its own columns of `matches` and
     -- no others. Marking a match rated is count's, and the status-shape constraint plus this grant
-    -- are together why "Kalam writes no rating" is a fact rather than a promise.
+    -- are together why "a runner writes no rating" is a fact rather than a promise.
     BEGIN  UPDATE matches SET rated_at = now();           denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'matches.rated_at'; END;
-    ASSERT denied = 'matches.rated_at', 'kalam must not be able to mark a match rated';
+    ASSERT denied = 'matches.rated_at', 'runner_gate must not be able to mark a match rated';
 
     BEGIN  UPDATE matches SET withdrawn_reason = 'nope';  denied := NULL;
     EXCEPTION WHEN insufficient_privilege THEN denied := 'matches.withdrawn_reason'; END;
-    ASSERT denied = 'matches.withdrawn_reason', 'kalam must not be able to cancel a match';
+    ASSERT denied = 'matches.withdrawn_reason', 'runner_gate must not be able to cancel a match';
 
-    RAISE NOTICE 'kalam is refused ratings, models, model_versions, clocks, rating_events, users, notifications, and the columns that are not its own: OK';
+    RAISE NOTICE 'runner_gate is refused ratings, models, model_versions, clocks, rating_events, users, notifications, and the columns that are not its own: OK';
 END $$;
 SQL
 
 psql -d postgres -q -v ON_ERROR_STOP=1 -c "DROP DATABASE $SCRATCH" -c "DROP DATABASE $DEPLOYED"
-# Roles are cluster-global, so this only succeeds when no *other* database grants to kalam. Once
-# the stack's own soma database has been initialised with 0001, it does -- and the role must
-# survive. Dropping it is a courtesy to a cluster this script was the first thing to touch, never
-# a requirement, so a refusal here is reported and ignored.
-if psql -d postgres -q -c "DROP ROLE IF EXISTS kalam" 2> /dev/null; then
-  echo "scratch databases dropped; role kalam dropped"
-else
-  echo "scratch databases dropped; role kalam kept (another database grants to it)"
-fi
+echo "scratch databases dropped"

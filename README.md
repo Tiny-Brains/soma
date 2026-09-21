@@ -9,7 +9,7 @@ migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/
 
 **Owns:** GitHub sign-in and sessions · public reads · submissions and their presigned uploads ·
 seasons, their boards and baselines · admission, pairing, trials, promotion, rating, withdrawal and
-the season close · the runner gate `/v1/runner/*` · notifications · the schema and the `kalam` /
+the season close · the runner gate `/v1/runner/*` · notifications · the schema and the
 `runner_gate` grants. **Does not:** run any model -- a submission is admitted on an admitting
 runner and matches are played on runners (Kalam) · write replays · implement game rules (the Ants
 cartridge) · decide deployment addresses, credentials or replica counts.
@@ -148,7 +148,7 @@ judged by `worldgen`.
 | `games` | `bootstrap` |
 | `seasons`, `season_maps`, `season_map_events`, `baseline_events` | admin routes; withdraw closes a season; `bootstrap` moves a live season's engine on a patch |
 | `models`, `model_versions` | entry and submission routes insert; admit and count decide; baseline flips |
-| `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate, or directly in db mode); count rates; withdraw, promotion and disables cancel |
+| `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate); count rates; withdraw, promotion and disables cancel |
 | `ratings`, `rating_events` | count; a baseline's first enable seeds its two ratings at the prior |
 | `clocks` | count's fence; every roster change bumps `roster` |
 | `runner_keys`, `runners` | admin routes; the token exchange upserts runners |
@@ -163,7 +163,7 @@ judged by `worldgen`.
 | `cargo test --manifest-path plugins/Cargo.toml` | Rating and pairing host tests | stable Rust |
 | `plugins/build.sh tb-rating` (or `tb-pairing`) | Tests, then the wasm component and `plugin.json` beside the source (gitignored) | `wasm32-unknown-unknown`, `wasm-tools`, Python 3.11+ |
 | `./scripts/check-sql.sh` | `orion-server sql check`: prepare every shipped statement against a scratch schema built from `migrations/`, each as its connector's role, and plan it to prove that role's grants | docker, or `SQLCHECK_DATABASE` |
-| `./scripts/verify/run.sh` | What the statements mean: the scenario walk, both fence races, that the migrations seed nothing an admin makes, the `kalam` grants. It reads each shipped statement out of the workflow that ships it, so there is no copy to drift | a postgres container (`DB_CONTAINER`) |
+| `./scripts/verify/run.sh` | What the statements mean: the scenario walk, both fence races, that the migrations seed nothing an admin makes, the `runner_gate` grants. It reads each shipped statement out of the workflow that ships it, so there is no copy to drift | a postgres container (`DB_CONTAINER`) |
 | `./scripts/smoke.sh` | Every route's status code with a minted session, against the newest season (create one first); an admin handle adds a runner-key → token → claim round trip | the running stack, package loaded |
 | `./scripts/load-package.sh [--prune]` | Compile a working copy and `package apply` it into a running node; `--prune` retires what the applied version carried and this one does not. A node applies its own package at boot without this | `orion-server`, the admin API |
 | `docker build -t tinybrains/soma:dev .` | The node image | Docker |
@@ -218,7 +218,7 @@ compose file sets every one of them for the local stack.
 | `GITHUB_API_BASE` | api.github.com | Load-time connector base |
 | `SOMA_ARTIFACT` | `/var/lib/orion/soma.package.json` | Where `serve` compiles the package to, and what `[packages] apply` reads |
 | `SOMA_ADMIN_DB_URL` | bootstrap, required | The maintenance database (`.../postgres`), for `CREATE DATABASE orion_state` |
-| `RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD` | bootstrap; first required | Role passwords; the migration creates both roles with none |
+| `RUNNER_GATE_DB_PASSWORD` | bootstrap; required | The runner gate role's password; the migration creates the role with none |
 | `ENGINE_RELEASE` | bootstrap, `0` | `1` declares the engine as a release instead of a patch |
 | `GAME` | `ants` | The game bootstrap registers |
 
@@ -300,7 +300,7 @@ its next sign-in, so removing someone for good means removing their id too.
   image, or the boot apply stops the node on a quarantined channel.
 - **Narrow `SOMA_TRUSTED_PROXIES`** to the proxy actually in front. Empty, every browser shares one
   rate-limit bucket. Too wide, anyone inside the range can claim any address.
-- **Role passwords** (`RUNNER_GATE_DB_PASSWORD`, `KALAM_DB_PASSWORD`) come from a secret store.
+- **The role password** (`RUNNER_GATE_DB_PASSWORD`) comes from a secret store.
 - **`SOMA_ADMIN_GITHUB_IDS`** holds the owner's GitHub numeric id and nothing more. Empty, nobody
   can reach an admin page; every other admin is granted on the Users page.
 - **Scale runners on demand, never on queue depth.** Pair caps the queue at `pair_depth_target`, so
@@ -386,15 +386,14 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   `season_admits*` predicates). A second copy is two pages that disagree.
 - **Weight classes are the season's and strictly ascending.** Admission takes the first class a
   size fits.
-- **The schema is two files, rewritten in place, and must pass kalam's `check-sql.sh` too.**
+- **The schema is two files, rewritten in place, and must pass `check-sql.sh`.**
 - **A notification is never part of the statement that decided the thing**, and is keyed so a
   replay inserts once.
 - **Revocation is a JOIN inside the statement** (`live_sessions`, `live_runners`), never a guard task
   and never trust in a signed token.
 - **The runner routes run as `runner_gate`.** A statement that needs a grant is on the wrong
-  connector. Never widen `kalam`.
-- **The gate's match statements live here**, and `verify/run.sh` refuses drift. Kalam's db-mode
-  copies in `kalam/sql/tb-match-run-*.sql` are unchecked and change together with these.
+  connector. Never widen a role for one.
+- **The gate's match statements live here, in one copy**, and `verify/run.sh` refuses drift.
 - **A gate route's `data.req.*` field names are the contract** with Kalam's runner.
 - **`finish` tells a duplicate delivery (200) from a lost claim (409).** Conflating them fails a
   healthy runner.

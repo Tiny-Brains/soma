@@ -7,11 +7,11 @@
 -- ever wrong, and a halted task answers 400 where the shell needs 401. The rule is enforced by the
 -- same engine that enforces one-active-version, and the workflow only shapes the 401.
 --
--- NOTHING HERE IS GRANTED TO `kalam` OR `runner_gate`, and the absence is the grant: this file
--- carries no GRANT at all, so neither role can read who is signed in or what they were told. The
--- clocks that write notifications run as the owner over `soma-db`.
+-- NOTHING HERE IS GRANTED TO `runner_gate`, and the absence is the grant: this file carries no
+-- GRANT at all, so the runner gate cannot read who is signed in or what they were told. The clocks
+-- that write notifications run as the owner over `soma-db`.
 --
--- Applied by devops' `db-bootstrap` on an empty database, after 0001; the schema is pre-release and
+-- Applied by Soma's `bootstrap` on an empty database, after 0001; the schema is pre-release and
 -- rewritten in place, so an existing database is rebuilt rather than migrated.
 
 BEGIN;

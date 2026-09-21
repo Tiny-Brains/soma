@@ -149,7 +149,7 @@ serve() {
 #                 and not an upgrade. The digest of what was applied is kept as a per-database
 #                 setting, and a rewrite that has not reached this database is REFUSED by name
 #                 rather than surfacing as a missing relation on a clock tick hours later.
-#   the roles     runner_gate (and kalam, for a db-mode replica) created by the migration with LOGIN
+#   the roles     runner_gate, created by the migration with LOGIN
 #                 and no password, so the committed schema ships no secret
 #   the engine    the digest of the cartridge component this image was built with, declared as a
 #                 patch (the live season takes it) or, with ENGINE_RELEASE=1, a release (refused
@@ -269,11 +269,6 @@ SQL
   psql_db -v pw="${RUNNER_GATE_DB_PASSWORD:?RUNNER_GATE_DB_PASSWORD is required -- the role the runner gate runs as}" <<'SQL'
 ALTER ROLE runner_gate WITH LOGIN PASSWORD :'pw';
 SQL
-  if [ -n "${KALAM_DB_PASSWORD:-}" ]; then
-    psql_db -v pw="$KALAM_DB_PASSWORD" <<'SQL'
-ALTER ROLE kalam WITH LOGIN PASSWORD :'pw';
-SQL
-  fi
 
   digest=$(cat "$CARTRIDGE/engine-digest")
   manifest="$CARTRIDGE/cartridge.json"

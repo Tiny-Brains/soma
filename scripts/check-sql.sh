@@ -72,26 +72,19 @@ orion-server sql check . \
   --role soma-db-gate=runner_gate
 
 # ---------------------------------------------------------------- the grants a role must NOT have
-# These moved here from kalam/scripts/check-sql.sh when Kalam's `db` mode was removed. Nothing
-# connects as `kalam` any more, but the role and its grants are still in the migration, and the
-# boundary they describe is still the one the gate is built around -- so a migration that widens
-# it should fail something cheap. soma/scripts/verify/run.sh exercises the same properties against
-# a live database, but it needs one, and it exits 0 through a scenario error; this does neither.
+# `runner_gate` is the one role a runner's statements run as, so a migration that widens it into a
+# competitive decision should fail something cheap. soma/scripts/verify/run.sh exercises the same
+# properties against a live database, but it needs one, and it exits 0 through a scenario error;
+# this does neither.
 echo "==> no role reaches a competitive decision"
 psql "$DATABASE" -q -v ON_ERROR_STOP=1 > /dev/null <<SQL
 BEGIN;
 $(cat "$SCHEMA"/*.sql)
 DO \$\$
 BEGIN
-    IF has_column_privilege('kalam', 'matches', 'rated_at', 'UPDATE') THEN
-        RAISE EXCEPTION 'the kalam role can write matches.rated_at -- counting is Soma''s';
-    END IF;
-    IF has_table_privilege('kalam', 'ratings', 'SELECT') THEN
-        RAISE EXCEPTION 'the kalam role can read ratings';
-    END IF;
     IF EXISTS (SELECT 1 FROM unnest(ARRAY['status', 'reject_reason', 'admit_token']) c
-                WHERE has_column_privilege('kalam', 'model_versions', c, 'UPDATE')) THEN
-        RAISE EXCEPTION 'the kalam role can write a competitive decision on model_versions';
+                WHERE has_column_privilege('runner_gate', 'model_versions', c, 'UPDATE')) THEN
+        RAISE EXCEPTION 'runner_gate can write a competitive decision on model_versions';
     END IF;
     IF has_column_privilege('runner_gate', 'matches', 'rated_at', 'UPDATE') THEN
         RAISE EXCEPTION 'runner_gate can write matches.rated_at -- counting is Soma''s';

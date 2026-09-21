@@ -21,7 +21,6 @@ cargo test --manifest-path plugins/Cargo.toml    # after touching plugins/ (clip
 docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/soma --deny-warnings
 ```
 
-- After a schema change, run kalam's `check-sql.sh` too.
 - **`verify/run.sh` exits 0 through a scenario error.** Read the output, not the exit code. Many
   `ERROR` lines are deliberate negative fixtures, so diff against a run from a `git archive HEAD`
   copy to tell a new error from an old one.
@@ -145,8 +144,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 ### Schema
 
 - **The schema is `migrations/0001_init.sql` and `0002_sessions.sql`, rewritten in place**, with
-  no ALTERs and no third file (`check-sql.sh` and `verify/run.sh` name exactly these two). A change
-  must pass kalam's `check-sql.sh` too.
+  no ALTERs and no third file (`check-sql.sh` and `verify/run.sh` name exactly these two).
 - **`bootstrap` hashes every byte of the migrations, comments included**, and refuses a database
   with a different digest. Any edit, even a comment, means rebuilding the local database, so never
   touch them for cosmetics.
@@ -155,10 +153,10 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   predicates). Never copy one into a workflow.
 - Constraints carry the rules no writer is trusted with: partial unique indexes, the deferrable
   one-active exclusion, `matches_status_shape`.
-- **Grants are the boundary with Kalam.** `kalam` and `runner_gate` get SELECT on a few tables and
-  UPDATE on named columns. The gate's match statements run as `runner_gate` over `soma-db-gate`,
-  and the admin routes and the token exchange run on `soma-db`. A runner statement that needs a new
-  grant is argued on the grant block, and `kalam` is never widened.
+- **Grants are the boundary with Kalam.** `runner_gate` gets SELECT on a few tables and UPDATE on
+  named columns. The gate's match statements and the reap clock run as `runner_gate` over
+  `soma-db-gate`, and the admin routes and the token exchange run on `soma-db`. A runner statement
+  that needs a new grant is argued on the grant block, never by widening the role.
 - A season's `weight_classes` are validated strictly ascending, because admission takes the first
   class a size fits, and no cap above 64 MiB, because every node's `max_artifact_bytes` refuses a
   larger artifact first. Never reintroduce a class table in a workflow or in config.
