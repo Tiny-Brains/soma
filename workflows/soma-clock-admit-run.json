@@ -643,7 +643,8 @@
           "params": [
             { "var": "temp_data.it.model_id" },
             { "var": "temp_data.token" },
-            { "var": "temp_data.again" }
+            { "var": "temp_data.again" },
+            { "var": "temp_data.it.probe_us" }
           ],
           "output": "temp_data.requeued"
         }

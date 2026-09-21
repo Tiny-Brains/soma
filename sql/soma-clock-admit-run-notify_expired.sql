@@ -33,7 +33,7 @@ SELECT e.owner_id, 'submissions',
   JOIN models e   ON e.id = v.model_id
   JOIN games g    ON g.id = v.game_id
   JOIN seasons se ON se.id = v.season_id
- WHERE v.admit_token = ($1)::uuid AND v.reject_reason = 'TIMED_OUT'
+ WHERE v.admit_token = ($1)::uuid AND v.reject_reason IN ('TIMED_OUT', 'PROBE_TOO_SLOW')
    AND v.status IN ('verified', 'active', 'rejected')
    AND notification_wanted(e.owner_id, 'submissions')
 ON CONFLICT (user_id, dedupe_key) DO NOTHING

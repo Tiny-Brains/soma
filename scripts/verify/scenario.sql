@@ -679,17 +679,17 @@ EXECUTE a_claim ('0b000000-0000-0000-0000-000000000003', 16, 180);
 SELECT id = '20000000-0000-0000-0000-0000000000c1' AS reported, admit_token IS NOT NULL AS claimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
 EXECUTE a_verify ('20000000-0000-0000-0000-0000000000c1', 'nano', 5002, 3000, 8000, '1.8.1', '0b000000-0000-0000-0000-000000000003', '{"H": 24}');
 SELECT status, weight_class, size_bytes, manifest, model_phase(v) FROM model_versions v WHERE id = '20000000-0000-0000-0000-0000000000c1';
-\echo '--- a report that decided nothing goes back with its attempt spent (expect UPDATE 1, UPDATE 1, UPDATE 1; then no report, PROBE_TOO_SLOW, 1 attempt, queued)'
+\echo '--- a report that decided nothing goes back with its attempt spent (expect UPDATE 1, UPDATE 1, UPDATE 1; then no report, PROBE_TOO_SLOW, 1 attempt, 1 slow probe, infer_us 277100, queued)'
 SET ROLE runner_gate;
 EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c2', '0c000000-0000-0000-0000-000000000002',
   '{"state": "failed", "stage": "probe", "reason": "the probe inference took 277.1 ms (median of 5), over models.max_probe_ms (250)"}', '{}', NULL,
   'c1000000-0000-0000-0000-000000000002');
 RESET ROLE;
 EXECUTE a_claim ('0b000000-0000-0000-0000-000000000004', 16, 180);
-EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000004', 'PROBE_TOO_SLOW');
+EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000004', 'PROBE_TOO_SLOW', 277100);
 EXECUTE a_release ('20000000-0000-0000-0000-0000000000c2', '0b000000-0000-0000-0000-000000000004');
-SELECT a.report IS NULL AS no_report, a.requeued_for, a.attempts, model_phase(v) FROM admissions a JOIN model_versions v ON v.id = a.version_id WHERE a.version_id = '20000000-0000-0000-0000-0000000000c2';
-\echo '--- a submission that crashes every runner runs out of attempts: two lapsed leases more, then no claim, then the expiry (expect UPDATE 1, UPDATE 1, UPDATE 0, UPDATE 1, then rejected TIMED_OUT)'
+SELECT a.report IS NULL AS no_report, a.requeued_for, a.attempts, a.slow_probes, v.infer_us, model_phase(v) FROM admissions a JOIN model_versions v ON v.id = a.version_id WHERE a.version_id = '20000000-0000-0000-0000-0000000000c2';
+\echo '--- a submission that crashes every runner runs out of attempts: two lapsed leases more, then no claim, then the expiry (expect UPDATE 1, UPDATE 1, UPDATE 0, UPDATE 1, then rejected TIMED_OUT -- one slow probe in three attempts is a busy runner, not the model)'
 SET ROLE runner_gate;
 EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000005', 300, 3);
 RESET ROLE;
@@ -703,9 +703,50 @@ EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-00
 RESET ROLE;
 EXECUTE a_expire (3, 180, '0b000000-0000-0000-0000-00000000000f');
 SELECT status, reject_reason FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000c2';
+\echo '--- a submission slow on EVERY attempt is refused for it: three probes over the ceiling, each measured, then the expiry (expect probe_us 1312700; UPDATE 1 at each requeue; 3 attempts 3 slow; UPDATE 1, then rejected PROBE_TOO_SLOW with infer_us 1298400)'
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000c3', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'slow');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash) VALUES
+  ('20000000-0000-0000-0000-0000000000c3', 'e0000000-0000-0000-0000-0000000000c3', '00000000-0000-0000-0000-00000000000a',
+   '50000000-0000-0000-0000-000000000001', 1, 'sha256:wc3', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000010', 16, 180);
+EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c3', '{"name": "tb.v20000000-0000-0000-0000-0000000000c3"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000010');
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000010');
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000011', 300, 3);
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c3', '0c000000-0000-0000-0000-000000000011',
+  '{"state": "failed", "stage": "probe", "reason": "the probe inference took 1312.7 ms (median of 5), over models.max_probe_ms (1000)"}', '{}', NULL,
+  'c1000000-0000-0000-0000-000000000001');
+RESET ROLE;
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000011', 16, 180);
+EXECUTE a_batch_doc ('0b000000-0000-0000-0000-000000000011', 13, 19, '[]', 'tb.v', 1800) \gset
+SELECT i #>> '{job,again}' AS again, i ->> 'probe_us' AS probe_us FROM json_array_elements((:'body')::json -> 'items') i;
+EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000011', 'PROBE_TOO_SLOW', 1312700);
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000011');
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000012', 300, 3);
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c3', '0c000000-0000-0000-0000-000000000012',
+  '{"state": "failed", "stage": "probe", "reason": "the probe inference took 1305.2 ms (median of 5), over models.max_probe_ms (1000)"}', '{}', NULL,
+  'c1000000-0000-0000-0000-000000000001');
+RESET ROLE;
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000012', 16, 180);
+EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000012', 'PROBE_TOO_SLOW', 1305200);
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000012');
+SET ROLE runner_gate;
+EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000013', 300, 3);
+EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c3', '0c000000-0000-0000-0000-000000000013',
+  '{"state": "failed", "stage": "probe", "reason": "the probe inference took 1298.4 ms (median of 5), over models.max_probe_ms (1000)"}', '{}', NULL,
+  'c1000000-0000-0000-0000-000000000001');
+RESET ROLE;
+EXECUTE a_claim ('0b000000-0000-0000-0000-000000000013', 16, 180);
+EXECUTE a_requeue ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000013', 'PROBE_TOO_SLOW', 1298400);
+EXECUTE a_release ('20000000-0000-0000-0000-0000000000c3', '0b000000-0000-0000-0000-000000000013');
+SELECT a.attempts, a.slow_probes FROM admissions a WHERE a.version_id = '20000000-0000-0000-0000-0000000000c3';
+EXECUTE a_expire (3, 180, '0b000000-0000-0000-0000-000000000014');
+SELECT status, reject_reason, infer_us FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000c3';
 \echo '--- whose fault, on Orion''s stage (expect: DIGEST_FAILED refused; ARTIFACT_UNREACHABLE, ADMISSION_TIMED_OUT, PROBE_TOO_SLOW, ADMISSION_UNREACHABLE again; PARSE_FAILED refused)'
-SELECT r.label, admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL)::admissions) ->> 'refused' AS refused,
-       admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL)::admissions) ->> 'again' AS again
+SELECT r.label, admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL, 0)::admissions) ->> 'refused' AS refused,
+       admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL, 0)::admissions) ->> 'again' AS again
   FROM (VALUES
     (1, 'digest',  '{"admission": {"state": "failed", "stage": "digest", "reason": "the bytes hash to something else"}}'::jsonb),
     (2, 'fetch',   '{"admission": {"state": "failed", "stage": "fetch", "reason": "connection reset"}}'::jsonb),
@@ -717,7 +758,7 @@ SELECT r.label, admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}'
 \echo '--- a malformed report is missing facts, never a cast error (expect parameters null, opset 13, size 102, operators [], probe null -- it evaluated nothing)'
 SELECT admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1,
   '{"admission": {"state": "passed"}, "stats": {"parameters": "lots", "opset": 13.9, "operators": "Conv", "artifact_bytes": 1e30}, "probe": {"ok": true, "checked": 0, "reason": "EVIL"}}',
-  now(), NULL)::admissions);
+  now(), NULL, 0)::admissions);
 ROLLBACK;
 \echo '--- a season''s slug is its name''s (expect check violation), fixed per game (expect unique violation), and never a route''s word (expect check violation)'
 INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)

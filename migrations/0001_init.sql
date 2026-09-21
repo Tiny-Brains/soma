@@ -628,7 +628,8 @@ CREATE TABLE model_versions (
     weight_class    ladder,
     size_bytes      bigint,
     param_count     bigint,
-    -- The slowest reference case's inference at admission, in microseconds. Reported to the
+    -- The slowest reference case's inference at admission, in microseconds -- or, on a version
+    -- rejected PROBE_TOO_SLOW, the median probe its last attempt measured. Reported to the
     -- competitor, and a gate only where a season deliberately makes it one (graph.infer_us_max,
     -- null everywhere the platform ships): there is no compute cap (decision 46) and wall clock
     -- belongs to the admission host, so a verdict turning on it depends on a noisy neighbour. It
@@ -740,7 +741,14 @@ CREATE TABLE admissions (
     -- Why the clock last sent a report back to the queue, for whoever reads the row.
     requeued_for     text,
 
-    CONSTRAINT admissions_attempts_nonneg CHECK (attempts >= 0)
+    -- How many of those reports were a probe over the node's `models.max_probe_ms`. One is a runner
+    -- that was busy; every attempt is the model. So a submission whose every attempt measured a
+    -- slow probe expires PROBE_TOO_SLOW, and any other that runs out expires TIMED_OUT. LAST in the
+    -- table on purpose: a database migrated by hand appends it, and a fresh build must agree.
+    slow_probes      int         NOT NULL DEFAULT 0,
+
+    CONSTRAINT admissions_attempts_nonneg CHECK (attempts >= 0),
+    CONSTRAINT admissions_slow_probes_bounded CHECK (slow_probes BETWEEN 0 AND attempts)
 );
 
 -- The runner's claim: prepared rows nobody has reported on, oldest first.
@@ -1537,8 +1545,8 @@ $$;
 -- `gate`, `head`, `fetch` and `cache` are the runner reaching the bucket, and so is an admission
 -- that ran out of time. A probe over `models.max_probe_ms` is the runner's too: wall clock belongs to
 -- the machine that measured it, and one busy with anything else is slower than the model. Those go
--- back to the queue as `again`, so a model that is slow on every runner runs out of attempts and
--- expires rather than being refused for one machine's load.
+-- back to the queue as `again`, so one machine's load costs an attempt and not the verdict; a model
+-- whose probe is slow on every attempt expires PROBE_TOO_SLOW (admissions.slow_probes).
 --
 -- `size` is S': the larger of the bucket's answer to the clock's own HEAD and the bytes the runner
 -- fetched and re-hashed, plus the manifest -- so no report can make a model smaller than it is.

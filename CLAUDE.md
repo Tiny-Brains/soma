@@ -116,7 +116,9 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - **Admission branches on whose fault it is, not on the reason word**, and `admission_facts()` in
   the migration is where that is decided for a report: a `failed` stage of `size`, `digest`, `parse`
   or `probe` is the competitor's and rejects; `gate`, `head`, `fetch`, `cache`, a timeout and a probe
-  over `max_probe_ms` are the runner's (`again`: back to the queue, attempt spent). A fault of the
+  over `max_probe_ms` are the runner's (`again`: back to the queue, attempt spent). A probe over it on
+  EVERY attempt is the model's after all: `expire` counts them (`admissions.slow_probes`) and rejects
+  `PROBE_TOO_SLOW` instead of `TIMED_OUT`. A fault of the
   clock's own (`retry`) releases the item and spends nothing, so every "ours" that can recur for one
   submission is a retry every tick for ever -- a new branch into `retry` needs a reason it cannot be
   the submission, and a new runner fault goes to `again`, which runs out.

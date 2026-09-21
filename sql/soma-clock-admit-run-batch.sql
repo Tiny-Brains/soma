@@ -42,7 +42,19 @@ SELECT json_build_object(
                     'rules_ok', se.id IS NOT NULL,
                     -- THE RUNNER'S REPORT, TYPED. Null until one has landed, which is what sends the
                     -- item down the prepare path. Never the raw JSON: see admission_facts().
-                    'job', (SELECT admission_facts(a) FROM admissions a WHERE a.version_id = v.id))
+                    'job', (SELECT admission_facts(a) FROM admissions a WHERE a.version_id = v.id),
+                    -- A SLOW PROBE'S MEASUREMENT, in microseconds: the median Orion names in its
+                    -- refusal ("took 347.532 ms (median of 5), over models.max_probe_ms"). requeue
+                    -- keeps it on the version, so a submission that expires PROBE_TOO_SLOW says how
+                    -- slow. Null for every other report, and for one whose wording has moved.
+                    'probe_us', (SELECT round(substring(a.report #>> '{admission,reason}'
+                                                        FROM 'took ([0-9]+(\.[0-9]+)?) ms')::numeric
+                                              * 1000)::bigint
+                                   FROM admissions a
+                                  WHERE a.version_id = v.id
+                                    AND a.report #>> '{admission,stage}' = 'probe'
+                                    AND position('models.max_probe_ms'
+                                                 IN a.report #>> '{admission,reason}') > 0))
                   ORDER BY v.created_at), '[]'::json)) AS body
   FROM model_versions v
   JOIN games g   ON g.id = v.game_id

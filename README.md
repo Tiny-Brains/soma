@@ -370,7 +370,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - **Admission writes only under its `admit_token`**, and an attempt is a runner's claim. A
   submission waiting for a runner, or for this clock over a fault of its own, spends nothing; a
   report that decided nothing keeps the attempt its claim spent, so one that fails the same way on
-  every runner expires `TIMED_OUT` instead of retrying every tick.
+  every runner expires `TIMED_OUT` instead of retrying every tick. The one exception is a probe
+  over `models.max_probe_ms` on every attempt (`admissions.slow_probes`), which is the model's and
+  expires `PROBE_TOO_SLOW`, with the last median kept as the version's `infer_us`.
 - **A runner executes admission and never decides it.** The registration is rebuilt here, the report
   is typed by `admission_facts()` before anything binds it, and `runner_gate` can write an
   admission's claim and report and no verdict column.
