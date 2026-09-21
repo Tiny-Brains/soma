@@ -1,5 +1,13 @@
-SELECT season_baseline_json(v) AS body
+-- WHAT IS LEFT OF THE WINDOW, not a fresh one. The admit clock gives a version upload_window_s from
+-- created_at to arrive, so a re-mint's URLs expire when that does: a URL good past it is an upload
+-- the clock has already given up on. The minutes round down, so the response never promises time
+-- the version does not have.
+SELECT season_baseline_json(v) AS body, w.s AS upload_s, CASE
+    WHEN w.s >= 60 THEN (w.s / 60) || 'm'
+    ELSE w.s || 's'
+    END AS upload_expires_in
 FROM model_versions v
+CROSS JOIN LATERAL (SELECT greatest(1, ($6)::int - floor(extract(epoch FROM now() - v.created_at))::int) AS s) w
 JOIN models e ON e.id = v.model_id
 JOIN users u ON u.id = e.owner_id
 AND u.role = 'baseline'

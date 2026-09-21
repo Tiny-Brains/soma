@@ -13,7 +13,8 @@ SELECT json_build_object( 'season', EXISTS (SELECT 1
                 substr(u.handle, length('baseline.') + 1), 'name', e.name, 'status', v.status, 'enabled',
                 v.status = 'active', 'same', v.status = 'testing'
             AND v.weights_hash = ($4)::text
-            AND v.manifest_hash = ($5)::text)
+            AND v.manifest_hash = ($5)::text
+            AND v.created_at > now() - (($6)::int * interval '1 second'))
         FROM model_versions v
         JOIN models e ON e.id = v.model_id
         JOIN users u ON u.id = e.owner_id

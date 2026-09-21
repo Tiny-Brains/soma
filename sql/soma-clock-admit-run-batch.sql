@@ -6,6 +6,13 @@ SELECT json_build_object(
                     'weights_hash', v.weights_hash, 'manifest_hash', v.manifest_hash,
                     'artifact_key', v.artifact_key,
                     'manifest_key', regexp_replace(v.artifact_key, 'model\.onnx$', 'manifest.json'),
+                    -- STILL ARRIVING. The row is created by the POST that hands out the two
+                    -- presigned PUTs, before either file exists, and no URL either upload route
+                    -- signs outlives created_at + upload_window_s -- so a bucket that is missing
+                    -- one is not a mistake of the competitor's until that window has passed. It is
+                    -- what bounds the retry: this goes false on its own, and the verdict follows
+                    -- when the clock's hold on the item lapses.
+                    'uploading', v.created_at > now() - (($6)::int * interval '1 second'),
                     'budget_ops', coalesce((se.rules -> 'graph' ->> 'adapter_ops_max')::bigint,
                                            (g.manifest -> 'budgets' ->> 'adapter_ops_max')::bigint),
                     -- HOW MANY, NEVER THE SET: the reference set is ~500 KB of JSON, and every copy a

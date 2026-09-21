@@ -226,6 +226,15 @@ admit_observations = 64
 admit_infer_ms     = 5000
 revalidate_batch = 4
 
+# HOW LONG A SUBMISSION IS ALLOWED TO STILL BE ARRIVING, counted from the POST that created its
+# row. The admit clock ticks twenty seconds after that POST, so inside the window a bucket missing
+# the graph or the manifest is a competitor still uploading, and the clock holds the version rather
+# than rejecting it. It is ALSO the lifetime of the upload URLs: soma-user-submissions-create and
+# soma-admin-baselines-add sign their PUTs for what is left of it -- all of it on the first POST,
+# the rest on a re-mint, and a re-mint past it is refused -- so one number decides both, and no URL
+# accepts an upload the clock has already given up on.
+upload_window_s = 1800
+
 # The ONNX surface a submission may use.
 opset_min = 13
 opset_max = 19

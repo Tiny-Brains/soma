@@ -68,6 +68,8 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim
          ("g_admit_report", "soma-gate-admissions-report", "report"),
          ("g_admit_why", "soma-gate-admissions-report", "why"),
          ("b_insert", "soma-admin-baselines-add", "insert"),
+         ("b_ctx", "soma-admin-baselines-add", "ctx"), ("b_fetch", "soma-admin-baselines-add", "fetch"),
+         ("s_why", "soma-user-submissions-create", "why"),
          ("b_flip", "soma-admin-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
 def tasks(ts):

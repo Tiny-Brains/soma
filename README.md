@@ -124,8 +124,13 @@ the singleton buys order, and the SQL fences buy correctness.
 or `rejected` at either step.
 
 **Admission runs no model here.** `soma-clock-admit` walks a submission twice. *Prepare* checks what needs no
-model (the object is in the bucket, the manifest hashes to its declaration, the registration rebuilt
-from it field by field) and queues one `admissions` row. An **admitting runner** (kalam,
+model (both objects are in the bucket, the manifest hashes to its declaration, the registration rebuilt
+from it field by field) and queues one `admissions` row. A row exists from the POST that signed the
+uploads, so for `upload_window_s` (30 minutes from that POST) a missing file is a competitor
+still uploading: the clock holds the item and looks again when the hold lapses, and only past that
+window is it `ARTIFACT_MISSING` or `MANIFEST_MISSING`. Both upload routes sign their PUTs for what is
+left of the same window, and a re-POST past it is `version_in_flight`, so no URL outlives it. An
+**admitting runner** (kalam,
 `RUNNER_ROLE=admit`) claims it through the gate, registers it on its own node, lets Orion admit it,
 plays it over the first `admit_observations` of the game's reference observations, deletes it and
 reports. *Decide* reads the report through `admission_facts()`, measures S' from the clock's own HEAD
@@ -308,7 +313,9 @@ its next sign-in, so removing someone for good means removing their id too.
   runners to drain rows nothing will claim.
 - **Timeouts:** a channel's `timeout_ms` bounds a whole run (admit: 600 s for up to `admit_batch`
   submissions), `admit_timeout_s` (180 s) bounds this clock's hold on one submission before another
-  run may re-claim it, and `admit_lease_s` (600 s) bounds an admitting runner's.
+  run may re-claim it, and `admit_lease_s` (600 s) bounds an admitting runner's. `upload_window_s`
+  (1800 s) is none of those: it is how long a submission may still be arriving, counted from its
+  POST, and the two upload routes sign their PUTs for what is left of it.
 
 ## Releasing
 

@@ -24,7 +24,8 @@ SELECT json_build_object( 'season', s.slug, 'state', CASE
         AND fe.id = ($4)::uuid
         AND f.status = 'testing'
         AND f.weights_hash = ($3)::text
-        AND f.manifest_hash = ($5)::text), 'entry_in_flight', EXISTS (SELECT 1
+        AND f.manifest_hash = ($5)::text
+        AND f.created_at > now() - (($6)::int * interval '1 second')), 'entry_in_flight', EXISTS (SELECT 1
         FROM model_versions f
         JOIN models fe ON fe.id = f.model_id
         WHERE fe.game_id = g.id

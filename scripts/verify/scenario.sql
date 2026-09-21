@@ -536,6 +536,20 @@ EXECUTE b_insert ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaa
 SELECT u.handle, e.name, v.version, v.status, (SELECT count(*) FROM baseline_events be WHERE be.version_id = v.id AND be.action = 'upload') AS events
   FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout';
 SELECT v.id AS scout_v FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout' \gset
+\echo '    a re-mint gets what is left of the upload window, the minutes rounded down, and none once it has passed (expect t 1800 30m, t 599 9m, then f)'
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT (:'body')::json -> 'existing' ->> 'same' AS same \gset
+EXECUTE b_fetch ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT :'same' AS same, :upload_s AS upload_s, :'upload_expires_in' AS expires_in;
+UPDATE model_versions SET created_at = now() - interval '1201 seconds' WHERE id = :'scout_v';
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT (:'body')::json -> 'existing' ->> 'same' AS same \gset
+EXECUTE b_fetch ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT :'same' AS same, :upload_s AS upload_s, :'upload_expires_in' AS expires_in;
+UPDATE model_versions SET created_at = now() - interval '2 hours' WHERE id = :'scout_v';
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT (:'body')::json -> 'existing' ->> 'same' AS same;
+UPDATE model_versions SET created_at = now() WHERE id = :'scout_v';
 \echo '    one version a name a season: the same name in another case, other weights (expect INSERT 0 0)'
 EXECUTE b_insert ('ants', 'summer-2026', 'SCOUT', 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '00000000-0000-0000-0000-0000000000ad');
 \echo '    one set of weights under a second name is a second baseline (expect INSERT 0 1, 2 accounts on those weights)'
@@ -608,6 +622,17 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_h
 \echo '--- prepare: the clock claims both, queues both, releases both (expect claimed t t, INSERT 0 1 twice, UPDATE 1 twice, then queued queued)'
 EXECUTE a_claim ('0b000000-0000-0000-0000-000000000001', 16, 180);
 SELECT admit_token = '0b000000-0000-0000-0000-000000000001' AS claimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
+\echo '    and the batch tells it which of them may still be arriving, so a bucket missing a file is a retry and not a rejection (expect c1 t, c2 f)'
+UPDATE model_versions SET created_at = now() - interval '2 hours' WHERE id = '20000000-0000-0000-0000-0000000000c2';
+EXECUTE a_batch_doc ('0b000000-0000-0000-0000-000000000001', 13, 19, '[]', 'tb.v', 1800) \gset
+SELECT right(i ->> 'model_id', 2) AS version, i ->> 'uploading' AS uploading
+  FROM json_array_elements((:'body')::json -> 'items') i ORDER BY 1;
+\echo '    and the same two hashes POSTed again are a re-mint only inside that window (expect c1 t, c2 f)'
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT (:'body')::json ->> 'same_submission' AS c1 \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+SELECT :'c1' AS c1, (:'body')::json ->> 'same_submission' AS c2;
+UPDATE model_versions SET created_at = now() WHERE id = '20000000-0000-0000-0000-0000000000c2';
 EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{"name": "tb.v20000000-0000-0000-0000-0000000000c1"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');
 EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c2', '{"name": "tb.v20000000-0000-0000-0000-0000000000c2"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');
 EXECUTE a_release ('20000000-0000-0000-0000-0000000000c1', '0b000000-0000-0000-0000-000000000001');

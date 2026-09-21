@@ -43,7 +43,8 @@
             { "var": "metadata.params.slug" },
             { "var": "data.req.name" },
             { "var": "data.req.weights_hash" },
-            { "var": "data.req.manifest_hash" }
+            { "var": "data.req.manifest_hash" },
+            { "var": "metadata.vars.upload_window_s" }
           ],
           "output": "temp_data.ctx"
         }
@@ -169,7 +170,8 @@
             { "var": "metadata.params.slug" },
             { "var": "data.req.name" },
             { "var": "data.req.weights_hash" },
-            { "var": "data.req.manifest_hash" }
+            { "var": "data.req.manifest_hash" },
+            { "var": "metadata.vars.upload_window_s" }
           ],
           "output": "temp_data.rows"
         }
@@ -192,7 +194,7 @@
               "key": {
                 "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
               },
-              "expires_in": "30m",
+              "expires_in": { "var": "temp_data.rows.0.upload_s" },
               "output": "temp_data.put_weights"
             }
           }
@@ -213,7 +215,7 @@
                   "manifest.json"
                 ]
               },
-              "expires_in": "30m",
+              "expires_in": { "var": "temp_data.rows.0.upload_s" },
               "output": "temp_data.put_manifest"
             }
           }
@@ -223,7 +225,7 @@
     {
       "id": "respond",
       "name": "Respond",
-      "description": "201 when the insert created the version, 200 when it did not -- the re-mint, for the same name and hashes still testing.",
+      "description": "201 when the insert created the version, 200 when it did not -- the re-mint, for the same name and hashes still testing and inside their upload window.",
       "function": {
         "name": "map",
         "input": {
@@ -237,8 +239,14 @@
                   {
                     "model_onnx": { "var": "temp_data.put_weights" },
                     "manifest_json": { "var": "temp_data.put_manifest" },
-                    "expires_in": "30m",
-                    "note": "PUT the two files to these URLs. They are one-shot and expire in 30 minutes; POST the same name and hashes again for fresh ones."
+                    "expires_in": { "var": "temp_data.rows.0.upload_expires_in" },
+                    "note": {
+                      "cat": [
+                        "PUT the two files to these URLs. They are one-shot and good for ",
+                        { "var": "temp_data.rows.0.upload_expires_in" },
+                        ", when this version stops waiting for them; until then, POST the same name and hashes again for fresh ones."
+                      ]
+                    }
                   },
                   null
                 ]

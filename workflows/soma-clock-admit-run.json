@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-clock-admit-run",
   "name": "Clock: admit",
-  "description": "What moves a submission off `testing`, in two walks with an admitting runner between them, because Soma runs no model. PREPARE reads the manifest the competitor uploaded and checks it against the hash they declared, checks the artifact is in the bucket, rebuilds the registration field by field, and queues one `admissions` row. A runner whose role is `admit` claims it through the gate, registers the model on its own node by reference and digest -- the node fetches and re-hashes the object, so a row that lies fails admission -- lets Orion admit it, plays it over the game's reference observations, deletes it, and reports what it found. DECIDE reads that report through admission_facts(), measures S' from this clock's own HEAD and the runner's bytes, picks the season's class, applies the platform's policy to the stats and writes one verdict. A baseline lands `disabled` rather than `verified`. The branch that matters is on `fault`: a competitor's mistake rejects the version; a report that decided nothing goes back to the queue with its attempt spent, so a submission that fails the same way on every runner expires TIMED_OUT; and a fault of this clock's releases the item untouched. The claim is the fence. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk.",
+  "description": "What moves a submission off `testing`, in two walks with an admitting runner between them, because Soma runs no model. PREPARE HEADs both files, reads the manifest the competitor uploaded and checks it against the hash they declared, rebuilds the registration field by field, and queues one `admissions` row. The row is created before either file is and the graph is uploaded before the manifest, so a file that has not landed while the presigned PUTs are still good is `UPLOAD_PENDING`: the item keeps its claim and is looked at again when the hold lapses, rather than being given a verdict. Past that window the missing one IS the verdict. A runner whose role is `admit` claims it through the gate, registers the model on its own node by reference and digest -- the node fetches and re-hashes the object, so a row that lies fails admission -- lets Orion admit it, plays it over the game's reference observations, deletes it, and reports what it found. DECIDE reads that report through admission_facts(), measures S' from this clock's own HEAD and the runner's bytes, picks the season's class, applies the platform's policy to the stats and writes one verdict. A baseline lands `disabled` rather than `verified`. The branch that matters is on `fault`: a competitor's mistake rejects the version; a report that decided nothing goes back to the queue with its attempt spent, so a submission that fails the same way on every runner expires TIMED_OUT; and a fault of this clock's releases the item untouched. The claim is the fence. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk.",
   "tags": ["soma", "clock", "admission"],
   "condition": true,
   "loop": { "counter": "i", "max": 64 },
@@ -67,7 +67,8 @@
                 { "var": "metadata.vars.opset_min" },
                 { "var": "metadata.vars.opset_max" },
                 { "var": "metadata.vars.op_allowlist" },
-                { "var": "metadata.vars.model_prefix" }
+                { "var": "metadata.vars.model_prefix" },
+                { "var": "metadata.vars.upload_window_s" }
               ],
               "output": "temp_data.batch"
             }
@@ -120,6 +121,7 @@
               }
             },
             { "path": "temp_data.head", "logic": false },
+            { "path": "temp_data.head_man", "logic": false },
             { "path": "temp_data.man", "logic": false },
             { "path": "temp_data.mtext", "logic": false },
             { "path": "temp_data.signed", "logic": false },
@@ -168,13 +170,34 @@
       }
     },
     {
+      "id": "head_man",
+      "name": "Is the manifest in the bucket?",
+      "description": "The second HEAD, and it is not redundant with the GET below: a competitor uploads the graph first and the manifest after it, so the interval where one is there and the other is not is reached on every submission. Asking the bucket answers it as a fact; signing a GET for a key that is not there answers it as a 404 on the node's own error log, which is a fault of nobody's read as a fault of ours. A GET that fails AFTER this says the manifest is there is still `MANIFEST_MISSING`, a verdict and not a retry: the GET, unlike a HEAD, depends on the bytes -- the upload is unbounded and the connector reads a bounded response -- so a retry would be one submission tried every tick for ever.",
+      "condition": {
+        "and": [
+          { "!": { "var": "temp_data.it.job" } },
+          { "!": { "var": "temp_data.retry" } },
+          { "var": "temp_data.head.exists" }
+        ]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "storage_head",
+        "input": {
+          "connector": "soma-models-internal",
+          "key": { "var": "temp_data.it.manifest_key" },
+          "output": "temp_data.head_man"
+        }
+      }
+    },
+    {
       "id": "sign",
       "name": "Sign a GET for the manifest",
       "condition": {
         "and": [
           { "!": { "var": "temp_data.it.job" } },
           { "!": { "var": "temp_data.retry" } },
-          { "var": "temp_data.head.exists" }
+          { "var": "temp_data.head_man.exists" }
         ]
       },
       "continue_on_error": true,
@@ -323,6 +346,25 @@
                   { "var": "temp_data.retry" },
                   { "!": { "var": "temp_data.head" } },
                   "STORE_UNREACHABLE",
+                  {
+                    "and": [
+                      { "var": "temp_data.head.exists" },
+                      { "!": { "var": "temp_data.head_man" } }
+                    ]
+                  },
+                  "STORE_UNREACHABLE",
+                  {
+                    "and": [
+                      { "var": "temp_data.it.uploading" },
+                      {
+                        "or": [
+                          { "===": [{ "var": "temp_data.head.exists" }, false] },
+                          { "===": [{ "var": "temp_data.head_man.exists" }, false] }
+                        ]
+                      }
+                    ]
+                  },
+                  "UPLOAD_PENDING",
                   null
                 ]
               }
@@ -610,6 +652,8 @@
     {
       "id": "release",
       "name": "Release the clock's claim",
+      "description": "Every item but one still arriving. A submission whose files have not all landed keeps the claim instead, because releasing it would put it back at the head of the next tick's claim -- it is the oldest -- and four of them would hold every slot of admit_batch for the whole upload window, which is a stalled upload starving the submissions behind it. Held, it costs one slot once every admit_timeout_s rather than one every twenty seconds, and the lapse of that hold is what looks at the bucket again.",
+      "condition": { "!==": [{ "var": "temp_data.retry" }, "UPLOAD_PENDING"] },
       "function": {
         "name": "db_write",
         "input": {

@@ -74,7 +74,8 @@
             { "var": "metadata.auth.claims.sub" },
             { "var": "data.req.weights_hash" },
             { "var": "data.req.model" },
-            { "var": "data.req.manifest_hash" }
+            { "var": "data.req.manifest_hash" },
+            { "var": "metadata.vars.upload_window_s" }
           ],
           "output": "temp_data.why"
         }
@@ -163,7 +164,7 @@
           "detail": { "var": "temp_data.why.0.body" }
         },
         "name": "Refused by the season",
-        "description": "`entry_in_flight` refuses only a DIFFERENT submission. Re-POSTing the SAME two hashes for the row already in flight falls through to fetch + sign and answers with fresh upload URLs, which is what the response has always promised and never did: the presigns expire in thirty minutes, and before this a competitor who lost them had a version they could not upload to and could not replace."
+        "description": "`entry_in_flight` refuses only a DIFFERENT submission. Re-POSTing the SAME two hashes for the row already in flight falls through to fetch + sign and answers with fresh upload URLs, good for what is left of the version's upload window, so a competitor who lost the first pair can still finish the version. Past the window `same_submission` is false and the same hashes are `version_in_flight`: the admit clock is about to reject the empty version, and the POST after that is a new one."
       }
     },
     {
@@ -180,7 +181,8 @@
             { "var": "data.req.game" },
             { "var": "data.req.model" },
             { "var": "metadata.auth.claims.sid" },
-            { "var": "data.req.weights_hash" }
+            { "var": "data.req.weights_hash" },
+            { "var": "metadata.vars.upload_window_s" }
           ],
           "output": "temp_data.rows"
         }
@@ -203,7 +205,7 @@
               "key": {
                 "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
               },
-              "expires_in": "30m",
+              "expires_in": { "var": "temp_data.rows.0.upload_s" },
               "output": "temp_data.put_weights"
             }
           }
@@ -224,7 +226,7 @@
                   "manifest.json"
                 ]
               },
-              "expires_in": "30m",
+              "expires_in": { "var": "temp_data.rows.0.upload_s" },
               "output": "temp_data.put_manifest"
             }
           }
@@ -253,8 +255,14 @@
                   {
                     "model_onnx": { "var": "temp_data.put_weights" },
                     "manifest_json": { "var": "temp_data.put_manifest" },
-                    "expires_in": "30m",
-                    "note": "PUT your two files to these URLs. They are one-shot and expire in 30 minutes; POST this submission again with the same two hashes to get fresh ones."
+                    "expires_in": { "var": "temp_data.rows.0.upload_expires_in" },
+                    "note": {
+                      "cat": [
+                        "PUT your two files to these URLs. They are one-shot and good for ",
+                        { "var": "temp_data.rows.0.upload_expires_in" },
+                        ", when this version stops waiting for them; until then, POST this submission again with the same two hashes for fresh ones."
+                      ]
+                    }
                   },
                   null
                 ]
