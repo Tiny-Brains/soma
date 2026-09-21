@@ -28,13 +28,11 @@ WITH folds AS (
              -- names the fleet rather than the model.
              'decision', CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN 'pass'
                               WHEN t.status = 'finished'                           THEN 'reject'
-                              WHEN t.status = 'failed' AND t.fault_seat = cs.seat   THEN 'reject'
                               WHEN n.trials >= tm.trials_max                        THEN 'reject'
                               WHEN n.refused >= tm.trials_max                       THEN 'reject'
                               ELSE 'repair' END,
              'reason',   CASE WHEN t.status = 'finished' AND cs.strikes < t.strike_ceiling THEN NULL
                               WHEN t.status = 'finished'                           THEN 'FORFEIT'
-                              WHEN t.status = 'failed' AND t.fault_seat = cs.seat   THEN 'FAULT:' || t.fault_reason
                               WHEN n.trials >= tm.trials_max                        THEN 'UNPLAYABLE'
                               WHEN n.refused >= tm.trials_max                       THEN 'RUNNER_UNAVAILABLE'
                               ELSE NULL END) AS item,

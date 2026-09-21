@@ -915,8 +915,8 @@ CREATE TABLE matches (
     orion_version        text,        -- which Orion ran the adapters; a sweep is per upgrade (R10)
     replay_key           text,        -- names the attempt, so a stale attempt's blob is an orphan
     played_at            timestamptz,
-    fault_reason         text,
-    fault_seat           smallint,    -- which seat is to blame, when one is
+    fault_reason         text,        -- LEASE_LAPSED (reap) or MODEL_UNAVAILABLE (release): the
+                                      -- fleet's failure, never a seat's; a model's own is a strike
     closed_at            timestamptz,
 
     -- ---- what withdraw reports
@@ -929,8 +929,6 @@ CREATE TABLE matches (
 
     CONSTRAINT matches_seat_count         CHECK (seat_count >= 2),
     CONSTRAINT matches_strike_ceiling     CHECK (strike_ceiling > 0),
-    CONSTRAINT matches_fault_seat_in_range
-        CHECK (fault_seat IS NULL OR fault_seat BETWEEN 0 AND seat_count - 1),
     CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
 
     -- The status and the columns that go with it cannot disagree. This is also half of what
@@ -1732,7 +1730,7 @@ GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
 -- The match player's columns, plus `played_by`, which the claim writes.
 GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
               reason, turns, played_ms, engine_digest_played, orion_version,
-              replay_key, played_at, fault_reason, fault_seat, closed_at, played_by)
+              replay_key, played_at, fault_reason, closed_at, played_by)
     ON matches TO runner_gate;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO runner_gate;

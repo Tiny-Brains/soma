@@ -4,7 +4,7 @@ SELECT mt.replay_key, json_build_object( 'id', mt.id, 'game', g.slug, 'season', 
         FROM season_maps sm
         WHERE sm.id = mt.season_map_id), 'reason', mt.reason, 'turns', mt.turns, 'played_ms', mt.played_ms,
         'played_at', mt.played_at, 'created_at', mt.created_at, 'withdrawn_reason', mt.withdrawn_reason,
-        'successor_id', mt.successor_version_id, 'fault_reason', mt.fault_reason, 'fault_seat', mt.fault_seat,
+        'successor_id', mt.successor_version_id, 'fault_reason', mt.fault_reason,
         'engine_digest', mt.engine_digest_played, 'orion_version', mt.orion_version, 'is_trial', mt.trial_version_id
         IS NOT NULL, 'ladders', array_to_json(mt.ladders), 'strike_limit', mt.strike_ceiling, 'successor',
         (SELECT json_build_object('version_id', sv.id, 'model_id', se2.id, 'model', se2.name, 'owner',

@@ -242,7 +242,7 @@ EXECUTE p_insert (1, 'ants', 48, '70000000-0000-0000-0000-000000000001',
 EXECUTE w_sweep;
 UPDATE seasons SET closed_at = NULL;
 
-\echo '--- reject path: v3 verified; its trial fails with a fault on seat 0; verdict read; reject (expect UPDATE 1, epoch 2)'
+\echo '--- reject path: v3 verified; its only trial fails LEASE_LAPSED under a one-trial ceiling; verdict read; reject (expect UPDATE 1, epoch 2)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
                             weight_class, weights_hash, manifest_hash, orion_version) VALUES
   ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
@@ -253,14 +253,14 @@ EXECUTE p_insert (1, 'ants', 50, '70000000-0000-0000-0000-000000000001',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
 -- No shipped statement fails a row directly: a match fails by the reap's third lapse or the
--- release ceiling, and a fault on a seat is reported through the finish. So this UPDATE is SETUP,
--- not a statement under test -- it puts the row in the state count's reject verdict reads.
-UPDATE matches SET status = 'failed', fault_reason = 'HASH_MISMATCH', fault_seat = 0,
+-- release ceiling, and a model's own failures are strikes, reported through the finish. So this
+-- UPDATE is SETUP, not a statement under test -- it leaves the row as the reap's third lapse does.
+UPDATE matches SET status = 'failed', fault_reason = 'LEASE_LAPSED', lapses = 3,
        claim_token = NULL, lease_expires_at = NULL, closed_at = now()
  WHERE id = :'m50';
-\echo '--- count: batch document (expect n 2: the fold still waiting, then the verdict on v3 -- decision reject, reason FAULT:HASH_MISMATCH)'
-EXECUTE c_batch_doc (10, 3);
-EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'HASH_MISMATCH');
+\echo '--- count: batch document with trials_max 1 (expect n 2: the fold still waiting, then the verdict on v3 -- decision reject, reason UNPLAYABLE)'
+EXECUTE c_batch_doc (10, 1);
+EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'UNPLAYABLE');
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
@@ -424,7 +424,7 @@ SELECT (SELECT count(*) FROM model_versions p JOIN models pe ON pe.id = p.model_
 
 \echo '--- final state'
 SELECT seed, (SELECT map_id FROM season_maps sm WHERE sm.id = matches.season_map_id) AS map,
-       status, lapses, refusals, withdrawn_reason, fault_reason, fault_seat, rated_seq FROM matches ORDER BY seed;
+       status, lapses, refusals, withdrawn_reason, fault_reason, rated_seq FROM matches ORDER BY seed;
 
 \echo '--- the manifest copy: stored as the exact text, accepted when it hashes to manifest_hash (expect INSERT 0 1); one byte changed (expect check violation)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,

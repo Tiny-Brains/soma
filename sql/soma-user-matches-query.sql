@@ -3,7 +3,7 @@ WITH mine AS NOT MATERIALIZED (
         FROM season_maps sm
         WHERE sm.id = mt.season_map_id) AS map_id, mt.seed, mt.reason, mt.turns, mt.played_at, mt.created_at,
         mt.ladders, mt.trial_version_id, mt.withdrawn_reason, mt.successor_version_id, mt.fault_reason,
-        mt.fault_seat, coalesce(mt.played_at, mt.created_at) AS at
+        coalesce(mt.played_at, mt.created_at) AS at
     FROM matches mt
     WHERE EXISTS (SELECT 1
         FROM match_seats ms
@@ -33,7 +33,7 @@ SELECT ls.sid AS session_ok, json_build_object( 'total', CASE
                         'reason', p.reason, 'turns', p.turns, 'played_at', p.played_at, 'created_at',
                         p.created_at, 'ladders', array_to_json(p.ladders), 'is_trial', p.trial_version_id
                         IS NOT NULL, 'withdrawn_reason', p.withdrawn_reason, 'fault_reason', p.fault_reason,
-                        'fault_seat', p.fault_seat, 'successor', (SELECT json_build_object('version_id',
+                        'successor', (SELECT json_build_object('version_id',
                             sv.id, 'model_id', sv.model_id, 'version', sv.version)
                         FROM model_versions sv
                         WHERE sv.id = p.successor_version_id), 'seats', (SELECT coalesce(json_agg(json_build_object(
