@@ -415,6 +415,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 
 ## Known gaps
 
+- A runner's `runners.max_in_flight` (default 4) caps the matches the claim hands it, and nothing but
+  SQL changes it: no route sets it and the runner does not report its slots. A runner started with
+  more `RUNNER_CRON_WORKERS` than its row allows leaves the extra slots idle, with no error anywhere.
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
 - Push notification settings are stored, but nothing delivers them.
 - The refusal grace runs from when a row was paired, not from when a runner arrived: a runner that
