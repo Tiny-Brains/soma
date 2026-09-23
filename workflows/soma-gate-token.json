@@ -21,6 +21,42 @@
       }
     },
     {
+      "id": "slots",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!==": [{ "var": "data.req.max_in_flight" }, null] },
+            {
+              "!": {
+                "and": [
+                  { "===": [{ "type": { "var": "data.req.max_in_flight" } }, "number"] },
+                  { ">=": [{ "var": "data.req.max_in_flight" }, 1] },
+                  { "<=": [{ "var": "data.req.max_in_flight" }, 64] },
+                  {
+                    "===": [
+                      { "%": [{ "var": "data.req.max_in_flight" }, 1] },
+                      0
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "max_in_flight_invalid",
+          "detail": {
+            "reported": { "var": "data.req.max_in_flight" },
+            "allowed": "a whole number from 1 to 64"
+          }
+        },
+        "name": "Slots are a whole number Orion allows",
+        "description": "max_in_flight is how many match slots the runner opened, and becomes the most rows the claim hands it. Absent is fine -- an admitting runner claims no match and an older runner does not report it -- and keeps what the row holds; anything else must be what Orion accepts as a channel's slots."
+      }
+    },
+    {
       "id": "digest",
       "name": "Hash the presented key",
       "function": {
@@ -50,7 +86,8 @@
             { "var": "data.req.node_version" },
             { "var": "data.req.orion_version" },
             { "var": "data.req.ops_budget" },
-            { "var": "data.req.arch" }
+            { "var": "data.req.arch" },
+            { "var": "data.req.max_in_flight" }
           ],
           "output": "temp_data.registered"
         }
