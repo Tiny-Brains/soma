@@ -22,7 +22,7 @@
 # amd64 and arm64 images carry identical components -- a plugin digest is what a signature is over,
 # and one signature must verify on both. Only the runtime stage is per platform.
 
-ARG ORION_VERSION=1.9.0
+ARG ORION_VERSION=1.9.1
 ARG RUST_VERSION=1.98.1
 ARG WASM_TOOLS_VERSION=1.258.0
 ARG CURL_VERSION=8.22.0

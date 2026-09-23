@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Soma is an Orion 1.9.0 package plus the Postgres migrations every TinyBrains package shares, shipped
+Soma is an Orion 1.9.1 package plus the Postgres migrations every TinyBrains package shares, shipped
 as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour is JSON channel and
 workflow definitions whose statements live in `sql/*.sql`, connectors and two
 Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares
@@ -126,9 +126,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   batch read binds parts of it, and a cast error there stops admission for everyone behind it.
 - **An attempt is a runner's claim** (`admissions.attempts`). A submission waiting for a runner
   spends none and never expires, which is why expiry requires the last lease to have lapsed.
-- **No large document rides a clock's message.** Every write keeps deep copies of the old and new
-  value in the audit trail, and an errored run keeps its whole trace, so the reference set carried
-  per item held ~3 GB for ten submissions. The batch carries its length; the gate's admission claim
+- **No large document rides a clock's message.** On a channel with `task_details: true` every
+  write keeps deep copies of the old and new value in the audit trail (Orion turns
+  `capture_changes` on exactly then), and an errored run keeps its whole trace, so the reference set
+  carried per item held ~3 GB for ten submissions. The looping clocks, count and admit, run with
+  `loop_clock_tracing` (`task_details: false`) for that reason; pair, reap and withdraw keep the
+  per-step detail a failed run is diagnosed by. The batch carries its length; the gate's admission claim
   reads the set straight from `games` for the runner.
 - **The manifest is fetched twice, deliberately**: as text (the exact bytes, which the declared
   hash and the stored copy are over) and parsed (to build the registration). What is registered is
@@ -244,7 +247,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   argument as the child's payload, so the child must `parse_json` it first. `clippy` flags the first
   as `correctness.unknown_input_key`.
 - dataflow-rs **skips** a mapping whose logic evaluates to null, so a slot "cleared" with `None`
-  keeps its old value. Clear with `False`.
+  keeps its old value. Clear with `{"path": …, "unset": true}`, which removes it.
 - A JSONLogic `reduce` binds `current`/`accumulator` through `val` only (`var` yields null).
   `metadata.vars` is root scope and reads null inside a `map`/`filter` body, and
   `{">=": [0, null]}` is true, so carry values in explicitly.
@@ -267,6 +270,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - orion-server allocates through glibc, whose per-thread arenas keep freed memory: the image sets
   `MALLOC_ARENA_MAX=2`, which took an idle node from ~910 MB to ~70 MB.
 - `models.max_timeout_ms` clamps a longer `model_infer` timeout **silently**.
+- **Only a failed run keeps a trace**: `[trace_storage] errors_only = true` is the default for every
+  route, and the gate's poll routes carry `task_details: false`, so a hot route never builds one.
 - A cron channel always writes a trace row per occurrence: `errors_only` drops only the result, and
   `tracing.mode = "off"` is upgraded to sync. Only the schedule and `[trace_queue] retention_hours`
   bound the volume. `TraceQueueConfig` denies unknown fields, so a typo there is fatal at boot.

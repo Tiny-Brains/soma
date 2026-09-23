@@ -1,5 +1,5 @@
 # Orion config for the SOMA unit: the REST surface, the runner gate and the five clocks, in cluster mode.
-# Requires 1.9.0. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
+# Requires 1.9.1. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
 # kalam's docker/runner.toml.tmpl.
 #
 # ${NAME:-default} is substituted by orion-server from the container's environment before the file
@@ -208,7 +208,7 @@ model_prefix = "tb.v"
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
 # a different thing that moves for different reasons. AN ADMITTING RUNNER MUST RUN THIS ONE: the
 # admission claim refuses any other, because the stats a verdict is judged on are its Orion's.
-orion_version = "${ORION_VERSION:-1.9.0}"
+orion_version = "${ORION_VERSION:-1.9.1}"
 
 # ADMISSION. The admit clock prepares up to admit_batch submissions a tick and holds each for
 # admit_timeout_s; the model itself is admitted on an ADMITTING RUNNER (kalam, RUNNER_ROLE=admit),
@@ -216,8 +216,8 @@ orion_version = "${ORION_VERSION:-1.9.0}"
 # covers the worst case: kalam's three-minute wait on Orion's admission and every observation at its
 # full deadline. Every runner claim is one of admit_attempts_max, and a submission whose attempts run
 # out expires TIMED_OUT -- one that waits for a runner spends nothing. The claim sends the first
-# admit_observations of the game's reference observations, each played under admit_infer_ms:
-# kalam's ADMIT_LOOP_MAX must reach the first, which web's configs.sh checks.
+# admit_observations of the game's reference observations, each played under admit_infer_ms: their
+# product must fit inside kalam-admit's own timeout_ms, which web's configs.sh checks.
 admit_batch        = 4
 admit_timeout_s    = 180
 admit_attempts_max = 3
@@ -377,8 +377,6 @@ workers = ${SOMA_CRON_WORKERS:-4}
 default_limit = 50
 max_limit     = 200
 
-# The clocks carry `errors_only: true` per channel, so a clean run writes no trace and a broken
-# one is kept in full -- which is what makes `sync` affordable.
 # PROMETHEUS, ON THE MAIN LISTENER. With this off, `/metrics` is not registered at all and 404s
 # like any unknown route -- which is what left the Orion console's Operations dashboard (request
 # rate, error rate, latency percentiles) permanently blank even once its auth was fixed.
@@ -390,17 +388,22 @@ max_limit     = 200
 [metrics]
 enabled = true
 
+# ONLY A FAILED RUN KEEPS ITS TRACE, ON EVERY CHANNEL. The clocks and the runner gate's poll routes
+# say so themselves; this is the default for the rest -- every public, user and admin route, and the
+# gate's writes -- which otherwise stored each request and its answer, `/runner/roster` every 20 s
+# per runner among them. Nothing here is a record anyone keeps: what happened is in Soma's own
+# tables. A scheduled run still writes one row, because Orion upgrades `mode = "off"` to sync for a
+# cron occurrence; `errors_only` drops only its result.
 [trace_storage]
 mode = "sync"
+errors_only = true
 
 # RETENTION, PINNED RATHER THAN INHERITED. Orion's default is 72 hours, and the cleanup task reads
 # this one key for BOTH `traces` and `cron_occurrences` -- an occurrence and the trace it produced
 # age out together, so there is one decision here and not two.
 #
-# 24 because the traces are a debugging record, not an audit one: what a match did is in `matches`,
-# `match_seats` and `rating_events`, which nothing here expires. Measured on the local stack with
-# one idle runner, the gate's poll routes wrote 289 MB/day before they carried `errors_only` --
-# three days of that is most of a gigabyte of empty polls, and the question any of it answers is
-# asked within the hour.
+# 6 because the traces are a debugging record, not an audit one: what a match did is in `matches`,
+# `match_seats` and `rating_events`, which nothing here expires, and the question any of it answers
+# is asked within the hour. The five clocks write ~39k occurrences a day between them.
 [trace_queue]
-retention_hours = 24
+retention_hours = 6

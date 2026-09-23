@@ -12,5 +12,5 @@
     "misfire_policy": "latest",
     "concurrency": { "policy": "forbid", "key": "count" }
   },
-  "config": { "timeout_ms": 60000, "tracing": { "$from": "constants.clock_tracing" } }
+  "config": { "timeout_ms": 60000, "tracing": { "$from": "constants.loop_clock_tracing" } }
 }

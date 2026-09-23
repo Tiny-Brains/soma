@@ -1,7 +1,7 @@
 # soma
 
 Soma is TinyBrains' public API, its schema and the life cycle of a model version: sign-in,
-submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.9.0 package
+submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.9.1 package
 (REST channels, cron clocks, workflows, connectors and two Rust/wasm plugins) plus the Postgres
 migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/soma`.
 [Kalam](https://github.com/Tiny-Brains/kalam) runners play the matches Soma queues, and
@@ -208,7 +208,7 @@ compose file sets every one of them for the local stack.
 | `SEASON_GAP_DAYS` | `1` | Minimum days from a close to the next season's opening |
 | `SOMA_ADMIN_GITHUB_IDS` | empty | GitHub numeric user ids, comma-separated, made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
-| `ORION_VERSION` | `1.9.0` | Recorded on every verdict and match as `orion_version` |
+| `ORION_VERSION` | `1.9.1` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
 | `SOMA_ALLOW_PRIVATE_URLS` | `false` | `[vars] allow_private_urls`, which every connector but `soma-cache` reads: compose service names resolve to private addresses |
@@ -234,7 +234,7 @@ response-cache TTLs are the lever that takes load off the pools and the node at 
 workflow logic and not a connector's config, so that one is checked here.
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
-engine digest and component come from it), `ORION_VERSION` (1.9.0), `RUST_VERSION`,
+engine digest and component come from it), `ORION_VERSION` (1.9.1), `RUST_VERSION`,
 `WASM_TOOLS_VERSION`, `CURL_VERSION`, `DEBIAN_VERSION`. **Policy numbers** (pairing, rating,
 admission, runner contract) are `[vars]` in `docker/soma.toml.tmpl`, and most can be overridden per
 season through its `rules` document (`season_rule_spec()` in
