@@ -19,9 +19,13 @@ come later.
   announcement each set a state or a timestamp column.
 - **Baselines stay off the podium.** The podium, the profile's medals and the champions skip
   baselines and close the ranks up, as the leaderboard's Baselines switch does.
-- **Images reach the browser through a proxy.** Soma returns site paths, `/media/<key>`, and web's
-  nginx (local) and Caddy (production) proxy `/media/` to a media bucket. Replays stay in their
-  private bucket behind presigned GETs.
+- **One owner, one podium place.** Each ladder's podium takes each owner's best version, then the
+  top three owners. A second model of the same owner never takes a second place.
+- **No image storage.** Soma stores no picture and no rendered image, and runs no media bucket or
+  proxy. The browser draws every board and frame with the viewer and caches what it drew. A card's
+  resting picture is the match's last frame, which the runner reports at `finish` and Soma keeps in
+  Postgres as opaque JSON beside the match, served by `GET /v1/matches/{id}/frame`. Stories and
+  posts are text. Replays stay in their private bucket behind presigned GETs.
 - **Bump and restore.** The migrations are rewritten in place, and production is rebuilt from them
   with its data restored (*Production cutover*).
 
@@ -55,15 +59,19 @@ builds.
    story cannot go in the public routes, which declare `cache` under a key that holds nothing about
    the caller. The first caller's view would reach everyone. They get `/v1/me/...` routes of their
    own, which web merges into the public view.
-3. **The poster URL comes from `replay-url`.** A runner calls `soma-gate-replay-url`, PUTs the
-   replay and then calls `finish`, so a URL handed back by `finish` arrives too late to use.
-   `replay-url` signs both keys, and `finish` records `poster_key` when the body says
-   `poster: true`.
+3. **A replay holds no frames.** `ants/engine/src/replay.rs` stores each turn's actions, so the
+   state at the last turn exists only after the browser re-simulates the whole match, which a grid
+   of thirty cards cannot afford. The runner holds the final state when the match ends, so it
+   sends the last frame in the `finish` body, and Soma stores it as given and never reads inside
+   it. The board's static layer is already `season_maps.board`, so the frame carries only what
+   moved.
 4. **A card grid cannot carry presigned URLs.** `GET /v1/matches/{id}` presigns the replay for an
    hour inside a cached response. Thirty cards would need thirty presigns per workflow run, and
-   every cached copy would hold URLs that expire. Posters and pictures go through the `/media/`
-   proxy under keys that never change. Hover preview fetches `GET /v1/matches/{id}` for its
-   `replay_url` when the pointer rests on a card, so the list carries no replay URL.
+   every cached copy would hold URLs that expire. A card fetches its frame from
+   `GET /v1/matches/{id}/frame`, which needs no signing and answers `Cache-Control: public,
+   max-age=31536000, immutable` once the match is finished, so the browser keeps it. Hover preview
+   fetches `GET /v1/matches/{id}` for its `replay_url` when the pointer rests on a card, so the
+   list carries no replay URL.
 5. **The hill count is readable.** Every season board's file carries a top-level `hills` array
    of players × H entries, beside the `players`, `rows` and `cols` that `season_map_header()`
    reads today. The header gains `hills`, its length, and the upload checks `Np` and `Hh` against
@@ -94,19 +102,23 @@ builds.
 ## Design
 
 - **Write the podium when a season closes.** The withdraw clock's close inserts `season_podium`
-  rows, first to third on each ladder with baselines skipped, and the final rating. The leaderboard
+  rows, first to third on each ladder with baselines skipped and one place per owner (each
+  owner's best version stands for them), and the final rating. The leaderboard
   podium, the profile's medals and the champions read that one frozen record rather than re-rank
   every closed ladder on each profile view. A `medal` notification goes to each placed owner.
-- **Two watch events, with a source.** `opened` carries `via`: tv, shelf, grid, next, rail or
-  link. `finished` carries nothing more. "Watch next clicked" is `opened` with `via = next`, and
-  the same rows tell you whether the TV or the shelves bring more viewers.
+- **Three watch events.** `visit` is one page load, with no match. `opened` carries `via`: tv,
+  shelf, grid, next, rail or link. `finished` carries nothing more. "Watch next clicked" is
+  `opened` with `via = next`, the same rows tell you whether the TV or the shelves bring more
+  viewers, and `opened` over `visit` is matches opened per visit.
 - **A rivals route.** Per opposing model this season: played, won and lost, from `match_seats`.
   Home's Your season reads the top loss from it.
 - **"Top of the ladder" means two or more seats in the top ten.** An eight-seat board rarely seats
   eight of the top ten, so requiring every seat would fill the channel with 2-player matches.
 - **A bio or a version note that trips the word list is refused, not held.** You get a 422 naming
-  the rule and rewrite the line. Stories and comments keep the hold, since their authors write at
-  length.
+  the rule and rewrite the line. A URL in either is allowed and drawn as plain text. Stories and
+  comments keep the hold, since their authors write at length.
+- **An announcement links to a site path or an `https://` URL.** Only an admin writes one. Notify
+  keeps the site-path rule, since each send becomes a `notifications` row.
 - **Commenting off lives on `users`**, as an end time and a reason, and its history lives in
   `audit_log`.
 - **The audit log also records the admin writes that exist today**: seasons, boards, baselines,
@@ -125,21 +137,20 @@ changes meaning.
 | `comments` | `id`, `thread_id`, `parent_id`, `root_id`, `author_id`, `body` up to 500, `state` (live, held, removed, deleted), `hold_tag`, `created_at`, `decided_at`, `decided_by` | `root_id` makes "twenty threads with their replies" one indexed read |
 | `comment_reports` | `comment_id`, `reporter_id`, `reason` from a fixed list, `words` up to 200, `created_at` | unique per reporter and comment |
 | `comment_words` | `word`, `added_by`, `added_at`, `removed_at`, `removed_by` | the check reads rows with `removed_at IS NULL` |
-| `users.bio` | up to 160 characters | refused on a listed word or a URL |
+| `users.bio` | up to 160 characters | refused on a listed word; a URL stays plain text |
 | `users.comments_off_until`, `.comments_off_reason` | an end time, `infinity` for good | history in `audit_log` |
 | `model_versions.note` | up to 120 characters | refused on a listed word |
-| `model_stories` | `model_id` PK, `body`, `pending_body`, `hold_tag`, `featured_at`, `updated_at`, `approved_at`, `removed_at` | the public reads `body`; the owner also reads `pending_body` |
-| `posts` | `slug` unique, `title`, `author_id`, `body`, `published_at` (null for a draft), `updated_at` | unpublish clears `published_at` |
-| `pictures` | `key`, `owner_id`, `story_model_id` or `post_slug`, `content_type`, `size_bytes`, `state` (pending, ready, refused, removed), `created_at` | a HEAD after upload sets `ready` or `refused` |
-| `announcements` | `kind` (notice, season, maintenance, incident), `body` up to 200, `link`, `dismissable`, `ends_at`, `published_by`, `published_at`, `disabled_at`, `disabled_by` | live: not disabled, not past `ends_at` |
+| `model_stories` | `model_id` PK, `title`, `pending_title`, `body`, `pending_body`, `hold_tag`, `featured_at`, `updated_at`, `approved_at`, `removed_at` | the public reads `body`; the owner also reads `pending_body` |
+| `posts` | `id`, `slug` unique and editable, `title`, `author_id`, `body`, `published_at` (null for a draft), `updated_at` | unpublish clears `published_at` |
+| `announcements` | `kind` (notice, season, maintenance, incident), `body` up to 200, `link` (a site path or `https://`), `dismissable`, `ends_at`, `published_by`, `published_at`, `disabled_at`, `disabled_by` | live: not disabled, not past `ends_at` |
 | `notify_sends` | `id`, `subject`, `link`, `audience` jsonb, `sent_by`, `sent_at`, `recipients` | each recipient gets a `notifications` row keyed `notify:<id>` |
 | `picks` | `match_id`, `position`, `pinned_by`, `pinned_at`, `unpinned_at`, `unpinned_by` | partial unique index on live picks |
 | `audit_log` | `id`, `admin_id`, `action`, `target_kind`, `target_id`, `reason`, `detail` jsonb, `at` | written inside the admin write's statement |
-| `watch_events` | `match_id`, `day`, `event` (opened, finished), `via`, `n` | key on the first four, upserted `n = n + 1`; no user, no address |
-| `season_podium` | `season_id`, `ladder`, `place` 1 to 3, `version_id`, `rating` | written by the close, baselines skipped |
-| `matches.poster_key` | the poster's key in the media bucket | set by `finish` |
+| `watch_events` | `match_id` (null for `visit`), `day`, `event` (visit, opened, finished), `via`, `n` | key on the first four, `NULLS NOT DISTINCT`, upserted `n = n + 1`; no user, no address |
+| `season_podium` | `season_id`, `ladder`, `place` 1 to 3, `version_id`, `owner_id`, `rating` | written by the close, baselines skipped; unique on `(season_id, ladder, owner_id)` |
+| `match_frames` | `match_id` PK, `turn`, `frame` jsonb | the runner's last frame, opaque, written by `finish`; a size CHECK; its own table so the match row stays small |
 | `matches.margin` | first's score minus second's; null for a shared first place | set by count's fold |
-| `matches.upset` | the best `mu_before` among beaten seats minus the winner's, Open ladder | set by count's fold; positive is an upset |
+| `matches.upset` | the best conservative rating before the match among beaten seats, disqualified ones left out, minus the winner's, Open ladder | set by count's fold; positive is an upset |
 | `season_maps.size`, `.terrain`, `.hills` | from the name, and the file's `hills` count | CHECK on the name pattern |
 
 **Functions**, each shared by several statements:
@@ -148,7 +159,7 @@ changes meaning.
   Comments, stories, bios and notes call it, so every route refuses a text for the same reason.
   Postgres has the regex datalogic lacks.
 - `match_summary_json(match)`: the card. The list, related, picks and channel routes return one
-  shape, with `poster_url`, `margin`, `upset` and `comments` added.
+  shape, with `margin`, `upset`, `comments` and `frame` (whether a last frame exists) added.
 - `comment_json(comment)`: the public row, with `deleted` rows kept as placeholders while they
   have replies.
 - `rating_series(season, ladder, since, points)`: the bucketed series.
@@ -167,12 +178,7 @@ created_at)`, `comments (author_id, created_at DESC)` and `comments (created_at)
 
 ## Connectors
 
-- `soma-media`: storage on the media bucket, `presign_put` and `head`. Pictures upload through it.
-- `soma-media-gate`: the same bucket signed for `RUNNER_BLOB_ENDPOINT`, `presign_put` alone, for
-  the runner's poster. A runner's `kalam-blobs-put` re-prefixes its own base URL onto the signed
-  path, so the media bucket must sit on the same endpoint as the replay bucket, path-style.
-- New deployment settings: `MEDIA_BUCKET`, beside `R2_BUCKET`, in `soma.toml.tmpl` and both
-  compose files. The proxy is web's (web's proposal, *Media proxy*).
+None new. No media bucket, no new deployment setting.
 
 ## Public routes
 
@@ -180,15 +186,16 @@ Each of these is caller-invariant and cached.
 
 | Route | Returns | Serves |
 |---|---|---|
-| `GET /v1/matches` + `sort=newest\|closest\|upset\|longest\|discussed`, `since=`, `top=` | cards with `poster_url`, `margin`, `upset`, `comments`; a cursor per sort | home channels and shelves, `/matches` |
+| `GET /v1/matches` + `sort=newest\|closest\|upset\|longest\|discussed`, `since=`, `top=` | cards with `margin`, `upset`, `comments`, `frame`; a cursor per sort | home channels and shelves, `/matches` |
+| `GET /v1/matches/{id}/frame` | `{id, map, turn, seats, frame}`: the last frame and each seat's score and rank; `frame` null before the match finishes or when the runner sent none, and the browser draws turn zero from the board. `Cache-Control: public, max-age=31536000, immutable` once finished | every card, Tile and Thumb |
 | `GET /v1/matches/{id}/related` | twelve cards: six of these models with the winner's first, three on the board, then the latest | watch rail |
 | `GET /v1/games/{game}/picks` | pinned cards in order | Staff picks channel |
 | `season_json()` + `playing` | claimed and running matches of the season, trials excluded | season strip, `/matches` header |
 | `GET /v1/games/{game}/leaderboard/series?ladder=&since=&points=` | per version, the rating at each bucket edge | sparkline, Trend, Rank race, Movers, model banner |
-| `GET /v1/games/{game}/seasons/{slug}/podium` | the frozen podium | closed leaderboard |
+| `GET /v1/games/{game}/seasons/{slug}/podium` | the frozen podium, each place with its owner's latest match | closed leaderboard |
 | `GET /v1/models/{id}/season` | record, last five, best win, worst loss, rank now and a week ago | model's This season |
 | `GET /v1/models/{id}/rivals` | per opponent model: played, won, lost | home's Your season |
-| `GET /v1/models/{id}/story` | the approved story, featured, updated, its ready pictures | model page |
+| `GET /v1/models/{id}/story` | the approved title and story, featured, updated | model page |
 | `GET /v1/threads?match=\|model=` | twenty top-level comments with their replies, the count, the lock, a cursor | watch, model |
 | `GET /v1/profiles/{handle}/comments` | the author's live comments with host and link | profile |
 | `GET /v1/profiles/{handle}` + `bio`, `medals` | medals from `season_podium` | profile |
@@ -196,7 +203,7 @@ Each of these is caller-invariant and cached.
 | `GET /v1/posts/{slug}` | one published post | `/blog/:slug` |
 | `GET /v1/announcements` | live announcements: id, kind, body, link, dismissable | every page |
 | `GET .../seasons/{slug}/maps` + `size`, `terrain`, `hills`, `latest_match` | stored fields | `/maps`, the Board chip |
-| `POST /v1/events` | 204; body `{match, event, via}`; address rate limit; no cookie; not cached | measuring |
+| `POST /v1/events` | 204; body `{event, match, via}`; address rate limit; no cookie; not cached | measuring |
 
 `GET /v1/matches/{id}` and the public listing also hide trials in progress (finding 1).
 
@@ -209,13 +216,11 @@ Each of these is caller-invariant and cached.
 | `POST /v1/comments/{id}/reports` | files a report |
 | `GET /v1/me/comments?host=` | the caller's held comments on that host |
 | `PUT /v1/models/{id}/story`, `GET /v1/me/models/{id}/story` | writes the story, held on a listed word; reads the waiting text |
-| `POST /v1/models/{id}/story/pictures` | a presigned PUT with a signed `content_type` of PNG, JPEG or WebP; five per story |
 | `PATCH /v1/versions/{id}` | sets the note |
 | `PATCH /v1/me` + `bio` | sets the bio |
 
-Orion's `storage_presign` signs a PUT's content type and cannot bind its length. The size cap is a
-HEAD after upload that marks a picture `refused` above 1 MB, and a story draws only `ready`
-pictures.
+Stories and posts are text: headings, links and lists. A post can name a match, which web draws
+with the viewer. Neither carries a picture.
 
 ## Admin routes
 
@@ -229,7 +234,7 @@ reason where the page asks for one.
 - **Announcements**: live and past; publish; disable.
 - **Notify**: count an audience as its chips change; send as one `INSERT ... SELECT`; the log with
   recipients and how many read it.
-- **Posts**: drafts and published; write, publish, unpublish; pictures.
+- **Posts**: drafts and published; write, publish, unpublish.
 - **Stories**: every story with its state; feature, unfeature; approve and remove a held edit.
 - **Picks**: pin by match id, reorder, unpin.
 - **Audit**: newest first, searchable by admin and by action.
@@ -241,20 +246,20 @@ reason where the page asks for one.
 No new clock.
 
 - **count**: the fold also writes `matches.margin` and `matches.upset`, inside the fenced
-  statement, so a halted run writes neither.
+  statement, so a halted run writes neither. The trial verdicts, `pass` and `reject`, write
+  `margin`.
 - **withdraw**: the close also inserts `season_podium`, then a `medal` notification per placed
   owner as its own keyed statement.
 - **pair, admit, reap**: unchanged.
 
 ## Runner gate
 
-- `soma-gate-replay-url` returns `poster_url` beside `url`. It signs the poster for
-  `RUNNER_BLOB_ENDPOINT` through `soma-media-gate`, at
-  `posters/<match>/<claim_token>.json` with `content_type: application/json`.
-- `soma-gate-finish` binds `data.req.poster` and sets `poster_key` from the claim when it is
-  true. `runner_gate` gains `UPDATE (poster_key) ON matches`, argued on the grant block beside
-  `replay_key`.
-- Kalam's side is `kalam/proposal/`. A runner that sends no poster leaves the card on turn zero.
+- `soma-gate-replay-url` is unchanged.
+- `soma-gate-finish` binds `data.req.frame`, optional, and inserts it into `match_frames` in the
+  same statement as the result, under the same claim. `runner_gate` gains `INSERT ON
+  match_frames`, argued on the grant block. The CHECK on the frame's size refuses an oversized
+  one, so the runner sends the frame only when it fits, and a match never fails for want of one.
+- Kalam's side is `kalam/proposal/`. A runner that sends no frame leaves the card on turn zero.
 
 ## Notifications
 
@@ -280,14 +285,14 @@ Each is a separate `continue_on_error` write after the decision. The bell draws 
    an admin write and its audit row; a close that writes a podium without its baseline.
 2. **Catalogue**, which the shell, home, watch, matches, leaderboard and maps need: sorts, related,
    picks read, `playing`, series, podium, model season, rivals, map fields, events, announcements
-   read, the poster in the gate.
+   read, the frame in the gate and its route.
 3. **Community**: threads, comments, reports, words, commenting off, the comments and users
    desks, audit.
-4. **Editorial**: stories, posts, pictures, the announcement and pick writes, Notify.
+4. **Editorial**: stories, posts, the announcement and pick writes, Notify.
 
 Steps 2 to 4 can each ship as a Soma release of its own without touching the schema. Web ships once
-all four are in. The poster route needs kalam's side before any card shows one, and the schema
-must land before a runner sends `poster`.
+all four are in. A card shows a last frame only once kalam sends one, and the schema must land
+before a runner sends `frame`.
 
 ## Production cutover
 
@@ -297,8 +302,9 @@ above adds a table, a nullable column, a function or an index, so the bump resto
 1. Close the season, or stop the runners and the clocks.
 2. `pg_dump --data-only` every existing table.
 3. Rebuild from the new migrations and restore. The new tables start empty.
-4. Run a one-off statement from `scripts/` that fills `margin` and `upset` for past matches and
-   `size`, `terrain` and `hills` for past boards.
+4. Run a one-off statement from `scripts/` that fills `margin` and `upset` for past matches,
+   `size`, `terrain` and `hills` for past boards, and `season_podium` for every closed season.
+   Past matches have no last frame, so their cards rest on turn zero.
 5. Check the rating chain (`rating_events` against `ratings.matches_played`) and the row counts
    before the runners come back.
 
@@ -309,6 +315,4 @@ season's boards upload under the name rule. That same boundary is when ants' new
 
 ## Open questions
 
-- The domain's name: `community`, or another word both packages agree on.
-- The Top of the ladder rule: two or more seats in the top ten, as proposed here, or a rule
-  home.md states.
+None. `PLAN.md` records the answers (§3).
