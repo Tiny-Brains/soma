@@ -31,7 +31,7 @@ SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'b
                                 ORDER BY m.played_at DESC, m.id DESC
                                 LIMIT 1)), 'versions', json_agg(json_build_object(
                             'version_id', v.id, 'version', v.version, 'class', v.weight_class, 'size_bytes',
-                            v.size_bytes, 'status', v.status, 'created_at', v.created_at, 'ratings',
+                            v.size_bytes, 'memory_bytes', v.memory_bytes, 'status', v.status, 'created_at', v.created_at, 'ratings',
                             model_ratings(v.id, ($2)::float8))
                         ORDER BY v.version DESC)) AS model
                     FROM model_versions v

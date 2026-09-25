@@ -172,6 +172,18 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A season's `weight_classes` are validated strictly ascending, because admission takes the first
   class a size fits, and no cap above 64 MiB, because every node's `max_artifact_bytes` refuses a
   larger artifact first. Never reintroduce a class table in a workflow or in config.
+- **A class's memory numbers are ceilings a runner must carry.** `weight_classes_ok()` bounds
+  `memory_flat_bytes` at 262,144 and `memory_cell_bytes` at 16, and web's `configs.sh` reads both
+  out of it (the `BETWEEN 0 AND <n>` on the key's own line) to check them against kalam's
+  `max_input_elements` and `max_output_elements`; raise one only with the runner's template.
+  Routes return a season's classes through `weight_classes_public()`, which fills an absent number
+  with 0.
+- **`memory_price()` is the only memory rule.** The admit clock's `classify` calls it for the class
+  the size lands in, and a backfill or a `why` calls it too, never a copy. Its three verdicts are
+  final and the competitor's; no verdict and no bytes where the class allows memory is a game with
+  no `limits.boards`, which `judge` retries as `BOARDS_UNDECLARED`. `probe.round_trip`'s keys
+  (`checked`, `failed`) are a contract with kalam-admit's report, typed in `admission_facts()`
+  beside the others as `round_trip_refused`.
 - **Season rule ceilings are what a node can honour.** `execution.max_turns` stops at 1000 (Kalam's
   match loop is 1010 sweeps) and `execution.turn_ms` at 60000 (every template's
   `models.max_timeout_ms`). web's `configs.sh` reads both bounds out of the migration; raise one

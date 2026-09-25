@@ -740,14 +740,14 @@ SELECT count(DISTINCT e.owner_id) AS accounts FROM model_versions v JOIN models 
 \echo '--- admission lands a baseline DISABLED and a competitor VERIFIED, each on its prepared admission (expect UPDATE 1 and INSERT 0 1 for each, then disabled / verified)'
 UPDATE model_versions SET admit_token = '0a000000-0000-0000-0000-000000000001', admit_started_at = now() WHERE id = :'scout_v';
 INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES (:'scout_v', '{}', '{}', 12000, 1000000);
-EXECUTE a_verify (:'scout_v', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000001', '{}');
+EXECUTE a_verify (:'scout_v', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000001', '{}', 0);
 INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'alt');
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash, admit_token, admit_started_at)
 VALUES ('20000000-0000-0000-0000-0000000000a9', 'e0000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000000a',
         '50000000-0000-0000-0000-000000000001', 1, 'sha256:walt', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', '0a000000-0000-0000-0000-000000000002', now());
 INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES ('20000000-0000-0000-0000-0000000000a9', '{}', '{}', 12000, 1000000);
-EXECUTE a_verify ('20000000-0000-0000-0000-0000000000a9', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000002', '{}');
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000a9', 'nano', 12000, 3000, 8000.5, '1.8.1', '0a000000-0000-0000-0000-000000000002', '{}', 0);
 SELECT (SELECT status FROM model_versions WHERE id = :'scout_v') AS scout, (SELECT status FROM model_versions WHERE id = '20000000-0000-0000-0000-0000000000a9') AS alt,
        (SELECT model_phase(v) FROM model_versions v WHERE id = :'scout_v') AS phase;
 \echo '--- a testing baseline cannot be enabled (expect INSERT 0 0, twin still testing)'
@@ -856,11 +856,11 @@ EXECUTE g_admit_why ('20000000-0000-0000-0000-0000000000c1', '0c000000-0000-0000
 RESET ROLE;
 \echo '--- the facts the clock judges (expect admitted, no again, size 5002, 3000 params, opset 17, probe ok over 2, infer_us 8000)'
 SELECT admission_facts(a) FROM admissions a WHERE a.version_id = '20000000-0000-0000-0000-0000000000c1';
-\echo '--- decide: the reported one is claimed again, the waiting one is not; the verdict takes the prepared manifest (expect claimed t, not f; UPDATE 1; verified nano 5002 with manifest {} and an admission)'
+\echo '--- decide: the reported one is claimed again, the waiting one is not; the verdict takes the prepared manifest (expect claimed t, not f; UPDATE 1; verified nano 5002, memory 0, with manifest {} and an admission)'
 EXECUTE a_claim ('0b000000-0000-0000-0000-000000000003', 16, 180);
 SELECT id = '20000000-0000-0000-0000-0000000000c1' AS reported, admit_token IS NOT NULL AS claimed FROM model_versions WHERE id IN ('20000000-0000-0000-0000-0000000000c1', '20000000-0000-0000-0000-0000000000c2') ORDER BY id;
-EXECUTE a_verify ('20000000-0000-0000-0000-0000000000c1', 'nano', 5002, 3000, 8000, '1.8.1', '0b000000-0000-0000-0000-000000000003', '{"H": 24}');
-SELECT status, weight_class, size_bytes, manifest, model_phase(v) FROM model_versions v WHERE id = '20000000-0000-0000-0000-0000000000c1';
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000c1', 'nano', 5002, 3000, 8000, '1.8.1', '0b000000-0000-0000-0000-000000000003', '{"H": 24}', 0);
+SELECT status, weight_class, size_bytes, memory_bytes, manifest, model_phase(v) FROM model_versions v WHERE id = '20000000-0000-0000-0000-0000000000c1';
 \echo '--- a report that decided nothing goes back with its attempt spent (expect UPDATE 1, UPDATE 1, UPDATE 1; then no report, PROBE_TOO_SLOW, 1 attempt, 1 slow probe, infer_us 277100, queued)'
 SET ROLE runner_gate;
 EXECUTE g_admit_report ('20000000-0000-0000-0000-0000000000c2', '0c000000-0000-0000-0000-000000000002',
@@ -941,6 +941,140 @@ SELECT r.label, admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}'
 SELECT admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1,
   '{"admission": {"state": "passed"}, "stats": {"parameters": "lots", "opset": 13.9, "operators": "Conv", "artifact_bytes": 1e30}, "probe": {"ok": true, "checked": 0, "reason": "EVIL"}}',
   now(), NULL, 0)::admissions);
+ROLLBACK;
+
+\echo '===== memory: a class allows it, admission prices it, the round trip judges it ====='
+BEGIN;
+\echo '--- the class memory numbers: whole numbers to 262144 and 16, absent is 0 (expect t t t, then f for each of the eight)'
+SELECT weight_classes_ok('[{"class": "nano", "max_bytes": 16384, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}]') AS tops,
+       weight_classes_ok('[{"class": "nano", "max_bytes": 16384, "memory_flat_bytes": 0, "memory_cell_bytes": 0}]') AS zeros,
+       weight_classes_ok('[{"class": "nano", "max_bytes": 16384}]') AS absent;
+SELECT r.label, weight_classes_ok(jsonb_build_array('{"class": "nano", "max_bytes": 16384}'::jsonb || r.e)) AS ok
+  FROM (VALUES (1, 'flat over',  '{"memory_flat_bytes": 262145}'::jsonb),
+               (2, 'cell over',  '{"memory_cell_bytes": 17}'::jsonb),
+               (3, 'negative',   '{"memory_flat_bytes": -1}'::jsonb),
+               (4, 'fraction',   '{"memory_cell_bytes": 1.5}'::jsonb),
+               (5, 'a string',   '{"memory_flat_bytes": "1024"}'::jsonb),
+               (6, 'null',       '{"memory_cell_bytes": null}'::jsonb),
+               (7, 'a list',     '{"memory_flat_bytes": [1]}'::jsonb),
+               (8, 'cell -1',    '{"memory_cell_bytes": -1}'::jsonb)) AS r (n, label, e)
+ ORDER BY r.n;
+\echo '    and the column refuses one (expect check violation on seasons_weight_classes_shape)'
+SAVEPOINT bounds;
+UPDATE seasons SET weight_classes = '[{"class": "nano", "max_bytes": 16384, "memory_cell_bytes": 17}]'
+ WHERE id = '50000000-0000-0000-0000-000000000001';
+ROLLBACK TO SAVEPOINT bounds;
+\echo '--- the default table allows no memory, and says so (expect valid t, 5 classes, 5 at 0 and 0); a table without the keys reads as 0 (expect nano 16384 0 0)'
+SELECT weight_classes_ok(default_weight_classes()) AS valid, jsonb_array_length(default_weight_classes()) AS classes,
+       (SELECT count(*) FROM jsonb_array_elements(default_weight_classes()) e
+         WHERE e -> 'memory_flat_bytes' = '0'::jsonb AND e -> 'memory_cell_bytes' = '0'::jsonb) AS zero_memory;
+SELECT e ->> 'class' AS class, e ->> 'max_bytes' AS max_bytes, e ->> 'memory_flat_bytes' AS flat, e ->> 'memory_cell_bytes' AS cell
+  FROM jsonb_array_elements(weight_classes_public('[{"class": "nano", "max_bytes": 16384}]')) e;
+
+\echo '--- pricing, on the Ants envelope (576 and 14880 cells). `memory` [1,2,H,W] f32 and `ant_memory` [1,N,4] f32 are 6 elements, 24 bytes a cell: 13824 and 357120 bytes'
+\echo '    (expect: none 0 0 null; board+ants in large 13824 357120 null; in a small class TOO_LARGE; in nano NOT_ALLOWED; a fixed 280000 over the cap at 576 cells only TOO_LARGE; fixed 32 in a flat-only class null)'
+SELECT r.label, p.fixed_elems, p.cell_elems, p.fixed_bytes, p.cell_bytes, p.cells_min, p.cells_max, p.bytes_min, p.bytes_max, p.verdict
+  FROM (VALUES
+    (1, 'none',       '{"outputs": [{"name": "policy", "dtype": "f32", "shape": [1, 5, "H", "W"]}]}'::jsonb,
+                      '{"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}'::jsonb),
+    (2, 'board+ants', '{"outputs": [{"name": "policy", "dtype": "f32", "shape": [1, 5, "H", "W"]},
+                                    {"name": "memory", "dtype": "f32", "shape": [1, 2, "H", "W"]},
+                                    {"name": "ant_memory", "dtype": "f32", "shape": [1, "N", 4]}]}',
+                      '{"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}'),
+    (3, 'small cap',  '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 2, "H", "W"]},
+                                    {"name": "ant_memory", "dtype": "f32", "shape": [1, "N", 4]}]}',
+                      '{"class": "micro", "max_bytes": 131072, "memory_flat_bytes": 4096, "memory_cell_bytes": 2}'),
+    (4, 'nano',       '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 2, "H", "W"]}]}',
+                      '{"class": "nano", "max_bytes": 16384}'),
+    (5, 'min end',    '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 70000]}]}',
+                      '{"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}'),
+    (6, 'flat only',  '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 8]}]}',
+                      '{"class": "nano", "max_bytes": 16384, "memory_flat_bytes": 1024, "memory_cell_bytes": 0}')) AS r (n, label, m, c),
+       memory_price(r.m, '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}', r.c) p
+ ORDER BY r.n;
+\echo '    widths: i8 1, f16 2, f64 8, bool 1 (expect cell_bytes 1 2 8, fixed 3)'
+SELECT (memory_price('{"outputs": [{"name": "memory", "dtype": "i8", "shape": [1, 1, "H", "W"]}]}', '{"sides": [24, 124], "cells_max": 14880}', '{"memory_cell_bytes": 16}')).cell_bytes AS i8,
+       (memory_price('{"outputs": [{"name": "memory", "dtype": "f16", "shape": [1, 1, "H", "W"]}]}', '{"sides": [24, 124], "cells_max": 14880}', '{"memory_cell_bytes": 16}')).cell_bytes AS f16,
+       (memory_price('{"outputs": [{"name": "memory", "dtype": "f64", "shape": [1, 1, "H", "W"]}]}', '{"sides": [24, 124], "cells_max": 14880}', '{"memory_cell_bytes": 16}')).cell_bytes AS f64,
+       (memory_price('{"outputs": [{"name": "memory", "dtype": "bool", "shape": [3]}]}', '{"sides": [24, 124], "cells_max": 14880}', '{"memory_flat_bytes": 16}')).fixed_bytes AS bool;
+\echo '--- MEMORY_SHAPE (expect MEMORY_SHAPE for all ten)'
+SELECT r.label, (memory_price(r.m, '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}',
+                              '{"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}')).verdict
+  FROM (VALUES
+    (1,  'three named',     '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, "C", "H", "W"]}]}'::jsonb),
+    (2,  'a name twice',    '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, "H", "H"]}]}'),
+    (3,  'ants: two named', '{"outputs": [{"name": "ant_memory", "dtype": "f32", "shape": [1, "N", "K"]}]}'),
+    (4,  'no dtype',        '{"outputs": [{"name": "memory", "shape": [1, 8]}]}'),
+    (5,  'unknown dtype',   '{"outputs": [{"name": "memory", "dtype": "f8", "shape": [1, 8]}]}'),
+    (6,  'no shape',        '{"outputs": [{"name": "memory", "dtype": "f32"}]}'),
+    (7,  'a zero',          '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 0]}]}'),
+    (8,  'a fraction',      '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 1.5]}]}'),
+    (9,  'an empty name',   '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, ""]}]}'),
+    (10, 'declared twice',  '{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 8]},
+                                          {"name": "memory", "dtype": "f32", "shape": [1, 8]}]}')) AS r (n, label, m)
+ ORDER BY r.n;
+\echo '    and no declaration overflows (expect MEMORY_TOO_LARGE, not an error)'
+SELECT (memory_price('{"outputs": [{"name": "memory", "dtype": "f64", "shape": [2147483647, 2147483647, 1e300, "H"]}]}',
+                     '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}',
+                     '{"memory_flat_bytes": 262144, "memory_cell_bytes": 16}')).verdict;
+\echo '--- a game with no board envelope prices nothing it cannot: no verdict and no bytes where the class allows memory; none needed without (expect null null, then null 0)'
+SELECT (p).verdict, (p).bytes_max FROM (SELECT memory_price('{"outputs": [{"name": "memory", "dtype": "f32", "shape": [1, 2, "H", "W"]}]}', NULL,
+                                                         '{"memory_flat_bytes": 1024, "memory_cell_bytes": 2}') AS p) x;
+SELECT (p).verdict, (p).bytes_max FROM (SELECT memory_price('{"outputs": [{"name": "policy", "dtype": "f32", "shape": [1, 5, "H", "W"]}]}', NULL,
+                                                         '{"memory_flat_bytes": 1024, "memory_cell_bytes": 2}') AS p) x;
+
+\echo '--- the admit clock''s classify prices against the class it lands in (expect nano MEMORY_NOT_ALLOWED; large no verdict 357120; then unpriced t on a game with no envelope)'
+UPDATE games SET manifest = '{"limits": {"boards": {"players": [2, 8], "sides": [24, 124], "cells_max": 14880}}}'
+ WHERE id = '00000000-0000-0000-0000-00000000000a';
+UPDATE seasons SET weight_classes = '[{"class": "nano", "max_bytes": 16384},
+                                      {"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 262144, "memory_cell_bytes": 16}]'
+ WHERE id = '50000000-0000-0000-0000-000000000001';
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'remembers');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, weights_hash, manifest_hash, admit_token, admit_started_at) VALUES
+  ('20000000-0000-0000-0000-0000000000d1', 'e0000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-00000000000a',
+   '50000000-0000-0000-0000-000000000001', 1, 'sha256:wd1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+   '0b000000-0000-0000-0000-0000000000d1', now());
+INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES
+  ('20000000-0000-0000-0000-0000000000d1',
+   '{"name": "tb.v20000000-0000-0000-0000-0000000000d1",
+     "outputs": [{"name": "policy", "dtype": "f32", "shape": [1, 5, "H", "W"]},
+                 {"name": "memory", "dtype": "f32", "shape": [1, 2, "H", "W"]},
+                 {"name": "ant_memory", "dtype": "f32", "shape": [1, "N", 4]}]}',
+   '{}', 20000, 1000000);
+EXECUTE a_classify ('20000000-0000-0000-0000-0000000000d1', 5000);
+EXECUTE a_classify ('20000000-0000-0000-0000-0000000000d1', 20000);
+SAVEPOINT envelope;
+UPDATE games SET manifest = '{}' WHERE id = '00000000-0000-0000-0000-00000000000a';
+EXECUTE a_classify ('20000000-0000-0000-0000-0000000000d1', 20000);
+ROLLBACK TO SAVEPOINT envelope;
+\echo '--- the verdict writes the bytes, and the version shows them with its class''s numbers (expect UPDATE 1; large 357120; 262144 16)'
+EXECUTE a_verify ('20000000-0000-0000-0000-0000000000d1', 'large', 20000, 3000, 8000, '1.9.1', '0b000000-0000-0000-0000-0000000000d1', '{"H": 24}', 357120);
+SELECT version_json(v, 2.0) ->> 'class' AS class, version_json(v, 2.0) ->> 'memory_bytes' AS memory_bytes,
+       version_json(v, 2.0) ->> 'class_memory_flat_bytes' AS flat, version_json(v, 2.0) ->> 'class_memory_cell_bytes' AS cell
+  FROM model_versions v WHERE v.id = '20000000-0000-0000-0000-0000000000d1';
+\echo '    and the season shows its classes with both numbers, 0 where the table left them out (expect nano 0 0, large 262144 16)'
+SELECT e ->> 'class' AS class, e ->> 'memory_flat_bytes' AS flat, e ->> 'memory_cell_bytes' AS cell
+  FROM seasons s, json_array_elements(season_json(s) -> 'weight_classes') e
+ WHERE s.id = '50000000-0000-0000-0000-000000000001';
+
+\echo '--- the round trip, typed from the report (expect: failed 1 MEMORY_ROUND_TRIP {3,1}; clean null {3,0}; no memory null null; malformed null {null,null}; float 2.0 MEMORY_ROUND_TRIP)'
+SELECT r.label,
+       admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL, 0)::admissions) ->> 'round_trip_refused' AS refused,
+       admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1, r.report, now(), NULL, 0)::admissions) -> 'probe' -> 'round_trip' AS round_trip
+  FROM (VALUES
+    (1, 'failed',    '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4, "round_trip": {"checked": 3, "failed": 1}}}'::jsonb),
+    (2, 'clean',     '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4, "round_trip": {"checked": 3, "failed": 0}}}'),
+    (3, 'no memory', '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4}}'),
+    (4, 'malformed', '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4, "round_trip": {"checked": "x", "failed": "lots"}}}'),
+    (5, 'float',     '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4, "round_trip": {"checked": 3, "failed": 2.0}}}')) AS r (n, label, report)
+ ORDER BY r.n;
+\echo '    and the keys the clock already judged on are unchanged beside it (expect admitted t, refused null, again null, probe ok t checked 4)'
+SELECT j ->> 'admitted' AS admitted, j ->> 'refused' AS refused, j ->> 'again' AS again,
+       j -> 'probe' ->> 'ok' AS ok, j -> 'probe' ->> 'checked' AS checked
+  FROM (SELECT admission_facts(ROW('20000000-0000-0000-0000-0000000000c1', '{}', '{}', 100, 1, now(), NULL, NULL, NULL, 1,
+          '{"admission": {"state": "passed"}, "probe": {"ok": true, "checked": 4, "round_trip": {"checked": 3, "failed": 1}}}',
+          now(), NULL, 0)::admissions) AS j) x;
 ROLLBACK;
 \echo '--- a season''s slug is its name''s (expect check violation), fixed per game (expect unique violation), and never a route''s word (expect check violation)'
 INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at)

@@ -18,8 +18,8 @@
 -- Every statement is idempotent: a second run writes the same values. It sends no notification --
 -- a medal for a season that closed weeks ago is news to nobody -- and past matches have no last
 -- frame, so their cards rest on turn zero. Each value is computed by the function the live path
--- uses (match_sort_keys, season_map_name, podium_of, ladder_at), so a backfilled row and a row
--- written tomorrow cannot disagree. This file goes once production has been cut over.
+-- uses (match_sort_keys, season_map_name, podium_of, ladder_at, memory_price), so a backfilled row
+-- and a row written tomorrow cannot disagree. This file goes once production has been cut over.
 
 \set ON_ERROR_STOP on
 BEGIN;
@@ -82,6 +82,14 @@ UPDATE season_maps sm
  WHERE n.id = sm.id AND sm.size IS NULL
    AND n.h IS NOT NULL AND season_map_name_problem(n.h) IS NULL;
 
+-- What each admitted version's memory costs on the largest board, as admission prices it now: 0 for
+-- a manifest that declares none, which should be every one (the query at the end lists the rest).
+UPDATE model_versions v
+   SET memory_bytes = coalesce((SELECT p.bytes_max
+                                  FROM games g, memory_price(v.manifest::jsonb, g.manifest #> '{limits,boards}', NULL) p
+                                 WHERE g.id = v.game_id), 0)
+ WHERE v.memory_bytes IS NULL AND v.manifest IS NOT NULL;
+
 -- The podium of every season already closed, as the close would have written it.
 INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
 SELECT s.id, l.ladder, p.place, p.version_id, p.owner_id, p.rating
@@ -121,6 +129,10 @@ SELECT se.slug AS season, count(*) AS podium_places
 \echo '--- boards that keep null fields: off the name pattern, or disagreeing with their file'
 SELECT se.slug AS season, sm.map_id FROM season_maps sm JOIN seasons se ON se.id = sm.season_id
  WHERE sm.size IS NULL ORDER BY se.slug, sm.map_id;
+\echo '--- versions that declare a memory output (expect no rows: each would gain memory mid-season when the runners carry it)'
+SELECT se.slug AS season, v.id AS version_id, v.status, v.memory_bytes
+  FROM model_versions v JOIN seasons se ON se.id = v.season_id
+ WHERE v.memory_bytes > 0 ORDER BY se.slug, v.id;
 \echo '--- the rating chain: a version whose matches_played is below its last event would fail every fold (expect no rows)'
 SELECT r.version_id, r.ladder, r.matches_played, max(e.seq) AS last_seq
   FROM ratings r JOIN rating_events e ON e.version_id = r.version_id AND e.ladder = r.ladder

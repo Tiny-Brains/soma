@@ -85,6 +85,7 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim
          ("m_insert", "soma-admin-maps-add", "insert"),
          ("m_flip", "soma-admin-maps-update", "flip"),
          ("a_verify", "soma-clock-admit-run", "verify"),
+         ("a_classify", "soma-clock-admit-run", "classify"),
          ("a_expire", "soma-clock-admit-run", "expire"), ("a_claim", "soma-clock-admit-run", "claim"),
          ("a_batch_doc", "soma-clock-admit-run", "batch"), ("a_queue", "soma-clock-admit-run", "queue"),
          ("a_requeue", "soma-clock-admit-run", "requeue"), ("a_release", "soma-clock-admit-run", "release"),

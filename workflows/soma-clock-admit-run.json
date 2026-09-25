@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-clock-admit-run",
   "name": "Clock: admit",
-  "description": "What moves a submission off `testing`, in two walks with an admitting runner between them, because Soma runs no model. PREPARE HEADs both files, reads the manifest the competitor uploaded and checks it against the hash they declared, rebuilds the registration field by field, and queues one `admissions` row. The row is created before either file is and the graph is uploaded before the manifest, so a file that has not landed while the presigned PUTs are still good is `UPLOAD_PENDING`: the item keeps its claim and is looked at again when the hold lapses, rather than being given a verdict. Past that window the missing one IS the verdict. A runner whose role is `admit` claims it through the gate, registers the model on its own node by reference and digest -- the node fetches and re-hashes the object, so a row that lies fails admission -- lets Orion admit it, plays it over the game's reference observations, deletes it, and reports what it found. DECIDE reads that report through admission_facts(), measures S' from this clock's own HEAD and the runner's bytes, picks the season's class, applies the platform's policy to the stats and writes one verdict. A baseline lands `disabled` rather than `verified`. The branch that matters is on `fault`: a competitor's mistake rejects the version; a report that decided nothing goes back to the queue with its attempt spent, so a submission that fails the same way on every runner expires TIMED_OUT; and a fault of this clock's releases the item untouched. The claim is the fence. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk.",
+  "description": "What moves a submission off `testing`, in two walks with an admitting runner between them, because Soma runs no model. PREPARE HEADs both files, reads the manifest the competitor uploaded and checks it against the hash they declared, rebuilds the registration field by field, and queues one `admissions` row. The row is created before either file is and the graph is uploaded before the manifest, so a file that has not landed while the presigned PUTs are still good is `UPLOAD_PENDING`: the item keeps its claim and is looked at again when the hold lapses, rather than being given a verdict. Past that window the missing one IS the verdict. A runner whose role is `admit` claims it through the gate, registers the model on its own node by reference and digest -- the node fetches and re-hashes the object, so a row that lies fails admission -- lets Orion admit it, plays it over the game's reference observations, deletes it, and reports what it found. DECIDE reads that report through admission_facts(), measures S' from this clock's own HEAD and the runner's bytes, picks the season's class, prices the declared memory against it (memory_price()), applies the platform's policy to the stats and writes one verdict. A baseline lands `disabled` rather than `verified`. The branch that matters is on `fault`: a competitor's mistake rejects the version; a report that decided nothing goes back to the queue with its attempt spent, so a submission that fails the same way on every runner expires TIMED_OUT; and a fault of this clock's releases the item untouched. The claim is the fence. Every verdict, and every expiry this run stamped with its token, is then told to the owner by a keyed statement that may fail without failing the walk.",
   "tags": ["soma", "clock", "admission"],
   "condition": true,
   "loop": { "counter": "i", "max": 64 },
@@ -476,13 +476,25 @@
     },
     {
       "id": "judge",
-      "name": "Class, opset, operators and the budget",
+      "name": "Class, memory, opset, operators and the budget",
       "condition": { "!!": { "var": "temp_data.it.job" } },
       "function": {
         "name": "map",
         "input": {
           "mappings": [
             { "path": "temp_data.cls", "logic": { "var": "temp_data.clsrow.0.cls" } },
+            {
+              "path": "temp_data.retry",
+              "logic": {
+                "if": [
+                  { "var": "temp_data.retry" },
+                  { "var": "temp_data.retry" },
+                  { "===": [{ "var": "temp_data.clsrow.0.memory_unpriced" }, true] },
+                  "BOARDS_UNDECLARED",
+                  null
+                ]
+              }
+            },
             {
               "path": "temp_data.ops",
               "logic": {
@@ -528,6 +540,8 @@
                   "CLASS_NOT_OFFERED",
                   { "!": { "var": "temp_data.cls" } },
                   "TOO_LARGE",
+                  { "var": "temp_data.clsrow.0.memory_refused" },
+                  { "var": "temp_data.clsrow.0.memory_refused" },
                   {
                     "<": [{ "var": "temp_data.it.job.opset" }, { "var": "temp_data.it.opset_min" }]
                   },
@@ -557,6 +571,8 @@
                     ]
                   },
                   "ADAPTER_OVER_BUDGET",
+                  { "var": "temp_data.it.job.round_trip_refused" },
+                  { "var": "temp_data.it.job.round_trip_refused" },
                   { "!": { "var": "temp_data.it.job.probe.ok" } },
                   { "??": [{ "var": "temp_data.it.job.probe.reason" }, "ADAPTER_INVALID"] },
                   {
@@ -605,7 +621,8 @@
             { "var": "temp_data.it.job.probe.infer_us_max" },
             { "var": "metadata.vars.orion_version" },
             { "var": "temp_data.token" },
-            { "var": "temp_data.it.job.probe_dims" }
+            { "var": "temp_data.it.job.probe_dims" },
+            { "var": "temp_data.clsrow.0.memory_bytes" }
           ],
           "output": "temp_data.verified"
         }

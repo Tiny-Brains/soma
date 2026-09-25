@@ -3,7 +3,7 @@ UPDATE model_versions
                                    WHERE e.id = model_versions.model_id AND u.role = 'baseline')
                      THEN 'disabled'::model_status ELSE 'verified'::model_status END,
        weight_class = ($2)::ladder,
-       size_bytes = ($3)::bigint, param_count = ($4)::bigint,
+       size_bytes = ($3)::bigint, param_count = ($4)::bigint, memory_bytes = ($9)::bigint,
        infer_us = ($5)::float8::bigint,
        manifest = (SELECT a.manifest FROM admissions a WHERE a.version_id = model_versions.id),
        orion_version = ($6)::text,

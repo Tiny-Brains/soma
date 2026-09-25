@@ -74,7 +74,7 @@ channels add a per-principal quota.
 | DELETE | `/v1/sessions/{sid}` · `/v1/session` | Session | Revoke one (`others` = all but this one) · sign out |
 | GET | `/v1/admin-check` | Session | **204** admin, **401** no or revoked session, **403** signed-in non-admin; no body |
 | GET | `/v1/status` | Public | Queue, throughput and how far each clock is behind |
-| GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes |
+| GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes with their memory numbers |
 | GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor` |
 | GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
 | GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |
@@ -140,7 +140,7 @@ channels add a per-principal quota.
 | POST | `/v1/runner/matches/{id}/finish` | Runner | Result, and optionally the last `frame` (an object up to 64 KB, stored opaque) · `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 | GET | `/v1/runner/roster` | Runner | Every `verified` or `active` version a runner must be able to play |
 | POST | `/v1/runner/admissions/claim` | Runner | `{orion_version}` → one prepared submission (registration, key, digest, budget, reference observations) and its claim, or `200 {"idle": true}`; 409 `orion_version_differs` |
-| POST | `/v1/runner/admissions/{id}/report` | Runner | `{claim_token, admission, stats, probe}` → `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
+| POST | `/v1/runner/admissions/{id}/report` | Runner | `{claim_token, admission, stats, probe}` (`probe.round_trip` `{checked, failed}` for a model with memory) → `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 
 Every admin write inserts its `audit_log` line in the same statement. A season's close freezes its
 podium into `season_podium` (one place per owner, no baselines) and sends each placed owner a
@@ -178,7 +178,8 @@ left of the same window, and a re-POST past it is `version_in_flight`, so no URL
 `RUNNER_ROLE=admit`) claims it through the gate, registers it on its own node, lets Orion admit it,
 plays it over the first `admit_observations` of the game's reference observations, deletes it and
 reports. *Decide* reads the report through `admission_facts()`, measures S' from the clock's own HEAD
-and the runner's bytes, picks the class and writes the verdict. A report that decided nothing (the
+and the runner's bytes, picks the class, prices the declared memory against it and writes the
+verdict. A report that decided nothing (the
 runner could not fetch, ran out of time, or measured the probe over `max_probe_ms`) goes back to the
 queue with its attempt spent; a submission waiting for a runner spends none. Nothing is admitted
 while no admitting runner is up. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
@@ -438,6 +439,15 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   `season_admits*` predicates). A second copy is two pages that disagree.
 - **Weight classes are the season's and strictly ascending.** Admission takes the first class a
   size fits.
+- **A class's memory is a cap, priced from the manifest.** Each class may carry
+  `memory_flat_bytes` (0 to 262,144) and `memory_cell_bytes` (0 to 16), absent meaning 0, and the
+  cap on a board is flat + cell × cells. A model remembers by declaring an output named `memory`
+  (at most two named axes) or `ant_memory` (at most one); an output with a named axis costs per
+  cell. `memory_price()` prices both at the envelope's two ends (the smallest square board and
+  `cells_max`), after the class is known, and refuses `MEMORY_NOT_ALLOWED` (a class with 0 and 0),
+  `MEMORY_SHAPE` or `MEMORY_TOO_LARGE`; a runner's `probe.round_trip` with a failure is
+  `MEMORY_ROUND_TRIP`. All four are final and the competitor's. The version keeps `memory_bytes`,
+  the cost on the largest board. Memory is not part of the size a class is chosen by.
 - **The schema is two files, rewritten in place, and must pass `check-sql.sh`.**
 - **A notification is never part of the statement that decided the thing**, and is keyed so a
   replay inserts once.
@@ -495,6 +505,11 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   frame is a few KB, about 4 MB a day at today's rate). So is the TinyBrain Index (`standings.lambda`
   is accepted and unread).
 - A season cannot be scheduled ahead: create is refused while one is live.
+- A model's memory is priced, not measured. `memory_price()` trusts that a named axis binds to the
+  board's rows and columns or to the ant count, and nothing at admission compares what a memory
+  actually holds with its price.
+- The round trip is judged only when the admitting runner reports it. A runner that sends no
+  `probe.round_trip` admits a model with memory without one.
 - The comment limits (15 s apart, 100 a day) are predicates in the insert, so two posts at the same
   instant can both pass; the per-user write rate is the backstop.
 - The admin comment search (`q`) scans: there is no trigram index on `comments.body`.

@@ -3,7 +3,7 @@ SELECT (SELECT coalesce(json_agg(x
     FROM (
         SELECT e.id, e.name, u.handle AS owner, g.slug AS game, e.created_at, e.retired_at IS NOT
             NULL AS retired, (SELECT coalesce(json_agg(json_build_object( 'version_id', v.id, 'version',
-                            v.version, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'status',
+                            v.version, 'class', v.weight_class, 'size_bytes', v.size_bytes, 'memory_bytes', v.memory_bytes, 'status',
                             v.status, 'phase', model_phase(v), 'reject_reason', v.reject_reason, 'created_at',
                             v.created_at, 'season', (SELECT se.slug
                         FROM seasons se

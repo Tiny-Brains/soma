@@ -75,6 +75,13 @@ CREATE TABLE games (
 -- both soma's and the runner's template) before any class is considered, and a runner's model
 -- memory is sized for it: 4 lanes x 8 seats x 64 MiB is its 2 GiB `max_loaded_bytes`. A larger cap
 -- would name a class nothing could ever be admitted into.
+--
+-- A CLASS MAY ALLOW A MODEL MEMORY: `memory_flat_bytes` (0..262144) and `memory_cell_bytes` (0..16),
+-- whole numbers, absent meaning 0. The cap on a board is flat + cell x rows x cols, and
+-- memory_price() is the one place it is read. The ceilings are what a runner can carry: at both
+-- tops a u8 memory on the largest board plus its seven i8 planes fits `max_input_elements`, and the
+-- same memory plus a per-cell policy fits `max_output_elements`. web's configs.sh reads both
+-- numbers out of this function, so raise one only with the runner's template.
 CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     SELECT jsonb_typeof(wc) = 'array'
        AND jsonb_array_length(wc) >= 1
@@ -87,7 +94,18 @@ CREATE FUNCTION weight_classes_ok(wc jsonb) RETURNS boolean LANGUAGE sql IMMUTAB
               OR (e ->> 'class') NOT IN ('nano', 'micro', 'mini', 'small', 'large')
               OR (e ->> 'max_bytes')::numeric <= 0
               OR (e ->> 'max_bytes')::numeric > 67108864
-              OR (e ->> 'max_bytes')::numeric <> trunc((e ->> 'max_bytes')::numeric))
+              OR (e ->> 'max_bytes')::numeric <> trunc((e ->> 'max_bytes')::numeric)
+              -- the memory numbers, when present: a whole number within its ceiling
+              OR CASE jsonb_typeof(e -> 'memory_flat_bytes')
+                     WHEN 'number' THEN (e ->> 'memory_flat_bytes')::numeric NOT BETWEEN 0 AND 262144
+                                     OR (e ->> 'memory_flat_bytes')::numeric
+                                        <> trunc((e ->> 'memory_flat_bytes')::numeric)
+                     ELSE e ? 'memory_flat_bytes' END
+              OR CASE jsonb_typeof(e -> 'memory_cell_bytes')
+                     WHEN 'number' THEN (e ->> 'memory_cell_bytes')::numeric NOT BETWEEN 0 AND 16
+                                     OR (e ->> 'memory_cell_bytes')::numeric
+                                        <> trunc((e ->> 'memory_cell_bytes')::numeric)
+                     ELSE e ? 'memory_cell_bytes' END)
        -- no class named twice
        AND (SELECT count(DISTINCT e ->> 'class') FROM jsonb_array_elements(wc) AS e)
            = jsonb_array_length(wc)
@@ -104,11 +122,131 @@ $$;
 -- the column's default and season create's fallback, so the table exists once and cannot drift
 -- past what weight_classes_ok() allows.
 CREATE FUNCTION default_weight_classes() RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-    SELECT '[{"class": "nano",  "max_bytes": 16384},
-             {"class": "micro", "max_bytes": 131072},
-             {"class": "mini",  "max_bytes": 1048576},
-             {"class": "small", "max_bytes": 8388608},
-             {"class": "large", "max_bytes": 67108864}]'::jsonb;
+    SELECT '[{"class": "nano",  "max_bytes": 16384,    "memory_flat_bytes": 0, "memory_cell_bytes": 0},
+             {"class": "micro", "max_bytes": 131072,   "memory_flat_bytes": 0, "memory_cell_bytes": 0},
+             {"class": "mini",  "max_bytes": 1048576,  "memory_flat_bytes": 0, "memory_cell_bytes": 0},
+             {"class": "small", "max_bytes": 8388608,  "memory_flat_bytes": 0, "memory_cell_bytes": 0},
+             {"class": "large", "max_bytes": 67108864, "memory_flat_bytes": 0, "memory_cell_bytes": 0}]'::jsonb;
+$$;
+
+-- A season's classes as every route returns them: in the table's own order, each with both memory
+-- numbers, 0 where the admin left one out, so a reader never has to know that absent means 0.
+CREATE FUNCTION weight_classes_public(wc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_agg(e || jsonb_build_object(
+                         'memory_flat_bytes', coalesce(e -> 'memory_flat_bytes', '0'::jsonb),
+                         'memory_cell_bytes', coalesce(e -> 'memory_cell_bytes', '0'::jsonb))
+                     ORDER BY t.ord)
+      FROM jsonb_array_elements(wc) WITH ORDINALITY AS t (e, ord);
+$$;
+
+-- WHAT A MODEL'S MEMORY COSTS, AND WHETHER ITS CLASS ALLOWS IT: the one place the admit clock, and
+-- any `why` or backfill, price a declaration. A model remembers by declaring an output named
+-- `memory` (the board's: at most two named axes) or `ant_memory` (one row per ant: at most one),
+-- which the runner hands back on the seat's next view. An output with a named axis costs per cell
+-- -- a board axis binds to the board, and a seat never has more ants than the board has cells --
+-- and one without costs a fixed amount; both outputs are summed:
+--
+--   bytes(cells) = fixed_bytes + cell_bytes x cells        cap(cells) = flat + cell x cells
+--
+-- Both sides are linear in the cell count, so checking the envelope's two ends -- the smallest
+-- square board (sides_min squared) and `cells_max`, both from the game's `limits.boards` -- checks
+-- every board a season can upload. The verdicts are final and the competitor's:
+--   MEMORY_NOT_ALLOWED  a memory output, in a class whose numbers are both 0
+--   MEMORY_SHAPE        not an output with a known dtype and a shape of whole numbers >= 1 and
+--                       names, too many named axes, one name twice, or one output declared twice
+--   MEMORY_TOO_LARGE    over the cap at either end
+-- NO VERDICT AND NO BYTES is the one case that is not the model's: a memory the class allows, in a
+-- game that declares no board envelope to price it against. The admit clock retries that.
+--
+-- The price is static. It trusts that a named axis binds to the board or the ant count; nothing
+-- measures what a memory actually holds, and Orion refuses an output whose shape breaks its own
+-- declaration on every call. Elements are clamped at 10^12, so no declaration overflows the sums.
+CREATE FUNCTION memory_price(p_manifest jsonb, p_boards jsonb, p_class jsonb,
+    OUT fixed_elems bigint, OUT cell_elems bigint, OUT fixed_bytes bigint, OUT cell_bytes bigint,
+    OUT cells_min bigint, OUT cells_max bigint, OUT bytes_min bigint, OUT bytes_max bigint,
+    OUT verdict text)
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    o        jsonb;
+    d        jsonb;
+    width    int;
+    elems    numeric;
+    named    text[];
+    seen     text[]  := '{}';
+    declared boolean := false;
+    bad      boolean := false;
+    fe       numeric := 0;
+    ce       numeric := 0;
+    fb       numeric := 0;
+    cb       numeric := 0;
+    flat     numeric := CASE WHEN jsonb_typeof(p_class -> 'memory_flat_bytes') = 'number'
+                             THEN (p_class ->> 'memory_flat_bytes')::numeric ELSE 0 END;
+    cell     numeric := CASE WHEN jsonb_typeof(p_class -> 'memory_cell_bytes') = 'number'
+                             THEN (p_class ->> 'memory_cell_bytes')::numeric ELSE 0 END;
+BEGIN
+    FOR o IN SELECT e FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_manifest -> 'outputs') = 'array'
+                                                     THEN p_manifest -> 'outputs'
+                                                     ELSE '[]'::jsonb END) AS e
+    LOOP
+        CONTINUE WHEN jsonb_typeof(o) <> 'object'
+                   OR coalesce(o ->> 'name', '') NOT IN ('memory', 'ant_memory');
+        declared := true;
+        bad := bad OR (o ->> 'name') = ANY (seen);
+        seen := seen || (o ->> 'name');
+        width := CASE o ->> 'dtype' WHEN 'f32' THEN 4 WHEN 'i32' THEN 4 WHEN 'u32' THEN 4
+                                    WHEN 'f16' THEN 2 WHEN 'i16' THEN 2 WHEN 'u16' THEN 2
+                                    WHEN 'i8'  THEN 1 WHEN 'u8'  THEN 1 WHEN 'bool' THEN 1
+                                    WHEN 'f64' THEN 8 WHEN 'i64' THEN 8 WHEN 'u64' THEN 8 END;
+        IF width IS NULL OR jsonb_typeof(o -> 'shape') IS DISTINCT FROM 'array' THEN
+            bad := true;
+            CONTINUE;
+        END IF;
+        elems := 1;
+        named := '{}';
+        FOR d IN SELECT x FROM jsonb_array_elements(o -> 'shape') AS x LOOP
+            IF jsonb_typeof(d) = 'string' AND d #>> '{}' <> '' AND NOT (d #>> '{}') = ANY (named) THEN
+                named := named || (d #>> '{}');
+            ELSIF jsonb_typeof(d) = 'number' AND (d #>> '{}')::numeric >= 1
+                  AND (d #>> '{}')::numeric = trunc((d #>> '{}')::numeric) THEN
+                elems := least(elems * (d #>> '{}')::numeric, 1e12);
+            ELSE
+                bad := true;
+            END IF;
+        END LOOP;
+        bad := bad OR cardinality(named) > CASE o ->> 'name' WHEN 'memory' THEN 2 ELSE 1 END;
+        IF cardinality(named) > 0 THEN
+            ce := least(ce + elems, 1e12);
+            cb := least(cb + elems * width, 1e13);
+        ELSE
+            fe := least(fe + elems, 1e12);
+            fb := least(fb + elems * width, 1e13);
+        END IF;
+    END LOOP;
+
+    fixed_elems := fe;  cell_elems := ce;  fixed_bytes := fb;  cell_bytes := cb;
+    cells_min := CASE WHEN jsonb_typeof(p_boards -> 'sides' -> 0) = 'number'
+                      THEN ((p_boards -> 'sides' ->> 0)::numeric ^ 2)::bigint END;
+    cells_max := CASE WHEN jsonb_typeof(p_boards -> 'cells_max') = 'number'
+                      THEN (p_boards ->> 'cells_max')::numeric::bigint END;
+
+    IF NOT declared THEN
+        bytes_min := 0;
+        bytes_max := 0;
+        RETURN;
+    END IF;
+    bytes_min := least(fb + cb * cells_min, 1e18);
+    bytes_max := least(fb + cb * cells_max, 1e18);
+    IF flat = 0 AND cell = 0 THEN
+        verdict := 'MEMORY_NOT_ALLOWED';
+    ELSIF bad THEN
+        verdict := 'MEMORY_SHAPE';
+    ELSIF cells_min IS NULL OR cells_max IS NULL THEN
+        bytes_min := NULL;              -- unpriced: no envelope to price against
+        bytes_max := NULL;
+    ELSIF bytes_min > flat + cell * cells_min OR bytes_max > flat + cell * cells_max THEN
+        verdict := 'MEMORY_TOO_LARGE';
+    END IF;
+END;
 $$;
 
 -- ------------------------------------------------------- the season rules document
@@ -649,6 +787,10 @@ CREATE TABLE model_versions (
     weight_class    ladder,
     size_bytes      bigint,
     param_count     bigint,
+    -- What the model's declared memory costs on the largest board (memory_price()'s bytes_max), 0
+    -- for a model that declares none. Written with the class at admission, and null before it. Not
+    -- part of the size: the class is decided by file bytes, and the memory is judged against it.
+    memory_bytes    bigint,
     -- The slowest reference case's inference at admission, in microseconds -- or, on a version
     -- rejected PROBE_TOO_SLOW, the median probe its last attempt measured. Reported to the
     -- competitor, and a gate only where a season deliberately makes it one (graph.infer_us_max,
@@ -712,6 +854,9 @@ CREATE TABLE model_versions (
 
     CONSTRAINT model_versions_note_size
         CHECK (note IS NULL OR (btrim(note) <> '' AND char_length(note) <= 120)),
+
+    CONSTRAINT model_versions_memory_bytes_nonneg
+        CHECK (memory_bytes IS NULL OR memory_bytes >= 0),
 
     -- Past 'testing' a row must know what it is: pair joins on status and would otherwise seat a
     -- null weights_hash.
@@ -1130,8 +1275,8 @@ CREATE TABLE rating_events (
 -- A MATCH'S LAST FRAME, AS THE RUNNER SENT IT AT FINISH: what a card rests on. A replay stores each
 -- turn's actions and no state, so the state at the last turn exists only where the match ended --
 -- on the runner -- and is sent once, in the finish body. OPAQUE: Soma stores it as given and never
--- reads inside it, because game state is the cartridge's (the board's static layer is already
--- season_maps.board, so the frame carries only what moved).
+-- reads inside it, because game state is the cartridge's. The frame is not only what moved: it
+-- carries the water too, about 5 KB of a 7 KB frame.
 --
 -- lz4 rather than pglz: a frame is written once and read by every card that shows it.
 --
@@ -1694,7 +1839,7 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
         'rules',                season_rules_public(s.rules),
         -- The caps this season is played under: they are per season, and a standing cannot be read
         -- without them.
-        'weight_classes',       s.weight_classes,
+        'weight_classes',       weight_classes_public(s.weight_classes),
         'entries',            (SELECT count(DISTINCT v.model_id) FROM model_versions v
                                WHERE v.season_id = s.id),
         'active_versions',    (SELECT count(*) FROM model_versions v
@@ -2074,6 +2219,13 @@ $$;
 -- `size` is S': the larger of the bucket's answer to the clock's own HEAD and the bytes the runner
 -- fetched and re-hashed, plus the manifest -- so no report can make a model smaller than it is.
 -- A probe that evaluated nothing, or that a runner says errored, is no probe at all.
+--
+-- THE MEMORY ROUND TRIP. A runner feeds a model that declares `memory` or `ant_memory` its own last
+-- output on each reference observation that follows one of the same size, and reports
+-- `probe.round_trip` as {checked: calls fed a memory, failed: of those, calls that failed}; absent
+-- for a model with no memory. A memory input that cannot take the model's own output would strike
+-- every turn after the first, so any failure is `round_trip_refused`, MEMORY_ROUND_TRIP, final and
+-- the competitor's.
 CREATE FUNCTION admission_facts(a admissions) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT CASE WHEN a.report IS NULL THEN NULL ELSE (
       SELECT json_build_object(
@@ -2105,7 +2257,14 @@ CREATE FUNCTION admission_facts(a admissions) RETURNS json LANGUAGE sql STABLE A
                                                      THEN a.report #>> '{probe,reason}' END,
                                 'ops_max',      admission_num(a.report #> '{probe,ops_max}'),
                                 'infer_us_max', admission_num(a.report #> '{probe,infer_us_max}'),
-                                'checked',      admission_num(a.report #> '{probe,checked}')) END)
+                                'checked',      admission_num(a.report #> '{probe,checked}'),
+                                'round_trip',   CASE WHEN jsonb_typeof(a.report #> '{probe,round_trip}') = 'object'
+                                                     THEN json_build_object(
+                                                          'checked', admission_num(a.report #> '{probe,round_trip,checked}'),
+                                                          'failed',  admission_num(a.report #> '{probe,round_trip,failed}'))
+                                                END) END,
+        'round_trip_refused', CASE WHEN admission_num(a.report #> '{probe,round_trip,failed}') > 0
+                                   THEN 'MEMORY_ROUND_TRIP' END)
         FROM (SELECT s.state, s.stage, s.why,
                      s.stage IN ('size', 'digest', 'parse', 'probe')
                          AND position('models.max_probe_ms' IN s.why) = 0
@@ -2135,6 +2294,7 @@ CREATE FUNCTION season_baseline_json(v model_versions) RETURNS json LANGUAGE sql
         'reject_reason', v.reject_reason,
         'class',         v.weight_class,
         'size_bytes',    v.size_bytes,
+        'memory_bytes',  v.memory_bytes,
         'params',        v.param_count,
         'infer_us',      v.infer_us,
         'weights_hash',  v.weights_hash,
@@ -2326,10 +2486,11 @@ CREATE FUNCTION version_json(v model_versions, p_settled_sigma float8) RETURNS j
         'version',       v.version,
         'note',          v.note,
         'class',         v.weight_class,
-        'class_max_bytes', (SELECT (x ->> 'max_bytes')::bigint
-                              FROM jsonb_array_elements(se.weight_classes) AS x
-                             WHERE x ->> 'class' = v.weight_class::text),
+        'class_max_bytes', (wc.x ->> 'max_bytes')::bigint,
+        'class_memory_flat_bytes', (wc.x ->> 'memory_flat_bytes')::bigint,
+        'class_memory_cell_bytes', (wc.x ->> 'memory_cell_bytes')::bigint,
         'size_bytes',    v.size_bytes,
+        'memory_bytes',  v.memory_bytes,
         'param_count',   v.param_count,
         'infer_us',      v.infer_us,
         'weights_hash',  v.weights_hash,
@@ -2360,6 +2521,9 @@ CREATE FUNCTION version_json(v model_versions, p_settled_sigma float8) RETURNS j
       JOIN users u    ON u.id = e.owner_id
       JOIN games g    ON g.id = e.game_id
       JOIN seasons se ON se.id = v.season_id
+      -- the version's class as its own season states it, memory numbers filled in
+      LEFT JOIN LATERAL (SELECT x FROM jsonb_array_elements(weight_classes_public(se.weight_classes)) AS x
+                          WHERE x ->> 'class' = v.weight_class::text) wc ON true
      WHERE e.id = v.model_id;
 $$;
 
