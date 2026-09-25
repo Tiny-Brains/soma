@@ -1,0 +1,55 @@
+{
+  "workflow_id": "soma-pub-stories",
+  "name": "Stories",
+  "description": "The team's published posts and the model stories an admin featured, newest first, in one keyset over (at, id): a post's published_at, a story's featured_at. `kind` is all, team or model. Each row is a card -- kind, title, a 280-character excerpt, the author, when -- and a story's adds its model and class; a post opens at /blog/:slug, a story on its model page. `total` is counted on the first page only. `limit` defaults to 20 and clamps at 60 in SQL. A removed story, a story whose first text is still held, and an unpublished post are never listed.",
+  "tags": ["soma", "pub", "community"],
+  "tasks": [
+    {
+      "id": "kind",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "in": [
+              { "or": [{ "var": "metadata.query.kind" }, "all"] },
+              ["all", "team", "model"]
+            ]
+          }
+        },
+        "status": 400,
+        "body": { "error": "kind_invalid", "detail": "kind is all, team or model." },
+        "name": "A kind, known"
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-stories-query.sql" },
+          "params": [
+            { "var": "metadata.query.kind" },
+            { "var": "metadata.query.cursor" },
+            { "var": "metadata.query.limit" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

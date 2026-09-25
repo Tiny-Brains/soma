@@ -1,29 +1,12 @@
 {
   "workflow_id": "soma-admin-maps-add",
   "name": "Upload a map into a season",
-  "description": "Admin only, and THE ONLY WAY A SEASON MAP REACHES THE PLATFORM: season maps are in no repository and no release. The body is one map file, exactly as mapgen writes it. It is stored DISABLED -- an upload changes nothing about pairing until an admin enables it -- and it is public from this moment. Checked in the order a mistake is most likely: the season exists and is not closed; the header is a header; it fits the cartridge's limits.boards, which is the envelope admission's reference set was drawn on, so a model admitted today can play it; the season plays the engine this node loaded, because validating a board on another engine proves nothing; it is not a board the season already has, by id or by content; and THE ENGINE ACCEPTS IT -- tb.ants.worldgen, run here on the board as sent, which is the validator every match would run anyway. Its refusal reaches a workflow as a code and never as the engine's reason, so the 422 points at `tinybrains maps check`, which runs the same engine locally and prints why. Its rate is per_admin_board_rate, not the 1 rps every other write gets: a season's boards arrive together, thirty-odd uploads and as many enables, from one admin.",
+  "description": "Admin only, and THE ONLY WAY A SEASON MAP REACHES THE PLATFORM: season maps are in no repository and no release. The body is one map file, exactly as mapgen writes it. It is stored DISABLED -- an upload changes nothing about pairing until an admin enables it -- and it is public from this moment. Checked in the order a mistake is most likely: the season exists and is not closed; the header is a header; it fits the cartridge's limits.boards, which is the envelope admission's reference set was drawn on, so a model admitted today can play it; the season plays the engine this node loaded, because validating a board on another engine proves nothing; it is not a board the season already has, by id or by content; and THE ENGINE ACCEPTS IT -- tb.ants.worldgen, run here on the board as sent, which is the validator every match would run anyway. Its refusal reaches a workflow as a code and never as the engine's reason, so the 422 points at `tinybrains maps check`, which runs the same engine locally and prints why. Its rate is per_admin_board_rate, not the 1 rps every other write gets: a season's boards arrive together, thirty-odd uploads and as many enables, from one admin. The name must be `size-terrain-Np-Hh` and agree with the file (season_map_name_problem), and the size, terrain and hills per player are stored from it.",
   "tags": ["soma", "admin", "maps"],
   "tasks": [
     {
-      "id": "who",
-      "name": "Who is asking",
-      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
-    },
-    {
-      "id": "deny",
-      "use": "deny-revoked",
-      "with": { "row": "temp_data.who.0.body" }
-    },
-    {
-      "id": "forbid",
-      "use": "refuse",
-      "with": {
-        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
-        "status": 403,
-        "body": { "error": "admin_only" },
-        "name": "Admins only",
-        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
-      }
+      "id": "admin",
+      "use": "admin-only"
     },
     {
       "id": "parse",
@@ -82,6 +65,25 @@
           "detail": "A map file names its `id` (lower-case letters, digits and hyphens) and whole-number `players`, `rows` and `cols`."
         },
         "name": "A header worth reading"
+      }
+    },
+    {
+      "id": "named",
+      "use": "refuse",
+      "with": {
+        "when": { "!!": { "var": "temp_data.ctx.0.body.name_problem" } },
+        "status": 422,
+        "body": {
+          "error": { "var": "temp_data.ctx.0.body.name_problem" },
+          "detail": {
+            "id": { "var": "temp_data.ctx.0.body.header.id" },
+            "players": { "var": "temp_data.ctx.0.body.header.players" },
+            "hills": { "var": "temp_data.ctx.0.body.header.hills" },
+            "rule": "A board is named size-terrain-Np-Hh: N is the file's `players`, and its `hills` array holds N x H entries."
+          }
+        },
+        "name": "A name that says what the board is",
+        "description": "season_map_name_problem() names the one rule the name breaks: map_name_pattern, map_name_players or map_name_hills. The size and terrain words are stored as given; Soma keeps no list of them."
       }
     },
     {

@@ -1,0 +1,145 @@
+{
+  "workflow_id": "soma-user-comments-report",
+  "name": "Report a comment",
+  "description": "A READER'S FLAG on someone else's live comment: `{reason?, words?}`, both optional -- `reason` one of spam, abuse, off_topic, other, `words` a line of up to 200 characters. One per reader per comment: a second replaces the first's reason and words, so a reader cannot count twice toward `reported most first`. 201. 404 for no such live comment; 409 `own_comment` for your own, which you delete instead. It changes nothing on the page: an admin decides on the comments desk.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "reason",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "data.req.reason" } },
+            {
+              "!": { "in": [{ "var": "data.req.reason" }, ["spam", "abuse", "off_topic", "other"]] }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "reason_invalid",
+          "detail": "reason is spam, abuse, off_topic or other, or absent."
+        },
+        "name": "A known reason"
+      }
+    },
+    {
+      "id": "words",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.words" }, ""] }
+              ]
+            },
+            200
+          ]
+        },
+        "status": 400,
+        "body": { "error": "words_too_long", "detail": "At most 200 characters." },
+        "name": "A short line"
+      }
+    },
+    {
+      "id": "report",
+      "name": "File it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-comments-report-report.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" },
+            { "var": "data.req.reason" },
+            { "var": "data.req.words" }
+          ],
+          "output": "temp_data.reported"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was filed",
+      "condition": { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-comments-report-why.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.session_ok" } }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "A live session"
+      }
+    },
+    {
+      "id": "own",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+            { "var": "temp_data.why.0.body.own" }
+          ]
+        },
+        "status": 409,
+        "body": { "error": "own_comment" },
+        "name": "Not your own"
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+        "status": 404,
+        "body": { "error": "unknown_comment" },
+        "name": "A live comment"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": { "reported": true, "comment_id": { "var": "metadata.params.id" } }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

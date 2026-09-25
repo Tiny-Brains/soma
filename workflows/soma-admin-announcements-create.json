@@ -1,0 +1,104 @@
+{
+  "workflow_id": "soma-admin-announcements-create",
+  "name": "Publish an announcement",
+  "description": "`{kind, body, link?, dismissable?, ends_at?}` publishes at once; the bar draws it on every page's next read. kind is notice, season, maintenance or incident, a closed list the bar draws. body is one line of up to 200 characters. link is a site path or an https:// URL -- an admin writes it, so an outside link is allowed here and nowhere else. dismissable defaults to true. ends_at, if given, must be ahead. A bad field writes nothing and is 400.",
+  "tags": ["soma", "admin", "platform"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "kind",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "in": [{ "var": "data.req.kind" }, ["notice", "season", "maintenance", "incident"]]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "kind_invalid",
+          "detail": "kind is notice, season, maintenance, incident."
+        },
+        "name": "A kind, known"
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the id",
+      "description": "Minted here so the read-back finds the row the write made, and a retried write finds its own.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.id", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "write",
+      "name": "Publish",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-announcements-create-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.id" },
+            { "var": "data.req.kind" },
+            { "var": "data.req.body" },
+            { "var": "data.req.link" },
+            { "var": "data.req.dismissable" },
+            { "var": "data.req.ends_at" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 400,
+        "body": {
+          "error": "announcement_invalid",
+          "detail": "body: one line of 1 to 200 characters; link: a site path or an https:// URL, up to 500; ends_at: ahead of now."
+        },
+        "name": "Refuse a bad field"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-announcements.sql" },
+          "params": [{ "var": "temp_data.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body.announcements.0" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

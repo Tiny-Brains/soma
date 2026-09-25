@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-admin-stories-list",
+  "name": "Stories desk",
+  "description": "Every model story, newest edit first: the model, the owner, updated, featured or not, held or not, removed or not. A held edit comes whole with its tag beside an excerpt of the approved text the public still reads, which is what an admin decides on.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-stories.sql" },
+          "params": [null],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

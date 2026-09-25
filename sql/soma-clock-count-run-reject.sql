@@ -3,8 +3,12 @@ WITH fence AS (
      WHERE key = 'count' AND scheduled_for = ($1)::timestamptz AND attempt = ($2)::int
        FOR SHARE
 ), mark AS (
+    -- A rejected candidate's trial stays unlisted, the owner's alone; its margin is written as a
+    -- passed one's is, so the row reads the same whichever verdict it got. No upset: a trial
+    -- feeds no ladder.
     UPDATE matches m
-       SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq')
+       SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq'),
+           margin = (SELECT k.margin FROM match_sort_keys(m.id) k)
       FROM fence
      WHERE m.id = ($3)::uuid AND m.status = 'finished'
  RETURNING m.id

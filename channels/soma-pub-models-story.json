@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-pub-models-story",
+  "name": "soma-pub-models-story",
+  "description": "A model's approved story. Public and cached: it is the same text for everyone, and a held edit is never in it.",
+  "tags": ["soma", "pub", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/models/{id}/story",
+  "workflow_id": "soma-pub-models-story",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.public_rate" },
+    "cache": { "$from": "constants.hot_cache" }
+  }
+}

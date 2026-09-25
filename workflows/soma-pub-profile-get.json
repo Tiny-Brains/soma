@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-pub-profile-get",
   "name": "A competitor's public page",
-  "description": "One person's versions, GROUPED BY GAME AND SEASON, newest season first: someone who entered two seasons of one game has two standings, not one. PUBLIC, AND RETURNS ONLY WHAT IS PUBLIC -- `active` and `superseded`. A candidate mid-trial is a version nobody else may know exists and a rejection is nobody else's business, so the owner's own view is this response merged with GET /v1/models and GET /v1/me/matches rather than this route returning more to some callers.",
+  "description": "One person's versions, GROUPED BY GAME AND SEASON, newest season first: someone who entered two seasons of one game has two standings, not one. PUBLIC, AND RETURNS ONLY WHAT IS PUBLIC -- `active` and `superseded`. A candidate mid-trial is a version nobody else may know exists and a rejection is nobody else's business, so the owner's own view is this response merged with GET /v1/models and GET /v1/me/matches rather than this route returning more to some callers. The profile carries the bio, the medals the closes froze (season_podium, newest season first), and each model's newest counted match of that season (`latest_match`).",
   "tags": ["soma", "pub", "profile"],
   "tasks": [
     {

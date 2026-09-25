@@ -1,5 +1,6 @@
-INSERT INTO model_versions (model_id, game_id, season_id, version, weights_hash, manifest_hash)
-SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($5)::text, ($6)::text
+INSERT INTO model_versions (model_id, game_id, season_id, version, weights_hash, manifest_hash, note)
+SELECT e.id, g.id, s.id, coalesce(max(v.version), 0) + 1, ($5)::text, ($6)::text, nullif(btrim(($7)::text),
+    '')
 FROM games g
 JOIN seasons s ON s.game_id = g.id
 AND s.closed_at IS NULL
@@ -18,6 +19,7 @@ AND season_admits_weights(s, ($1)::uuid, ($5)::text, e.id)
 AND season_admits_in_flight(s, ($1)::uuid)
 AND season_admits_version(s, ($1)::uuid, e.id)
 AND season_admits_cooldown(s, e.id)
+AND text_hold_tag(($7)::text, false) IS NULL
 AND NOT EXISTS (SELECT 1
     FROM model_versions f
     WHERE f.model_id = e.id

@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-admin-events",
+  "name": "soma-admin-events",
+  "description": "What people watch, per day. Admin only.",
+  "tags": ["soma", "admin", "matches"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/admin/events",
+  "workflow_id": "soma-admin-events",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

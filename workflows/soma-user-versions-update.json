@@ -1,0 +1,119 @@
+{
+  "workflow_id": "soma-user-versions-update",
+  "name": "Edit a version's note",
+  "description": "`{note}`: the one line an owner writes about a version, public on the model page, up to 120 characters; blank or null clears it. REFUSED, NOT HELD, on a listed word: text_hold_tag() is a predicate in the UPDATE, so a refused request changes nothing, and the read after it names the word in a 422 -- reached after deny, so a signed-out caller is told 401 and never which word. A URL is allowed. The owner writes it, and an admin a baseline's. Answers version_json().",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "note_long",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.note" }, ""] }
+              ]
+            },
+            120
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "note_too_long",
+          "detail": "A version note is one line of at most 120 characters."
+        },
+        "name": "Refuse a note too long"
+      }
+    },
+    {
+      "id": "write",
+      "name": "Set the note",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-versions-update-write.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.note" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-versions-update-read.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.note" },
+            { "var": "metadata.vars.settled_sigma" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_version" },
+        "name": "Not a version the caller writes"
+      }
+    },
+    {
+      "id": "word",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!!": { "var": "temp_data.rows.0.note_word" } }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "note_word_listed",
+          "word": { "var": "temp_data.rows.0.note_word" },
+          "detail": "The note uses a word the site does not allow. Nothing was changed."
+        },
+        "name": "Refuse a listed word"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

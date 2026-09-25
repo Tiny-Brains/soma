@@ -1,5 +1,6 @@
-SELECT json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'role', u.role,
-        'created_at', u.created_at, 'candidates', coalesce((SELECT json_agg(json_build_object('version_id',
+SELECT json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'bio', u.bio,
+        'role', u.role, 'created_at', u.created_at, 'comments_off_until', commenting_off_until(u),
+        'comments_off_reason', commenting_off_reason(u), 'candidates', coalesce((SELECT json_agg(json_build_object('version_id',
                         v.id, 'model_id', e.id, 'model', e.name, 'game', g.slug, 'version', v.version,
                         'phase', model_phase(v))
                 ORDER BY g.slug, e.name)

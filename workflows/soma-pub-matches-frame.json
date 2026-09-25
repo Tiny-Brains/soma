@@ -1,0 +1,59 @@
+{
+  "workflow_id": "soma-pub-matches-frame",
+  "name": "A match's last frame",
+  "description": "What a card rests on: the runner's last frame of a PUBLIC match (match_public), as the runner sent it at finish and Soma stored it (match_frames), with each seat's model, score and rank. Opaque: Soma never reads inside `frame`, which is the cartridge's moving layer; the board is the maps route's, which the browser already holds, so it is not repeated here. `frame` and `turn` are null when the runner sent none -- the card then rests on turn zero. A frame is written once and never changes, so once it exists the answer says `Cache-Control: public, max-age=31536000, immutable` and the browser keeps it; without one it says a minute, so a card picks up a frame that arrives later. A trial in progress or a rejected candidate's answers 404 like a match that does not exist.",
+  "tags": ["soma", "pub", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-matches-frame-query.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "No public match"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond, with how long to keep it",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "status": 200,
+                "body_path": "data.body",
+                "headers": {
+                  "Cache-Control": {
+                    "if": [
+                      { "var": "temp_data.rows.0.has_frame" },
+                      "public, max-age=31536000, immutable",
+                      "public, max-age=60"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

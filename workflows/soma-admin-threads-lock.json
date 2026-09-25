@@ -1,0 +1,156 @@
+{
+  "workflow_id": "soma-admin-threads-lock",
+  "name": "Lock or unlock a thread",
+  "description": "Admin only: `{thread | match | model, locked, reason?}`. A LOCKED THREAD TAKES NO NEW COMMENT and keeps every one it has; unlocking opens it again. The thread is named by its id (the comments desk) or by its host (the watch and model pages, where an admin may lock a host nobody has commented on yet -- its thread is made first, as a post would make it, and a match nobody may see gets none). Asking for the state a thread is already in writes nothing and answers 200 with it; every change is an audit line with the reason. 404 for a host or thread that does not exist.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "named",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "or": [
+              { "var": "data.req.thread" },
+              { "var": "data.req.match" },
+              { "var": "data.req.model" }
+            ]
+          }
+        },
+        "status": 400,
+        "body": { "error": "host_required", "detail": "Name the thread, or its match or model." },
+        "name": "A thread named"
+      }
+    },
+    {
+      "id": "stated",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!==": [{ "var": "data.req.locked" }, true] },
+            { "!==": [{ "var": "data.req.locked" }, false] }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "locked_required",
+          "detail": "The body carries {\"locked\": true} or {\"locked\": false}."
+        },
+        "name": "A state, stated"
+      }
+    },
+    {
+      "id": "reason",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.reason" }, ""] }
+              ]
+            },
+            300
+          ]
+        },
+        "status": 400,
+        "body": { "error": "reason_too_long", "detail": "At most 300 characters." },
+        "name": "A short reason"
+      }
+    },
+    {
+      "id": "open",
+      "name": "Make the host's thread",
+      "condition": { "!": { "var": "data.req.thread" } },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-community-shared-thread.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.match" },
+            { "var": "data.req.model" }
+          ],
+          "output": "temp_data.opened"
+        }
+      }
+    },
+    {
+      "id": "lock",
+      "name": "Lock or unlock it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-threads-lock-lock.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.match" },
+            { "var": "data.req.model" },
+            { "var": "data.req.thread" },
+            { "var": "data.req.locked" },
+            { "var": "data.req.reason" }
+          ],
+          "output": "temp_data.locked"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-threads-lock-read.sql" },
+          "params": [
+            { "var": "data.req.match" },
+            { "var": "data.req.model" },
+            { "var": "data.req.thread" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_thread" },
+        "name": "A thread or host that exists"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body.changed",
+              "logic": { ">": [{ "var": "temp_data.locked.rows_affected" }, 0] }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

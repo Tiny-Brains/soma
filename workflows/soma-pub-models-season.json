@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-models-season",
+  "name": "A model's season",
+  "description": "The model page's This season, over the game's live season (else the latest closed): the record -- the fold's own win, draw and loss counters on its versions' Open ratings, so rated matches only -- the last five as cards, the win that gained most and the loss that cost most on the Open ladder, and its Open rank now (ladder_field) and a week ago (the ladder_snapshots row at or before then). Everything but the rank reads the versions' Open rating_events, so it costs this model's matches and never the season's. 404 for an unknown model.",
+  "tags": ["soma", "pub", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-models-season-query.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_model" },
+        "name": "No such model"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

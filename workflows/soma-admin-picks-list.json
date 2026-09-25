@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-admin-picks-list",
+  "name": "Staff picks desk",
+  "description": "The pinned matches in order, each the card GET /v1/games/{game}/picks returns, with its `pick_id` -- which unpin and reorder address -- and who pinned it and when.",
+  "tags": ["soma", "admin", "matches"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "read",
+      "name": "Read the picks",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-picks.sql" },
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

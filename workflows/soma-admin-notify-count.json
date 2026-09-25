@@ -1,0 +1,62 @@
+{
+  "workflow_id": "soma-admin-notify-count",
+  "name": "Count a Notify audience",
+  "description": "`{audience}` answers `audience`, the people the chips name, and `recipients`, those of them who take the `season` category in the app and so would get the row. POST because the audience is a body, not a query; it writes nothing. The chips combine as a union: everyone; a season's submitters, narrowed to one weight class by `class`; the owners of `models`; `handles` typed by hand. Baselines are never in an audience.",
+  "tags": ["soma", "admin", "notifications"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "audience",
+      "name": "Count the audience",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-audience.sql" },
+          "params": [{ "var": "data.req.audience" }],
+          "output": "temp_data.audience"
+        }
+      }
+    },
+    {
+      "id": "audience_invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.audience.0.body.valid" } },
+        "status": 400,
+        "body": {
+          "error": "audience_invalid",
+          "detail": "audience is an object of chips: everyone (true); game and season (slugs) with an optional class; models (ids); handles."
+        },
+        "name": "An audience, stated"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "audience": { "var": "temp_data.audience.0.body.audience" },
+                "recipients": { "var": "temp_data.audience.0.body.recipients" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

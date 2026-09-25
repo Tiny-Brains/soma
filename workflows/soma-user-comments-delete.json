@@ -1,0 +1,85 @@
+{
+  "workflow_id": "soma-user-comments-delete",
+  "name": "Delete your own comment",
+  "description": "THE AUTHOR TAKES THEIR OWN COMMENT DOWN, live or held. An UPDATE to `deleted`: soma-db refuses DELETE, and the row stays as a placeholder -- no author, no text -- while replies hang beneath it. The thread's live count is the trigger's. 204; 204 again for a comment already deleted or removed, which is gone either way; 404 for a comment that is not the caller's. Nobody but an admin removes someone else's comment: everyone else reports it.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "delete",
+      "name": "Take it down",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-comments-delete-delete.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.deleted"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing changed",
+      "condition": { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-comments-delete-why.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.session_ok" } }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "A live session"
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.state" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_comment" },
+        "name": "A comment of yours"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+          ]
+        }
+      }
+    }
+  ]
+}

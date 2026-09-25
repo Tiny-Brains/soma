@@ -129,6 +129,53 @@
           }
         }
       ]
+    },
+    "admin-only": {
+      "tasks": [
+        {
+          "id": "who",
+          "name": "Who is asking",
+          "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
+        },
+        {
+          "id": "revoked",
+          "name": "Reject a revoked session",
+          "description": "The session guard is the JOIN in admin_identity: no row is a revoked or missing session, answered 401.",
+          "condition": { "!": { "var": "temp_data.who.0.body" } },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "session_revoked" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 401, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "forbid",
+          "name": "Admins only",
+          "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request.",
+          "condition": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "admin_only" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 403, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }

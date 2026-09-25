@@ -1,0 +1,34 @@
+{
+  "workflow_id": "soma-pub-announcements",
+  "name": "Live announcements",
+  "description": "The line across every page: every announcement not disabled and not past its end, newest first, with whether a reader may dismiss it. Dismissing is the browser's, per reader; Soma keeps no per-reader state. season_cache, so a publish or a disable reaches every page within a minute and an ended one lingers at most that long.",
+  "tags": ["soma", "pub", "platform"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-announcements-query.sql" },
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

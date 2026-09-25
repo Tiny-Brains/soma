@@ -1,0 +1,121 @@
+{
+  "workflow_id": "soma-admin-stories-update",
+  "name": "Decide a story",
+  "description": "`{action, reason?}`: feature or unfeature (an approved text that is not removed); approve (the held edit becomes the public text) or reject (the held edit is dropped, the approved text stays); remove (off the model page and Stories, kept) or restore. The WHERE is the action's precondition, so an action on a story in the wrong state writes nothing and answers 409 with the story as it stands; no story at all is 404. Nothing is deleted: soma-db refuses DELETE. The audit line carries the reason.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "action",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "in": [
+              { "var": "data.req.action" },
+              ["feature", "unfeature", "approve", "reject", "remove", "restore"]
+            ]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "action_invalid",
+          "detail": "action is feature, unfeature, approve, reject, remove, restore."
+        },
+        "name": "An action, known"
+      }
+    },
+    {
+      "id": "reason",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.reason" }, ""] }
+              ]
+            },
+            300
+          ]
+        },
+        "status": 400,
+        "body": { "error": "reason_too_long", "detail": "A reason is at most 300 characters." },
+        "name": "Refuse a reason too long"
+      }
+    },
+    {
+      "id": "write",
+      "name": "Act",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-stories-update-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.model_id" },
+            { "var": "data.req.action" },
+            { "var": "data.req.reason" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-stories.sql" },
+          "params": [{ "var": "metadata.params.model_id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body.stories.0" } },
+        "status": 404,
+        "body": { "error": "unknown_story" },
+        "name": "No such story"
+      }
+    },
+    {
+      "id": "state",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "story_state", "detail": { "var": "temp_data.rows.0.body.stories.0" } },
+        "name": "Not in a state for that"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body.stories.0" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

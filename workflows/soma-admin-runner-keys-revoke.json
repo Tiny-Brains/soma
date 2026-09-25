@@ -5,25 +5,8 @@
   "tags": ["soma", "admin", "runners"],
   "tasks": [
     {
-      "id": "who",
-      "name": "Who is asking",
-      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
-    },
-    {
-      "id": "deny",
-      "use": "deny-revoked",
-      "with": { "row": "temp_data.who.0.body" }
-    },
-    {
-      "id": "forbid",
-      "use": "refuse",
-      "with": {
-        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
-        "status": 403,
-        "body": { "error": "admin_only" },
-        "name": "Admins only",
-        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
-      }
+      "id": "admin",
+      "use": "admin-only"
     },
     {
       "id": "revoke",
@@ -33,7 +16,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE runner_keys k SET revoked_at = now() FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($3)::uuid WHERE k.id = ($2)::uuid AND k.user_id = u.id AND u.id = ($1)::uuid AND u.role = 'admin' AND k.revoked_at IS NULL",
+          "query": { "$sql": "../sql/soma-admin-runner-keys-revoke-revoke.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.params.id" },

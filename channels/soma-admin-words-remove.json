@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-admin-words-remove",
+  "name": "soma-admin-words-remove",
+  "description": "Admin only: unlists one word.",
+  "tags": ["soma", "admin", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["DELETE"],
+  "route_pattern": "/v1/admin/words/{id}",
+  "workflow_id": "soma-admin-words-remove",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

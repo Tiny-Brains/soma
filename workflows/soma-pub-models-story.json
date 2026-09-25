@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-models-story",
+  "name": "A model's story",
+  "description": "The story the public reads: the APPROVED title and text, with when it was approved and whether an admin featured it. A held edit waits in pending_* and is the writer's, read through GET /v1/me/models/{id}/story, never here -- this route is cached under a key that holds nothing about the caller. A first story still held, and a story an admin removed, answer 404 exactly as a model with no story does.",
+  "tags": ["soma", "pub", "community"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-models-story-query.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "no_story" },
+        "name": "No public story"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

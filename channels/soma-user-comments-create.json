@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-user-comments-create",
+  "name": "soma-user-comments-create",
+  "description": "Signed in: posts a comment or a reply. Per-user write rate, beside the route's own 15 s and 100-a-day rules.",
+  "tags": ["soma", "user", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/threads/comments",
+  "workflow_id": "soma-user-comments-create",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

@@ -5,25 +5,8 @@
   "tags": ["soma", "admin", "baselines"],
   "tasks": [
     {
-      "id": "who",
-      "name": "Who is asking",
-      "function": { "name": "db_read", "input": { "$from": "constants.admin_identity" } }
-    },
-    {
-      "id": "deny",
-      "use": "deny-revoked",
-      "with": { "row": "temp_data.who.0.body" }
-    },
-    {
-      "id": "forbid",
-      "use": "refuse",
-      "with": {
-        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
-        "status": 403,
-        "body": { "error": "admin_only" },
-        "name": "Admins only",
-        "description": "The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the next request."
-      }
+      "id": "admin",
+      "use": "admin-only"
     },
     {
       "id": "query",

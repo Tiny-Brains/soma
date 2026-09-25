@@ -32,7 +32,7 @@ CONN = "conn"
 # Frozen on purpose: a new domain should be a deliberate edit here, in both packages, which is
 # what makes `?tag=matches` mean the same thing wherever it is asked.
 DOMAINS = {"platform", "auth", "profile", "notifications", "seasons", "maps", "baselines",
-           "ladder", "matches", "models", "admission", "runners", "users"}
+           "ladder", "matches", "models", "admission", "runners", "users", "community"}
 PAIRING_EXCEPTIONS = set()
 
 errors, notes = [], []
@@ -70,18 +70,24 @@ def steps(tasks):
         yield t
         yield from steps(t.get("tasks", []))
 
+FRAGMENTS = json.load(open("shared/soma.json")).get("fragments", {})
+
 def refuses_non_admin(wf):
     """The admin surface, as the workflow actually enforces it.
 
     NOT `constants.admin_identity`: soma-admin-check reads the live session inline, on purpose,
     so that reference misses it. NOT the string `admin_only` either -- the notification-settings
     PATCH refuses the `admin` CATEGORY to a competitor and is a competitor's route. What is the
-    admin surface and nothing else is the refusal CONDITION: this row's role is not admin."""
+    admin surface and nothing else is the refusal CONDITION: this row's role is not admin. A task
+    that `use`s a fragment is hunted through the fragment's own tasks (`admin-only`), so the test
+    still reads the condition and never trusts a fragment's name."""
     def hunt(node):
         if isinstance(node, list):
             return any(hunt(x) for x in node)
         if not isinstance(node, dict):
             return False
+        if isinstance(node.get("use"), str) and hunt(FRAGMENTS.get(node["use"], {}).get("tasks", [])):
+            return True
         args = node.get("!=")
         if isinstance(args, list) and len(args) == 2:
             lhs, rhs = args

@@ -1,0 +1,90 @@
+{
+  "workflow_id": "soma-user-models-story-put",
+  "name": "Write a model's story",
+  "description": "The owner writes the model's one story: `{title, body}`, the title one line of up to 80 characters and the text up to 20,000, headings, links and lists in it, no picture. A baseline's story is the team's, so an admin writes it. ONE UPSERT DECIDES: text_hold_tag() over the title and the text, with links allowed since links are a story's normal content. A clean text replaces the approved one at once and clears any held edit. A text that carries a listed word waits in pending_* with its tag, and the public keeps reading the approved text -- so a first story that trips the list stays hidden until an admin approves it. Answers the writer's view, approved and pending side by side. A model the caller may not write answers 404, like one that does not exist; a title or text off its rule (the write's predicates, the table's CHECKs) is 400 `story_invalid`.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "write",
+      "name": "Write it, or hold it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-models-story-put-write.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.title" },
+            { "var": "data.req.body" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-story.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_model" },
+        "name": "Not a model the caller writes"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 400,
+        "body": {
+          "error": "story_invalid",
+          "detail": "title: one line of 1 to 80 characters; text: 1 to 20,000 characters."
+        },
+        "name": "Refuse a bad title or text"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

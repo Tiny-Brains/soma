@@ -1,0 +1,48 @@
+{
+  "workflow_id": "soma-admin-posts-get",
+  "name": "One post, draft or not",
+  "description": "One post whole, draft or published, by id: what the Write page edits and Preview draws. By id, not slug, because the slug is one of the fields being edited.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-post.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_post" },
+        "name": "No such post"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

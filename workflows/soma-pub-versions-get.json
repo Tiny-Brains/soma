@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-pub-versions-get",
   "name": "One version",
-  "description": "One VERSION of one model, by id -- what GET /v1/models/{id} answered before an entry and a version became different things. It is a permalink and stays public: a rating nobody can audit is not a rating. The successor is THE SAME ENTRY'S next version, in the same season, which is the only reading that is true now that a competitor holds several models: scoped by owner it would name a sibling entry's version and tell someone their v3 was replaced by a v7 belonging to a different model of theirs. `class_max_bytes` comes from the version's own season, because a cap is the season's and a closed season's standing cannot be read against today's table.",
+  "description": "One VERSION of one model, by id. A permalink, and public once the version is: `active`, `disabled` (a baseline switched off) or `superseded`. A version still being admitted, waiting for its trial or rejected is its owner's, read through GET /v1/me/versions/{id}, and answers 404 here -- the rejection reason and the trial in progress are not the world's to read. The shape is version_json(), which the model's list and the owner's route return too, so the three cannot disagree. The successor is THE SAME ENTRY'S next version, in the same season. `class_max_bytes` comes from the version's own season, because a cap is the season's and a closed season keeps its own.",
   "tags": ["soma", "pub", "models"],
   "tasks": [
     {
@@ -15,6 +15,17 @@
           "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.settled_sigma" }],
           "output": "temp_data.rows"
         }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "No public version",
+        "description": "No such version, or one that is not public yet or never will be."
       }
     },
     {

@@ -8,9 +8,4 @@ AND n.read_at IS NULL
 AND (($4)::text IS NULL
     OR n.category = ($4)::text)
 AND (($3)::boolean
-    OR n.id IN (SELECT x::uuid
-        FROM jsonb_array_elements_text( CASE
-            WHEN jsonb_typeof(($5)::jsonb) = 'array' THEN ($5)::jsonb
-            ELSE '[]'::jsonb
-            END) AS x
-        WHERE x ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))
+    OR n.id IN (SELECT jsonb_uuids(($5)::jsonb)))

@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-picks",
+  "name": "Staff picks",
+  "description": "The matches an admin pinned for the game, as cards in the order they were set, each with its `pick_id` and `position`. A pick names a public match only, which the pin checks; the read asks match_public again, so a pick never shows what the listing would not. An unpinned pick is gone from here and kept as a row: nothing is deleted.",
+  "tags": ["soma", "pub", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-picks-query.sql" },
+          "params": [{ "var": "metadata.params.game" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

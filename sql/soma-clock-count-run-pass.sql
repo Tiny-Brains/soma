@@ -14,8 +14,11 @@ WITH fence AS (
       FROM seasons s JOIN model_versions c ON c.season_id = s.id
      WHERE c.id = ($4)::uuid AND s.closed_at IS NULL
 ), mark AS (
+    -- The trial goes public with its candidate, in this statement: `listed`, and its margin for
+    -- the sorts. No upset: a trial feeds no ladder.
     UPDATE matches m
-       SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq')
+       SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq'),
+           margin = (SELECT k.margin FROM match_sort_keys(m.id) k), listed = true
       FROM fence, live
      WHERE m.id = ($3)::uuid AND m.status = 'finished' AND m.trial_version_id = ($4)::uuid
  RETURNING m.id

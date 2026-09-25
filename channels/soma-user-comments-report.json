@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-user-comments-report",
+  "name": "soma-user-comments-report",
+  "description": "Signed in: flags someone else's live comment for the admins.",
+  "tags": ["soma", "user", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/comments/{id}/reports",
+  "workflow_id": "soma-user-comments-report",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

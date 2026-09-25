@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-clock-withdraw-run",
   "name": "Clock: withdraw",
-  "description": "The backstop clock, and the season's. Two idempotent statements a minute, neither fenced. The sweep cancels every queued match whose season has closed, whose engine has been retired or whose seats have stopped contesting, recording why and, where there is one, the successor that replaced the seat. The close ends the game's live season when an admin has asked or when its window has closed and every score has settled -- no submission undecided, nothing in flight, every active version at or below settled_sigma with at least burst matches. rows_affected is zero almost every minute in both, which is not a halt. Promotion does its own withdraw and the close cancels its own queue, so a persistently non-zero sweep count is a signal, not routine. A close that wrote is followed by one notification per entrant, keyed on the season, in a task that may fail without failing the close.",
+  "description": "The backstop clock, and the season's. Three idempotent statements a minute, none fenced. The sweep cancels every queued match whose season has closed, whose engine has been retired or whose seats have stopped contesting, recording why and, where there is one, the successor that replaced the seat. The close ends the game's live season when an admin has asked or when its window has closed and every score has settled -- no submission undecided, nothing in flight, every active version at or below settled_sigma with at least burst matches. rows_affected is zero almost every minute in each, which is not a halt. Promotion does its own withdraw and the close cancels its own queue, so a persistently non-zero sweep count is a signal, not routine. The close also freezes the podium into season_podium, in its own statement. The third writes the live season's ladder_snapshots once an hour, which the rating series reads. A close that wrote is followed by one notification per entrant, keyed on the season, and a medal per placed owner, each in a task that may fail without failing the close.",
   "tags": ["soma", "clock", "seasons"],
   "condition": true,
   "tasks": [
@@ -49,17 +49,53 @@
       }
     },
     {
-      "id": "notify_closed",
-      "name": "Tell everyone who entered that the season closed",
+      "id": "notify",
+      "name": "Tell people the season closed",
+      "description": "Only after a close that wrote. Each notifier is its own statement after the decision and may fail without failing the close or the other.",
       "condition": { ">": [{ "var": "temp_data.closed.rows_affected" }, 0] },
-      "continue_on_error": true,
+      "tasks": [
+        {
+          "id": "notify_closed",
+          "name": "Tell everyone who entered that the season closed",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-withdraw-run-notify_closed.sql" },
+              "params": [{ "var": "temp_data.game.0.id" }],
+              "output": "temp_data.notified_closed"
+            }
+          }
+        },
+        {
+          "id": "notify_medal",
+          "name": "Tell each placed owner their medal",
+          "description": "One row per podium place the close froze, to its owner, category `season`. A task of its own after the decision, like notify_closed, so a failure here never undoes a close.",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-withdraw-run-notify_medal.sql" },
+              "params": [{ "var": "temp_data.game.0.id" }],
+              "output": "temp_data.notified_medal"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "snapshot",
+      "name": "Snapshot the ladders on the hour",
+      "description": "Every ladder of the live season as ladder_at() reads it at the top of the hour, once an hour: the rating series and a model's rank a week ago read these rows instead of the whole event history. Idempotent, and last, so a failure here never skips the close or its notifications.",
       "function": {
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-clock-withdraw-run-notify_closed.sql" },
-          "params": [{ "var": "temp_data.game.0.id" }],
-          "output": "temp_data.notified_closed"
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-snapshot.sql" },
+          "params": [{ "var": "temp_data.game.0.id" }, null],
+          "output": "temp_data.snapshot"
         }
       }
     }

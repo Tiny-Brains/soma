@@ -73,9 +73,11 @@ CREATE INDEX sessions_user_live_idx
 --   admin_only  receivable only while the account's role is `admin`, read off `users` at the time
 --               of asking, so a demotion ends it at once -- the rule the admin routes follow.
 --   app, push   the defaults. Push is stored and never delivered here: Web Push is not built.
---   levels      the vocabulary of `level`, and NULL where a category has none. Only `matches` has
---               one, because it is the only category whose volume is the ladder's rather than the
---               competitor's: `notable` is placed first, any strike, or a disqualification.
+--   levels      the vocabulary of `level`, and NULL where a category has none. `matches` has one
+--               because its volume is the ladder's rather than the competitor's: `notable` is
+--               placed first, any strike, or a disqualification. `community` has one because a
+--               busy thread is other people's volume: `replies` is a reply to you, and `all` adds
+--               comments on your models and matches.
 CREATE FUNCTION notification_category_spec()
 RETURNS TABLE (category text, ord int, locked boolean, admin_only boolean,
                app boolean, push boolean, levels text[], level text)
@@ -85,8 +87,9 @@ LANGUAGE sql IMMUTABLE AS $$
       ('matches',     2, false, false, true, false, ARRAY['all', 'notable', 'off'], 'notable'),
       ('ratings',     3, false, false, true, false, NULL,                           NULL),
       ('season',      4, false, false, true, true,  NULL,                           NULL),
-      ('account',     5, true,  false, true, true,  NULL,                           NULL),
-      ('admin',       6, false, true,  true, true,  NULL,                           NULL)
+      ('community',   5, false, false, true, false, ARRAY['all', 'replies', 'off'], 'replies'),
+      ('account',     6, true,  false, true, true,  NULL,                           NULL),
+      ('admin',       7, false, true,  true, true,  NULL,                           NULL)
     ) AS t (category, ord, locked, admin_only, app, push, levels, level);
 $$;
 
@@ -154,13 +157,15 @@ $$;
 -- and a category turned back on does not surface what was skipped while it was off.
 --
 -- `p_notable` is the writer's own judgement of the item and matters only where a category has a
--- level: `all` takes everything, `notable` takes what the writer marked notable, `off` nothing.
+-- level: `all` takes everything, `notable` and `replies` take what the writer marked notable (a
+-- reply is, a comment on your model is not), `off` nothing.
 -- No row -- an unknown category, `admin` for a competitor, any category for a baseline -- is false.
 CREATE FUNCTION notification_wanted(p_user uuid, p_category text, p_notable boolean DEFAULT false)
 RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT coalesce((SELECT s.app AND (s.level IS NULL
                                        OR s.level = 'all'
-                                       OR (s.level = 'notable' AND coalesce(p_notable, false)))
+                                       OR (s.level IN ('notable', 'replies')
+                                           AND coalesce(p_notable, false)))
                        FROM notification_settings_of(p_user) s
                       WHERE s.category = p_category), false);
 $$;
@@ -209,7 +214,8 @@ CREATE TABLE notifications (
     CONSTRAINT notifications_dedupe_uniq      UNIQUE (user_id, dedupe_key),
     CONSTRAINT notifications_category_known   CHECK (notification_category_ok(category)),
     CONSTRAINT notifications_kind_known
-        CHECK (kind IN ('progress', 'result', 'rank', 'alert', 'season', 'account')),
+        CHECK (kind IN ('progress', 'result', 'rank', 'alert', 'season', 'account',
+                        'comment', 'reply', 'broadcast', 'medal')),
     CONSTRAINT notifications_tone_known       CHECK (tone IN ('info', 'ok', 'warn', 'bad')),
     CONSTRAINT notifications_icon_shape
         CHECK (icon IS NULL OR icon ~ '^[a-z0-9][a-z0-9-]{0,39}$'),
@@ -219,7 +225,7 @@ CREATE TABLE notifications (
     -- protocol-relative URL to an address bar, so the second character is refused too: a
     -- notification must never be a way to send a competitor somewhere that is not this site.
     CONSTRAINT notifications_link_is_a_path
-        CHECK (link IS NULL OR (left(link, 1) = '/' AND left(link, 2) <> '//' AND length(link) <= 500)),
+        CHECK (link IS NULL OR site_path_ok(link)),
     CONSTRAINT notifications_season_slug      CHECK (season IS NULL OR season ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
     CONSTRAINT notifications_data_object      CHECK (jsonb_typeof(data) = 'object'),
     CONSTRAINT notifications_dedupe_shape
@@ -238,6 +244,12 @@ CREATE INDEX notifications_feed_idx
 CREATE INDEX notifications_unread_idx
     ON notifications (user_id, created_at DESC, id DESC)
     WHERE read_at IS NULL;
+
+-- The Notify log: each send's recipients and how many read, by its `notify:<send>` key.
+CREATE INDEX notifications_broadcast_idx
+    ON notifications (dedupe_key) WHERE kind = 'broadcast';
+CREATE INDEX notifications_broadcast_read_idx
+    ON notifications (dedupe_key) WHERE kind = 'broadcast' AND read_at IS NOT NULL;
 
 -- NOTHING PRUNES THIS TABLE, and no clock may: the clocks delete nothing, by review and by
 -- `soma-db`'s `operations.delete = false`. Retention is open (README Status); when it is chosen it

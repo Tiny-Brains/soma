@@ -2,7 +2,7 @@ WITH m AS (UPDATE matches
     SET status = 'finished', reason = ($4)::text, turns = ($5)::int, played_ms = GREATEST(0, (EXTRACT(EPOCH
                 FROM (now() - ($6)::timestamptz)) * 1000)::int), engine_digest_played = ($7)::text,
         orion_version = ($8)::text, replay_key = ($9)::text, played_at = now(), lease_expires_at =
-        NULL
+        NULL, listed = trial_version_id IS NULL
     WHERE id = ($2)::uuid
     AND claim_token = ($1)::uuid
     AND status = 'running'
@@ -19,7 +19,13 @@ WITH m AS (UPDATE matches
         AND max(v.rank) <= 2 * seat_count
         AND max(v.strikes) <= strike_ceiling
         FROM jsonb_to_recordset(($3)::jsonb) AS v (rank smallint, strikes smallint))
-    RETURNING id)
+    RETURNING id, turns),
+f AS (INSERT INTO match_frames (match_id, turn, frame)
+    SELECT m.id, m.turns, ($11)::jsonb
+    FROM m
+    WHERE jsonb_typeof(($11)::jsonb) = 'object'
+    AND octet_length(($11)::jsonb::text) <= 65536
+    AND m.turns >= 0)
 UPDATE match_seats s
 SET rank = v.rank, score = v.score, strikes = v.strikes, infer_us_total = v.infer_us_total, infer_us_max
     = v.infer_us_max, infer_turns = v.infer_turns

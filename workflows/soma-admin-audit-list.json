@@ -1,0 +1,45 @@
+{
+  "workflow_id": "soma-admin-audit-list",
+  "name": "The audit log",
+  "description": "Admin only: THE AUDIT LOG, every admin write's line -- who, what, on what, when, the reason where one was asked -- newest first, fifty a page, keyset on (at, id). `?admin=` is one admin's handle; `?action=` narrows by prefix (`comment.` is every comment decision, `comment.remove` one kind); `?q=` is a substring of the target or the reason. Read-only: nothing here acts, and every undo made elsewhere is a line of its own. Each write inserts its line in the same statement as the write, so the log and the platform cannot disagree.",
+  "tags": ["soma", "admin", "users"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-audit-list-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.admin" },
+            { "var": "metadata.query.action" },
+            { "var": "metadata.query.q" },
+            { "var": "metadata.query.cursor" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

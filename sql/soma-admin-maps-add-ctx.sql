@@ -12,7 +12,8 @@ se AS (
     AND s.slug = ($2)::text )
 SELECT json_build_object( 'season', EXISTS (SELECT 1
         FROM se), 'closed', (SELECT se.closed_at IS NOT NULL
-        FROM se), 'header', h.h, 'limits', (SELECT se.limits
+        FROM se), 'header', h.h, 'name_problem', season_map_name_problem(h.h),
+        'limits', (SELECT se.limits
         FROM se), 'within', coalesce((SELECT season_map_within(h.h, se.limits)
             FROM se), false), 'engine', json_build_object('season', (SELECT se.engine_digest
             FROM se), 'node', ($4)::text), 'engine_ok', coalesce((SELECT se.engine_digest = ($4)::text

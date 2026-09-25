@@ -45,8 +45,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   transport: method, `route_pattern`, `auth`, `rate_limit` (keyed on the address, before auth),
   `principal_rate_limit` (keyed on `auth.sub`, after) and `response.mode: "shaped"`. The workflow is
   a flat task list whose last `map` writes `data.body` and `data._orion.response`.
-- Constants and fragments (`refuse`, `deny-revoked`) live in `shared/soma.json`, referenced with
-  `$from`/`use`. So the set must be **compiled** before it is applied, which `load-package.sh` does.
+- Constants and fragments (`refuse`, `deny-revoked`, and `admin-only`, which every admin route
+  opens with) live in `shared/soma.json`, referenced with `$from`/`use`. So the set must be **compiled** before it is applied, which `load-package.sh` does.
 - **A workflow's `description` is where a route's reasoning lives.** Read it before changing the
   route. Orion refuses one over 2048 characters, and `check-sql.sh` fails first.
 - **SQL builds the response and the workflow moves it**: queries end `json_build_object(...) AS
@@ -58,6 +58,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - **Write, then diagnose.** `db_write` answers only `rows_affected`, so a refusal is one statement
   that does the work, a conditional `db_read` that asks why nothing happened, and a terminal map that
   turns that into an error code (`soma-admin-seasons-create`: `create` → `why` → `refused`).
+- **Every admin write inserts its `audit_log` line in the same statement**, as a data-modifying
+  CTE over the write's `RETURNING`, so the action and its record cannot disagree.
 - A route that can return something private gets its **own path** (`/v1/me/matches`), never a
   parameter on a public route.
 - **Only a caller-invariant route may declare `cache`.** The response-cache key carries method,
@@ -67,8 +69,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   and no list page searches names or ids, so the tag filter is the navigation and each tag has to
   be a useful question on its own. The surface is one of `pub`, `user`, `admin`, `gate`, `clock`
   (`conn` on a connector) and is also the id's second segment; `scripts/check-names.sh` DERIVES it
-  from the definition and fails if the two disagree. The domain comes from a closed list of
-  thirteen, shared with kalam -- web's `scripts/check/configs.sh` compares them.
+  from the definition and fails if the two disagree. The domain comes from a closed list
+  shared with kalam -- web's `scripts/check/configs.sh` compares them.
 - A node's boot apply
   ADDS and UPDATES only: retiring what a version dropped is `scripts/load-package.sh --prune`, which
   reads the receipt's own inventory rather than sweeping by tag, and is a deliberate operator step
@@ -156,6 +158,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A shape several routes return is a function in the migration (`season_json`, `current_season`,
   `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`, the `season_admits*`
   predicates). Never copy one into a workflow.
+- **A text rule is one IMMUTABLE function** (`line_ok`, `site_path_ok`, `link_ok`, `slug_ok`,
+  `comment_word_ok`) that the table's CHECK, the write's WHERE and its `why` all call. Never restate
+  one as a literal predicate: a write and its diagnosis then disagree about why a request failed.
+- **`threads.comments` is kept by the trigger `comments_count_live`**, on every INSERT or UPDATE OF
+  `state` on `comments`. A writer never adjusts it by hand, or the count moves twice.
 - Constraints carry the rules no writer is trusted with: partial unique indexes, the deferrable
   one-active exclusion, `matches_status_shape`.
 - **Grants are the boundary with Kalam.** `runner_gate` gets SELECT on a few tables and UPDATE on

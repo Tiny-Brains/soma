@@ -1,0 +1,55 @@
+{
+  "workflow_id": "soma-user-versions-get",
+  "name": "One of my versions",
+  "description": "The owner's half of GET /v1/versions/{id}: the same version_json() shape, for a version the caller may write (model_writable_by: their own, or a baseline's for an admin) in ANY status -- testing, verified, rejected with its reason, and the trial in progress. A route of its own rather than a parameter on the public one, because the public route is cached under a key that holds nothing about the caller. The live_sessions join is the outer FROM, so a live session always yields a row: no row is a 401, and a row whose body is null is a version the caller may not write, which answers 404 exactly as a version that does not exist.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-versions-get-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.settled_sigma" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "Not the caller's version",
+        "description": "No such version, or another competitor's."
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

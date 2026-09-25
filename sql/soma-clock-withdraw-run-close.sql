@@ -51,6 +51,15 @@ WITH live AS (
       FROM closed
      WHERE m.season_id = closed.id AND m.status = 'pending'
  RETURNING m.id
+), podium AS (
+    -- THE PODIUM, FROZEN IN THE STATEMENT THAT CLOSES: first to third on every ladder, one place
+    -- per owner, no baselines (podium_of). It reads the season's `active` versions, which neither
+    -- sibling CTE touches, so the snapshot every CTE shares is the final standing.
+    INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
+    SELECT closed.id, l.ladder, p.place, p.version_id, p.owner_id, p.rating
+      FROM closed
+     CROSS JOIN unnest(enum_range(NULL::ladder)) AS l (ladder)
+     CROSS JOIN LATERAL podium_of(closed.id, l.ladder) p
 )
 UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now()
   FROM closed WHERE c.key = 'roster'

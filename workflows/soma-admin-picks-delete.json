@@ -1,0 +1,71 @@
+{
+  "workflow_id": "soma-admin-picks-delete",
+  "name": "Unpin a match",
+  "description": "Unpins by pick id: an UPDATE that stamps unpinned_at, since soma-db refuses DELETE and a pick's history is the audit log's to show. A pick already unpinned, or none, is 404. Answers the pick it unpinned and the live picks left.",
+  "tags": ["soma", "admin", "matches"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "unpin",
+      "name": "Unpin",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-picks-delete-unpin.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 404,
+        "body": { "error": "unknown_pick" },
+        "name": "No live pick"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the picks",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-picks.sql" },
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "unpinned": { "var": "metadata.params.id" },
+                "picks": { "var": "temp_data.rows.0.body.picks" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

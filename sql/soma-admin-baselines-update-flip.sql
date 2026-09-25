@@ -55,7 +55,16 @@ bump AS (
     SET epoch = c.epoch + 1, updated_at = now()
     FROM flipped
     WHERE c.key = 'roster'
-    RETURNING c.epoch )
+    RETURNING c.epoch ),
+audit AS (
+    INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
+    SELECT ($5)::uuid, CASE
+        WHEN ($4)::boolean THEN 'baseline.enable'
+        ELSE 'baseline.disable'
+        END, 'baseline', 'baseline.' || ($3)::text, jsonb_build_object('game', ($1)::text, 'season', ($2)::text,
+            'version_id', flipped.id, 'cancelled', (SELECT count(*)
+                FROM cancelled))
+    FROM flipped )
 INSERT INTO baseline_events (version_id, action, by_user, cancelled)
 SELECT flipped.id, CASE
 WHEN ($4)::boolean THEN 'enable'

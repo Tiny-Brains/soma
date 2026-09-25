@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-admin-announcements-list",
+  "name": "Announcements desk",
+  "description": "Live announcements first, then past ones, newest first within each: type, text, link, ending, sticky or dismissable, who published it and when, and who disabled it. Live is not disabled and not past its end time.",
+  "tags": ["soma", "admin", "platform"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-announcements.sql" },
+          "params": [null],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -57,6 +57,31 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim
          ("n_results", "soma-clock-count-run", "notify_result"),
          ("n_ranks", "soma-clock-count-run", "notify_rank"),
          ("n_season", "soma-clock-withdraw-run", "notify_closed"),
+         ("w_close", "soma-clock-withdraw-run", "close"),
+         ("n_medal", "soma-clock-withdraw-run", "notify_medal"),
+         ("w_snapshot", "soma-clock-withdraw-run", "snapshot"),
+         ("x_frame", "soma-pub-matches-frame", "query"),
+         ("x_events", "soma-pub-events", "record"),
+         ("x_podium", "soma-pub-podium", "query"),
+         ("cm_thread", "soma-user-comments-create", "thread"),
+         ("cm_post", "soma-user-comments-create", "post"),
+         ("cm_why", "soma-user-comments-create", "why"),
+         ("cm_reply", "soma-user-comments-create", "notify_reply"),
+         ("cm_reply", "soma-admin-comments-decide", "notify_reply"),
+         ("cm_decide", "soma-admin-comments-decide", "decide"),
+         ("cm_lock", "soma-admin-threads-lock", "lock"),
+         ("cm_threads", "soma-pub-threads", "query"),
+         ("e_story_put", "soma-user-models-story-put", "write"),
+         ("e_story_me", "soma-user-models-story", "read"),
+         ("e_note_w", "soma-user-versions-update", "write"),
+         ("e_note_r", "soma-user-versions-update", "read"),
+         ("e_post_c", "soma-admin-posts-create", "write"),
+         ("e_post_u", "soma-admin-posts-update", "write"),
+         ("e_post_pub", "soma-pub-posts-get", "query"),
+         ("e_send", "soma-admin-notify-send", "write"),
+         ("e_pick_c", "soma-admin-picks-create", "write"),
+         ("v_public", "soma-pub-versions-get", "query"),
+         ("u_match", "soma-user-matches-get", "query"),
          ("m_insert", "soma-admin-maps-add", "insert"),
          ("m_flip", "soma-admin-maps-update", "flip"),
          ("a_verify", "soma-clock-admit-run", "verify"),
@@ -194,12 +219,12 @@ BEGIN
     SELECT count(*) INTO n FROM runner_keys;    ASSERT n = 0, format('the migrations wrote %s runner keys', n);
 
     -- The runner gate reads the tables a match and an admission are played from, holds runner
-    -- identity, and writes only the columns a runner reports. The one table-wide write is INSERT
-    -- on `runners`: a runner self-registers.
+    -- identity, and writes only the columns a runner reports. The two table-wide writes are INSERT
+    -- on `runners` (a runner self-registers) and on `match_frames` (finish's last frame).
     SELECT count(*) INTO n FROM information_schema.table_privileges
       WHERE grantee = 'runner_gate' AND privilege_type <> 'SELECT'
-        AND (table_name, privilege_type) <> ('runners', 'INSERT');
-    ASSERT n = 0, format('runner_gate holds %s table-wide writes beyond INSERT on runners', n);
+        AND (table_name, privilege_type) NOT IN (('runners', 'INSERT'), ('match_frames', 'INSERT'));
+    ASSERT n = 0, format('runner_gate holds %s table-wide writes beyond INSERT on runners and match_frames', n);
 
     SELECT count(*) INTO n FROM information_schema.table_privileges
       WHERE grantee = 'runner_gate' AND privilege_type = 'SELECT'
@@ -223,6 +248,7 @@ BEGIN
             ('matches','turns'), ('matches','played_ms'), ('matches','engine_digest_played'),
             ('matches','orion_version'), ('matches','replay_key'), ('matches','played_at'),
             ('matches','fault_reason'), ('matches','closed_at'), ('matches','played_by'),
+            ('matches','listed'),
             ('match_seats','rank'), ('match_seats','score'), ('match_seats','strikes'),
             ('match_seats','infer_us_total'), ('match_seats','infer_us_max'),
             ('match_seats','infer_turns'),

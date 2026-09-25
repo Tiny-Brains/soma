@@ -1,0 +1,117 @@
+{
+  "workflow_id": "soma-admin-picks-create",
+  "name": "Pin a match",
+  "description": "`{match_id}` pins a match last. A pick names a PUBLIC match only (match_public: finished or rated, and no trial in progress): anything else is 422, since the channel shows it to everyone. A match already pinned is 409 -- picks_live_uniq is the arbiter -- and one that does not exist, or an id that is not a uuid, 404. Answers every live pick.",
+  "tags": ["soma", "admin", "matches"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "write",
+      "name": "Pin",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-picks-create-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.match_id" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was pinned",
+      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-picks-create-why.sql" },
+          "params": [{ "var": "data.req.match_id" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_match" },
+        "name": "No such match"
+      }
+    },
+    {
+      "id": "private",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.public" } }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "match_not_public",
+          "detail": "A pick is shown to everyone, so it names a finished public match."
+        },
+        "name": "Not a public match"
+      }
+    },
+    {
+      "id": "pinned",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "already_pinned" },
+        "name": "Already pinned"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the picks",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-picks.sql" },
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

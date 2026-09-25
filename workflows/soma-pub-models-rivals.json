@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-models-rivals",
+  "name": "A model's rivals",
+  "description": "Per opposing model this season: the rated, non-trial matches both sat in, and how many each won, where a win is the better rank and a tie is neither. Most losses first, then most played, so home's \"the neighbour you lose to most\" is the first row; `limit` defaults to 20 and is clamped to 100 in SQL. It starts from this model's Open rating_events, which only rated, non-trial matches have, so it costs this model's matches. 404 for an unknown model.",
+  "tags": ["soma", "pub", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-models-rivals-query.sql" },
+          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.query.limit" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_model" },
+        "name": "No such model"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

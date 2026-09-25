@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-matches-related",
+  "name": "Matches beside a match",
+  "description": "The watch rail: twelve cards beside one PUBLIC match, from its own season. Six of the latest matches of the models seated in it, taken in turns -- each model's newest, then each one's next -- the winner's model first in every round; three more on the same board; then the season's latest. Deduplicated -- a match keeps the first group it falls in -- and the match itself excluded. Every candidate is match_counted(), the season listing's own rule. A model's latest are read backwards off its versions' rating_events, and the board and season groups off the season's played index, each stopping at its LIMIT, so none sorts the season. 404 for a match that is not public.",
+  "tags": ["soma", "pub", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-matches-related-query.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "No public match"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

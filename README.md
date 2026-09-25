@@ -62,8 +62,11 @@ channels add a per-principal quota.
 | Method | Path | Auth | What |
 |---|---|---|---|
 | GET | `/v1/auth/github` | Public | Redirect to GitHub (state, PKCE, `?next=`); the same channel serves `/callback` and sets the cookie |
-| GET · PATCH | `/v1/me` | Session | Current user and any version in flight · `display_name` |
-| GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included |
+| GET · PATCH | `/v1/me` | Session | Current user, any version in flight, bio and commenting switch · `display_name`, `bio` (422 `bio_word_listed`) |
+| GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included, as cards with `mine` on each seat |
+| GET | `/v1/me/matches/{id}` | Session | One match the caller has a seat in, any status, with a signed replay URL: a trial in progress or a rejected candidate's |
+| GET | `/v1/me/comments` | Session | `match` or `model`: your held comments on that host |
+| GET | `/v1/me/models/{id}/story` | Session | The writer's view: the approved text and the held edit with its `hold_tag` |
 | GET | `/v1/me/notifications` | Session | Feed: `category`, `unread`, `since`, `cursor`, `limit`; unread count |
 | POST | `/v1/me/notifications/read` | Session | `ids`, or `all` with an optional `category` |
 | GET · PATCH | `/v1/me/notification-settings` | Session | Per category `app`, `push`, `level`; 409 `category_locked` |
@@ -72,35 +75,76 @@ channels add a per-principal quota.
 | GET | `/v1/admin-check` | Session | **204** admin, **401** no or revoked session, **403** signed-in non-admin; no body |
 | GET | `/v1/status` | Public | Queue, throughput and how far each clock is behind |
 | GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes |
-| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit`, `cursor` |
+| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor` |
+| GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
+| GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |
+| GET | `.../seasons/{slug}/podium` | Public | The frozen podium per ladder, each place with its owner's latest match |
 | GET · POST | `/v1/games/{game}/seasons` | Public · Admin | Seasons with counts · create `{name, submissions_open_at, submissions_close_at, rules?, weight_classes?}` |
 | PATCH | `/v1/games/{game}/seasons/{slug}` | Admin | Edit a season that has not opened; name and slug are refused |
 | POST | `/v1/games/{game}/seasons/{slug}/close` | Admin | Request a close; 202, consumed by the withdraw clock |
 | GET | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Public | A season's boards, enabled or not (`?enabled=`, `?boards=`) · one board and its history |
-| POST · PATCH | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Admin | Upload one map file, stored disabled · `{"enabled": bool}` |
+| POST · PATCH | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Admin | Upload one map file named `size-terrain-Np-Hh`, stored disabled (422 `map_name_pattern`, `map_name_players`, `map_name_hills`) · `{"enabled": bool}` |
 | GET · POST | `.../seasons/{slug}/baselines` | Admin | Baselines and refused uploads · `{name, weights_hash, manifest_hash}`, answered with two presigned PUTs |
 | PATCH | `.../seasons/{slug}/baselines/{baseline}` | Admin | `{"enabled": bool}`; `{baseline}` is the slug of its name |
 | POST | `/v1/games/{game}/models` | Session | Create an entry `{name}` |
 | GET | `/v1/models` | Session | The caller's versions with ratings and ranks; `?game=` |
 | GET · PATCH | `/v1/models/{id}` | Public · Session | An entry and its versions · `{name, retired}` |
-| GET | `/v1/versions/{id}` | Public | One version: status, ladders with rank and field, trial |
+| GET | `/v1/models/{id}/season` | Public | Record, last five, best win and worst loss on Open, rank now and a week ago |
+| GET | `/v1/models/{id}/rivals` | Public | Per opposing model this season: played, won, lost; most losses first; `limit` ≤ 100 |
+| GET · PUT | `/v1/models/{id}/story` | Public · Session | The approved story (`title`, `body`, `featured`, `updated_at`), 404 while none is public · `{title, body}` (≤ 80, ≤ 20,000) replaces it, or holds it on a listed word while the public keeps the old text; 400 `story_invalid` (a one-line title ≤ 80, text 1–20,000); the owner, or an admin for a baseline's |
+| PATCH | `/v1/versions/{id}` | Session | `{note}` (≤ 120, blank clears); 422 `note_word_listed` |
+| GET | `/v1/versions/{id}` | Public | One version once public (`active`, `disabled`, `superseded`), else 404: status, ladders with rank and field, trial, note |
+| GET | `/v1/me/versions/{id}` | Session | One of the caller's versions in any status (an admin's for a baseline too), the same shape |
 | GET | `/v1/games/{game}/submission` | Session | Whether the caller may submit, and why not; `?model=` |
-| POST | `/v1/submissions` | Session | `{game, model, weights_hash, manifest_hash}`: a `testing` version and two presigned PUTs; the same hashes again re-sign them |
-| GET | `/v1/matches` · `/v1/matches/{id}` | Public | `season`, `model`, `version`, `owner`, `map`, `class`, `ladder`, `outcome`, `players_min/max`, `cursor` · seats, ladders, signed replay URL |
-| GET | `/v1/profiles/{username}` | Public | A competitor's public versions by game and season |
+| POST | `/v1/submissions` | Session | `{game, model, weights_hash, manifest_hash, note?}`: a `testing` version and two presigned PUTs; the same hashes again re-sign them; 422 `note_word_listed` |
+| GET | `/v1/matches` · `/v1/matches/{id}` | Public | `season`, `model`, `version`, `owner`, `map`, `class`, `ladder`, `outcome`, `players_min/max`, `sort` (newest, closest, upset, longest, discussed, each with its own cursor), `since`, `top=true`, `vs=<model>` beside `model=` (400 `vs_needs_model`, `sort_invalid`), `cursor`, `limit` ≤ 60; `total` counts to 10,000 and `total_capped` says it stopped; each row a card with `margin`, `upset`, `comments`, `frame` · the card with each seat's `rating_change`, and a signed replay URL; a trial only once its candidate is public, else 404 |
+| GET | `/v1/matches/{id}/frame` | Public | `{id, map, turn, seats, frame}`: the last frame of a public match, else 404; `Cache-Control: immutable` once a frame exists, a minute until then |
+| GET | `/v1/matches/{id}/related` | Public | Twelve cards: these models' latest in turns (winner's model first), three on the board, then the season's latest |
+| POST | `/v1/events` | Public | `{event, match, via}`: 204 always; 400 `event_invalid`, `via_invalid`, `match_invalid`; a private or unknown match writes nothing |
+| GET | `/v1/profiles/{username}` | Public | A competitor's public versions by game and season, `bio`, `medals`, each model's `latest_match` |
+| GET | `/v1/profiles/{username}/comments` | Public | The author's live comments, newest first, each with its host and `link`; `cursor` |
+| GET | `/v1/threads` | Public | `match` or `model`, `cursor`: twenty top-level comments with their replies, the live count, the lock; a match nobody may see 404s |
+| POST | `/v1/threads/comments` | Session | `{match \| model, parent?, body}` → 201, `held` on a listed word or a link; 400 `body_invalid`, 403 `commenting_off`, 404 `unknown_host`/`unknown_parent`, 409 `thread_locked`, 429 `too_fast`/`daily_limit` with `retry_after` and `Retry-After` |
+| DELETE | `/v1/comments/{id}` | Session | Your own comment → `deleted` (a placeholder while replies hang beneath it); 204 |
+| POST | `/v1/comments/{id}/reports` | Session | `{reason?, words?}`, one per reader per comment; 201; 409 `own_comment` |
+| GET | `/v1/stories` | Public | `kind` = all, team or model; `cursor`, `limit` ≤ 60: published posts and featured stories as cards, newest first |
+| GET | `/v1/posts/{slug}` | Public | One published post |
+| GET | `/v1/announcements` | Public | Live announcements, newest first |
 | POST · GET | `/v1/runner-keys` | Admin | Mint a key (the only response that carries it) · the caller's keys |
 | DELETE | `/v1/runner-keys/{id}` | Admin | Revoke a key and every runner started from it |
 | GET · DELETE | `/v1/runners` · `/v1/runners/{id}` | Admin | The fleet · stop one machine, key untouched |
-| GET | `/v1/admin/users` | Admin | Every admin, and up to 50 competitors matching `?q=` (handle or display name) |
-| PATCH | `/v1/admin/users/{id}` | Admin | `{"role": "admin" \| "competitor"}`; 409 `not_yourself`, `not_a_person` |
+| GET | `/v1/admin/users` | Admin | Every admin, and up to 50 competitors matching `?q=` (handle or display name), each with held, reported and removed comment counts and the commenting switch |
+| GET · PATCH | `/v1/admin/users/{id}` | Admin | A user's desk, by id or handle: account, counts, sign-ins, models, comments, reports, audit · `{"role": "admin" \| "competitor"}`; 409 `not_yourself`, `not_a_person` |
+| PATCH | `/v1/admin/users/{id}/commenting` | Admin | `{off: day\|week\|month\|forever, reason}` or `{off: null}` |
+| GET | `/v1/admin/audit` | Admin | `admin` (handle), `action` (prefix), `q`, `cursor`; newest first |
+| GET | `/v1/admin/events` | Admin | Per day since `since`: visits, opened (with `opened_via`), finished |
+| GET | `/v1/admin/comments` | Admin | `view=held\|reported\|all`, `q` (`@handle` or text), `cursor` (a keyset for `all`, an offset for `held` and `reported`); whole rows with reports; tab counts |
+| POST | `/v1/admin/comments/decide` | Admin | `{ids, action: approve\|remove\|restore, reason?}`, ≤ 100 ids, an audit line each |
+| PATCH | `/v1/admin/threads` | Admin | `{thread \| match \| model, locked, reason?}`; makes a host's thread when it has none |
+| GET · POST | `/v1/admin/words` | Admin | The word list · `{word}`; 400 `word_invalid`, 409 `word_listed` |
+| DELETE | `/v1/admin/words/{id}` | Admin | Takes a word off the list; 204 |
+| GET · POST | `/v1/admin/posts` | Admin | Drafts and published · `{slug, title, body}` starts a draft; 409 `slug_taken` |
+| GET · PATCH | `/v1/admin/posts/{id}` | Admin | One post, draft included · `{slug?, title?, body?, published?}` saves, publishes or unpublishes |
+| GET | `/v1/admin/stories` | Admin | Every story with its state; a held edit comes whole |
+| PATCH | `/v1/admin/stories/{model_id}` | Admin | `{action, reason?}`: feature, unfeature, approve, reject, remove or restore; 409 `story_state` |
+| GET · POST | `/v1/admin/announcements` | Admin | Live first, then past · `{kind, body, link?, dismissable?, ends_at?}` publishes at once |
+| PATCH | `/v1/admin/announcements/{id}` | Admin | `{"disabled": true}` |
+| POST | `/v1/admin/notify/count` | Admin | `{audience}` → `audience`, `recipients` |
+| GET · POST | `/v1/admin/notify` | Admin | The sent log with `recipients` and `read` · `{subject, link?, audience}` sends now; 400 `notify_invalid`, 422 `no_recipients`. An audience is a union of `{"everyone": true}`, `{game, season, class?}`, `{models: [...]}`, `{handles: [...]}`; baselines never |
+| GET · POST · PATCH | `/v1/admin/picks` | Admin | Live picks as the public cards with `pick_id`, `position`, `pinned_by`, `pinned_at` · `{match_id}` pins (404 for an unknown id, 422 `match_not_public`, 409 `already_pinned`) · `{ids}` reorders the whole list (409 `order_incomplete`) |
+| DELETE | `/v1/admin/picks/{id}` | Admin | Unpins |
 | POST | `/v1/runner/token` | Public, address-limited | Key → ten-minute token; the runner self-registers on `(key, label)`; 409 when its `ops_budget` disagrees with a live season |
 | POST | `/v1/runner/claim` | Runner | One match and its execution contract, or `200 {"idle": true}` |
 | POST | `/v1/runner/matches/{id}/start` · `/renew` · `/release` | Runner | claimed → running · extend the lease (`{applied, lease_expires_at}`) · requeue, spending a refusal |
 | POST | `/v1/runner/matches/{id}/replay-url` | Runner | Presigned PUT for `replays/<match>/<claim_token>.json` |
-| POST | `/v1/runner/matches/{id}/finish` | Runner | `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
+| POST | `/v1/runner/matches/{id}/finish` | Runner | Result, and optionally the last `frame` (an object up to 64 KB, stored opaque) · `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 | GET | `/v1/runner/roster` | Runner | Every `verified` or `active` version a runner must be able to play |
 | POST | `/v1/runner/admissions/claim` | Runner | `{orion_version}` → one prepared submission (registration, key, digest, budget, reference observations) and its claim, or `200 {"idle": true}`; 409 `orion_version_differs` |
 | POST | `/v1/runner/admissions/{id}/report` | Runner | `{claim_token, admission, stats, probe}` → `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
+
+Every admin write inserts its `audit_log` line in the same statement. A season's close freezes its
+podium into `season_podium` (one place per owner, no baselines) and sends each placed owner a
+`medal`.
 
 `/v1/admin-check` exists for nginx `auth_request` (web puts the Orion console behind it): 2xx allows,
 401 sends the caller to sign in, 403 refuses. Keep the 401/403 split. The port also serves Orion's
@@ -116,8 +160,8 @@ the singleton buys order, and the SQL fences buy correctness.
 |---|---|---|---|---|
 | `soma-clock-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
 | `soma-clock-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
-| `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order, decide trials, promote | run fence on `clocks.count` |
-| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season | none: idempotent |
+| `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
+| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season; snapshot the live season's ladders once an hour | none: idempotent |
 | `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
@@ -146,13 +190,19 @@ judged by `worldgen`.
 |---|---|
 | `users`, `sessions` | sign-in, `PATCH /v1/me`, session routes; roles by hand |
 | `games` | `bootstrap` |
-| `seasons`, `season_maps`, `season_map_events`, `baseline_events` | admin routes; withdraw closes a season; `bootstrap` moves a live season's engine on a patch |
+| `seasons`, `season_maps`, `season_map_events`, `baseline_events` | admin routes; withdraw closes a season; `bootstrap` moves a live season's engine on a patch; count's fold moves the match counts |
 | `models`, `model_versions` | entry and submission routes insert; admit and count decide; baseline flips |
-| `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate); count rates; withdraw, promotion and disables cancel |
+| `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate), which lists an ordinary match; count rates, and a trial's pass lists it; withdraw, promotion and disables cancel |
+| `ladder_snapshots` | withdraw, once an hour per live season |
 | `ratings`, `rating_events` | count; a baseline's first enable seeds its two ratings at the prior |
 | `clocks` | count's fence; every roster change bumps `roster` |
 | `runner_keys`, `runners` | admin routes; the token exchange upserts runners |
-| `notifications`, `notification_settings` | the writer after each decision; the settings route |
+| `notifications`, `notification_settings` | the writer after each decision; the settings route; Notify |
+| `threads`, `comments`, `comment_reports`, `comment_words` | the comment, report and admin desk routes; no clock |
+| `model_stories`, `posts`, `announcements`, `picks`, `notify_sends` | the story route and the admin desks |
+| `audit_log` | every admin write, inside its own statement |
+| `watch_events` | `POST /v1/events` |
+| `season_podium` | withdraw's close |
 
 ## Development
 
@@ -404,8 +454,8 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   and no list page searches names or ids, so the tag filter is the navigation and each tag has to
   be a useful question on its own. The surface is one of `pub`, `user`, `admin`, `gate`, `clock`
   (`conn` on a connector) and is also the id's second segment; `scripts/check-names.sh` DERIVES it
-  from the definition and fails if the two disagree. The domain comes from a closed list of
-  thirteen, shared with kalam -- web's `scripts/check/configs.sh` compares them.
+  from the definition and fails if the two disagree. The domain comes from a closed list
+  shared with kalam -- web's `scripts/check/configs.sh` compares them.
 - **Only caller-invariant routes cache.** The cache key has no caller in it. A route that carries
   the live season (`/v1/games`, `/v1/games/{game}`, the seasons list) takes `season_cache`, 60 s,
   so an admin's change reaches every reader within a minute and the three never disagree.
@@ -441,8 +491,14 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - `finish` has no `turns <= max_turns` gate (`max_turns` is a season rule, so it needs the claim's coalesce).
 - The revalidation sweep is unbuilt: `revalidate_batch` is read by nothing, so a version admitted
   under an older `orion_version` is never re-checked.
-- Retention beyond traces is unbuilt, and so is the TinyBrain Index (`standings.lambda` is accepted and unread).
+- Retention beyond traces is unbuilt: `watch_events`, `audit_log` and `match_frames` grow for ever (a
+  frame is a few KB, about 4 MB a day at today's rate). So is the TinyBrain Index (`standings.lambda`
+  is accepted and unread).
 - A season cannot be scheduled ahead: create is refused while one is live.
+- The comment limits (15 s apart, 100 a day) are predicates in the insert, so two posts at the same
+  instant can both pass; the per-user write rate is the backstop.
+- The admin comment search (`q`) scans: there is no trigram index on `comments.body`.
+- A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
 - An off-site runner must hold a GET key for the models bucket. The fix is an Orion ask, not yet
   filed: a URL-valued artifact reference on the `models` entity.
 

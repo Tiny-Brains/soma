@@ -56,7 +56,12 @@ made AS (
         AND x.status <> 'rejected')
     ON CONFLICT (model_id)
     WHERE status IN ('testing', 'verified') DO NOTHING
-    RETURNING id )
+    RETURNING id ),
+audit AS (
+    INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
+    SELECT ($6)::uuid, 'baseline.add', 'baseline', (SELECT nm.handle
+            FROM nm), jsonb_build_object('game', ($1)::text, 'season', ($2)::text, 'version_id', made.id)
+    FROM made )
 INSERT INTO baseline_events (version_id, action, by_user)
 SELECT made.id, 'upload', ($6)::uuid
 FROM made

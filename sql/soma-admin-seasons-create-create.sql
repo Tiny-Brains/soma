@@ -5,8 +5,8 @@ WITH game AS (
 last AS (
     SELECT max(s.number) AS number, max(s.closed_at) AS closed_at
     FROM seasons s
-    JOIN game ON game.id = s.game_id )
-INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at,
+    JOIN game ON game.id = s.game_id ),
+created AS (INSERT INTO seasons (game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at,
         rules, weight_classes)
 SELECT game.id, coalesce(last.number, 0) + 1, btrim(($7)::text),
 season_slug(btrim(($7)::text)),
@@ -33,3 +33,8 @@ AND NOT EXISTS (SELECT 1
     AND s.closed_at IS NULL)
 AND ($2)::timestamptz >= coalesce(last.closed_at, '-infinity'::timestamptz) + make_interval(days =>
         ($4)::int)
+    RETURNING id, slug, name)
+INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
+SELECT ($8)::uuid, 'season.create', 'season', created.slug, jsonb_build_object('game', ($1)::text, 'name',
+        created.name)
+FROM created

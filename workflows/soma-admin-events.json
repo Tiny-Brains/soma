@@ -1,0 +1,42 @@
+{
+  "workflow_id": "soma-admin-events",
+  "name": "Watch counts",
+  "description": "Admin only: per day since `since` (a date, default thirty days back), the visits, the matches opened -- in all and by how the viewer got there -- and the replays watched to the end, summed over the shards the writer spreads each day's key across. `opened` over `visits` is matches opened per visit; `opened_via.next` is Watch next. Counts only: the table holds no user and no address.",
+  "tags": ["soma", "admin", "matches"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-events-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.since" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

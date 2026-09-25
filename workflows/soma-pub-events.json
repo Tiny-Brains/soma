@@ -1,0 +1,115 @@
+{
+  "workflow_id": "soma-pub-events",
+  "name": "Count a watch event",
+  "description": "What people watch, counted per day and never per person: no user, no address, no cookie. `{event, match, via}`: `visit` is one page load and names no match; `opened` names a match and how the viewer got there (`via`: tv, shelf, grid, next, rail or link); `finished` names a match whose replay was watched to its end. A shape the table would refuse is a 400 here, so a malformed beacon is told and never reaches a CHECK. A match event names a PUBLIC match or writes nothing -- a random or private id is a no-op, not a 500 -- and the answer is 204 either way, so the route says nothing about which matches exist. Each write upserts `n = n + 1` on a random shard of the day's key, so a day's visits never queue on one row lock. Rate-limited by address only.",
+  "tags": ["soma", "pub", "matches"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "event",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "in": [{ "var": "data.req.event" }, ["visit", "opened", "finished"]] } },
+        "status": 400,
+        "body": { "error": "event_invalid", "detail": "`event` is visit, opened or finished." },
+        "name": "A known event"
+      }
+    },
+    {
+      "id": "via",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [
+            {
+              "and": [
+                { "==": [{ "var": "data.req.event" }, "opened"] },
+                {
+                  "!": {
+                    "in": [
+                      { "var": "data.req.via" },
+                      ["tv", "shelf", "grid", "next", "rail", "link"]
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "and": [
+                { "!=": [{ "var": "data.req.event" }, "opened"] },
+                { "!!": { "var": "data.req.via" } }
+              ]
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "via_invalid",
+          "detail": "`opened` carries `via` (tv, shelf, grid, next, rail or link); the others carry none."
+        },
+        "name": "Via only on opened"
+      }
+    },
+    {
+      "id": "match",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [
+            {
+              "and": [
+                { "==": [{ "var": "data.req.event" }, "visit"] },
+                { "!!": { "var": "data.req.match" } }
+              ]
+            },
+            {
+              "and": [
+                { "!=": [{ "var": "data.req.event" }, "visit"] },
+                { "!": { "var": "data.req.match" } }
+              ]
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "match_invalid",
+          "detail": "`visit` names no match; `opened` and `finished` name one."
+        },
+        "name": "A match where one belongs"
+      }
+    },
+    {
+      "id": "record",
+      "name": "Count it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-events-record.sql" },
+          "params": [
+            { "var": "data.req.event" },
+            { "var": "data.req.match" },
+            { "var": "data.req.via" }
+          ],
+          "output": "temp_data.recorded"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+          ]
+        }
+      }
+    }
+  ]
+}

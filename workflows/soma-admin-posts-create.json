@@ -1,0 +1,114 @@
+{
+  "workflow_id": "soma-admin-posts-create",
+  "name": "Start a post",
+  "description": "`{slug, title, body}` starts a DRAFT; PATCH publishes it. The slug is `a-z0-9` words joined by hyphens, up to 80, unique among every post while it exists; the title up to 120; the text up to 100,000, markdown with headings, links, lists and tables. A bad field is a row never written: `why` tells a taken slug (409) from the rest (400).",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the id",
+      "description": "Minted here so the read-back finds the row the write made, and a retried write finds its own.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.id", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "write",
+      "name": "Write the draft",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-posts-create-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.id" },
+            { "var": "data.req.slug" },
+            { "var": "data.req.title" },
+            { "var": "data.req.body" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was written",
+      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-post-why.sql" },
+          "params": [{ "var": "temp_data.id" }, { "var": "data.req.slug" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "taken",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!!": { "var": "temp_data.why.0.body.slug_taken" } }
+          ]
+        },
+        "status": 409,
+        "body": { "error": "slug_taken" },
+        "name": "A slug another post holds"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 400,
+        "body": {
+          "error": "post_invalid",
+          "detail": "slug: a-z0-9 words joined by hyphens, up to 80; title: 1 to 120 characters; body: up to 100,000."
+        },
+        "name": "Refuse a bad field"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-post.sql" },
+          "params": [{ "var": "temp_data.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

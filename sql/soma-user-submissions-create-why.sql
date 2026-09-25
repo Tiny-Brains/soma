@@ -1,4 +1,4 @@
-SELECT json_build_object( 'season', s.slug, 'state', CASE
+SELECT json_build_object( 'season', s.slug, 'note_word', text_hold_tag(($7)::text, false), 'state', CASE
     WHEN s.id IS NOT NULL THEN season_state(s)
     END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at,
         'model', (SELECT json_build_object('model_id', e.id, 'model', e.name, 'retired', e.retired_at

@@ -23,7 +23,16 @@ cancelled AS (
     WHERE NOT ($4)::boolean
     AND m.season_map_id = flipped.id
     AND m.status = 'pending'
-    RETURNING m.id )
+    RETURNING m.id ),
+audit AS (
+    INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
+    SELECT ($5)::uuid, CASE
+        WHEN ($4)::boolean THEN 'map.enable'
+        ELSE 'map.disable'
+        END, 'season_map', ($3)::text, jsonb_build_object('game', ($1)::text, 'season', ($2)::text, 'cancelled',
+            (SELECT count(*)
+                FROM cancelled))
+    FROM flipped )
 INSERT INTO season_map_events (season_map_id, enabled, by_user, cancelled)
 SELECT flipped.id, ($4)::boolean, ($5)::uuid, (SELECT count(*)
     FROM cancelled)

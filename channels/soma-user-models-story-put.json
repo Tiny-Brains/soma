@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-user-models-story-put",
+  "name": "soma-user-models-story-put",
+  "description": "Writes a model's story. session_auth, per-user write rate.",
+  "tags": ["soma", "user", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PUT"],
+  "route_pattern": "/v1/models/{id}/story",
+  "workflow_id": "soma-user-models-story-put",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

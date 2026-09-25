@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-user-versions-update",
+  "name": "soma-user-versions-update",
+  "description": "Sets a version's note. session_auth, per-user write rate.",
+  "tags": ["soma", "user", "models"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PATCH"],
+  "route_pattern": "/v1/versions/{id}",
+  "workflow_id": "soma-user-versions-update",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

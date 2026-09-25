@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-submissions-create",
   "name": "Enter a version",
-  "description": "Recording a submission as a testing version. A submission is two hashes and two uploads -- there is no release and no repository, and `version` is a counter this statement assigns rather than a label the competitor types. Two statements, not one: db_write returns only rows_affected, so the row is read back, and both statements join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. The insert carries the open season's rules as PREDICATES, so a refusal is a row that was never written rather than a check that could be raced; zero rows then sends `why` to read the state back and `refused` answers 409 with one word. The duplicate refusal deliberately does not name the version it collided with: unique_weights excludes the caller, so the row it matched is always another competitor's, and naming or dating it would report one competitor's submission to another.",
+  "description": "Recording a submission as a testing version. A submission is two hashes and two uploads -- there is no release and no repository, and `version` is a counter this statement assigns rather than a label the competitor types. Two statements, not one: db_write returns only rows_affected, so the row is read back, and both statements join live_sessions -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open. The insert carries the open season's rules as PREDICATES, so a refusal is a row that was never written rather than a check that could be raced; zero rows then sends `why` to read the state back and `refused` answers 409 with one word. The duplicate refusal deliberately does not name the version it collided with: unique_weights excludes the caller, so the row it matched is always another competitor's, and naming or dating it would report one competitor's submission to another. `note` is optional: one line of up to 120 characters, public on the model page, refused on a listed word.",
   "tags": ["soma", "user", "models"],
   "tasks": [
     {
@@ -41,6 +41,28 @@
       }
     },
     {
+      "id": "note_long",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.note" }, ""] }
+              ]
+            },
+            120
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "note_too_long",
+          "detail": "A version note is one line of at most 120 characters."
+        },
+        "name": "Refuse a note too long"
+      }
+    },
+    {
       "id": "insert",
       "name": "Insert the testing row",
       "function": {
@@ -54,7 +76,8 @@
             { "var": "data.req.model" },
             { "var": "metadata.auth.claims.sid" },
             { "var": "data.req.weights_hash" },
-            { "var": "data.req.manifest_hash" }
+            { "var": "data.req.manifest_hash" },
+            { "var": "data.req.note" }
           ],
           "output": "temp_data.insert"
         }
@@ -75,10 +98,31 @@
             { "var": "data.req.weights_hash" },
             { "var": "data.req.model" },
             { "var": "data.req.manifest_hash" },
-            { "var": "metadata.vars.upload_window_s" }
+            { "var": "metadata.vars.upload_window_s" },
+            { "var": "data.req.note" }
           ],
           "output": "temp_data.why"
         }
+      }
+    },
+    {
+      "id": "note_refused",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "!!": { "var": "temp_data.why.0.body.note_word" } }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "note_word_listed",
+          "word": { "var": "temp_data.why.0.body.note_word" },
+          "detail": "The note uses a word the site does not allow. Nothing was submitted."
+        },
+        "name": "Refuse a listed word",
+        "description": "The insert refuses a note carrying a listed word (text_hold_tag) in its own predicate, and `why` names the word. Refused rather than held: a note is public text beside the version, so the competitor rewrites one line. A URL is allowed."
       }
     },
     {

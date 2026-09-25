@@ -1,0 +1,124 @@
+{
+  "workflow_id": "soma-admin-notify-send",
+  "name": "Send a notification",
+  "description": "`{subject, link?, audience}` sends NOW: one statement writes the notify_sends row, a notifications row per recipient -- category `season`, kind `broadcast`, keyed `notify:<send>`, so the bell draws the megaphone and a retry writes nothing twice -- and the audit line, and each recipient is asked notification_wanted() once, inside it. The subject is one line of up to 200 characters and the link a site path, since each send becomes a notifications row; either off its rule is 400 `notify_invalid`. The audience is the chips POST /v1/admin/notify/count reads, asked first so a bad one is 400 and an empty one 422 before anything is written. Notify schedules nothing: an announcement with an end time covers a timed notice.",
+  "tags": ["soma", "admin", "notifications"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "audience",
+      "name": "Count the audience",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-audience.sql" },
+          "params": [{ "var": "data.req.audience" }],
+          "output": "temp_data.audience"
+        }
+      }
+    },
+    {
+      "id": "audience_invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.audience.0.body.valid" } },
+        "status": 400,
+        "body": {
+          "error": "audience_invalid",
+          "detail": "audience is an object of chips: everyone (true); game and season (slugs) with an optional class; models (ids); handles."
+        },
+        "name": "An audience, stated"
+      }
+    },
+    {
+      "id": "nobody",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.audience.0.body.recipients" }, 0] } },
+        "status": 422,
+        "body": {
+          "error": "no_recipients",
+          "detail": { "audience": { "var": "temp_data.audience.0.body.audience" } }
+        },
+        "name": "Nobody would receive it"
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the id",
+      "description": "Minted here so the read-back finds the row the write made, and a retried write finds its own.",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.id", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "write",
+      "name": "Send",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-notify-send-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.id" },
+            { "var": "data.req.subject" },
+            { "var": "data.req.link" },
+            { "var": "data.req.audience" }
+          ],
+          "output": "temp_data.sent"
+        }
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.sent.rows_affected" }, 0] } },
+        "status": 400,
+        "body": {
+          "error": "notify_invalid",
+          "detail": "subject: 1 to 200 characters; link: a site path, up to 500."
+        },
+        "name": "Refuse a bad field"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-sends.sql" },
+          "params": [{ "var": "temp_data.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body.sends.0" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

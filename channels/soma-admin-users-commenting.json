@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-admin-users-commenting",
+  "name": "soma-admin-users-commenting",
+  "description": "Admin only: switches one account's commenting off for a term, or back on.",
+  "tags": ["soma", "admin", "users"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PATCH"],
+  "route_pattern": "/v1/admin/users/{id}/commenting",
+  "workflow_id": "soma-admin-users-commenting",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

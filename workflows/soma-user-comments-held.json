@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-user-comments-held",
+  "name": "Your comments waiting for review",
+  "description": "THE CALLER'S OWN HELD COMMENTS ON ONE HOST, oldest first, named as /v1/threads names it: `?match=` or `?model=`; a missing or malformed host finds nothing. The public thread is cached under a key with no caller in it, so an author's `waiting for review` rows cannot ride it: web reads them here and places them in the thread by parent_id and root_id.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-comments-held-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.match" },
+            { "var": "metadata.query.model" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

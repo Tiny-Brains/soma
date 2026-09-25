@@ -1,0 +1,66 @@
+{
+  "workflow_id": "soma-pub-threads",
+  "name": "A match's or a model's comments",
+  "description": "ONE HOST'S THREAD: `?match=` or `?model=`, exactly one. Twenty top-level comments a page, newest first, each with all its replies oldest first -- they share its root_id, so the page is one indexed read -- with the thread's live count, whether it is locked, and a keyset cursor on (created_at, id). THE PUBLIC SEES LIVE COMMENTS ONLY: a held one is its author's (GET /v1/me/comments, which web places in the thread), and a removed or deleted one stays as a placeholder with no author and no text only while a live comment hangs beneath it. A match nobody may see (match_public) answers 404 like one that does not exist, so a trial in progress has no thread in public. `thread_id` is null until the host's first comment. Cached under hot_cache: the page re-reads every thirty seconds, and a new comment shows within the TTL.",
+  "tags": ["soma", "pub", "community"],
+  "tasks": [
+    {
+      "id": "host",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "==": [
+            { "!!": { "var": "metadata.query.match" } },
+            { "!!": { "var": "metadata.query.model" } }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "host_required",
+          "detail": "Name exactly one host: `match` or `model`."
+        },
+        "name": "Exactly one host"
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-threads-query.sql" },
+          "params": [
+            { "var": "metadata.query.match" },
+            { "var": "metadata.query.model" },
+            { "var": "metadata.query.cursor" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.found" } },
+        "status": 404,
+        "body": { "error": "unknown_host" },
+        "name": "No such host"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

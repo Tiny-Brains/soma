@@ -1,0 +1,80 @@
+{
+  "workflow_id": "soma-admin-announcements-update",
+  "name": "Disable an announcement",
+  "description": "`{\"disabled\": true}` takes an announcement down; nothing re-enables one, so a notice worth showing again is published again. Disabling one already disabled changes nothing and answers 200 with it.",
+  "tags": ["soma", "admin", "platform"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "stated",
+      "use": "refuse",
+      "with": {
+        "when": { "!==": [{ "var": "data.req.disabled" }, true] },
+        "status": 400,
+        "body": { "error": "disabled_required", "detail": "The body is {\"disabled\": true}." },
+        "name": "A state, stated"
+      }
+    },
+    {
+      "id": "write",
+      "name": "Disable",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-announcements-update-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-announcements.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body.announcements.0" } },
+        "status": 404,
+        "body": { "error": "unknown_announcement" },
+        "name": "No such announcement"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body.announcements.0" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

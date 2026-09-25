@@ -1,0 +1,53 @@
+{
+  "workflow_id": "soma-user-models-story",
+  "name": "My model's story",
+  "description": "The writer's half of GET /v1/models/{id}/story: the approved text AND the held edit with its tag, which the public route never carries because it is cached under a key that holds nothing about the caller. The owner reads it, and an admin for a baseline's model. A model with no story yet answers a body of nulls, which is the page's empty state; a model the caller may not write answers 404.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-story.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_model" },
+        "name": "Not a model the caller writes"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

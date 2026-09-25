@@ -1,0 +1,70 @@
+{
+  "workflow_id": "soma-admin-words-remove",
+  "name": "Take a word off the list",
+  "description": "Admin only: TAKES ONE WORD OFF THE LIST -- removed_at and removed_by, since soma-db refuses DELETE -- with an audit line. The next text is judged without it; a text already held on it stays held until an admin decides it. 204, and 204 again for a word already off the list; 404 for an id no word ever had.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "remove",
+      "name": "Unlist it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-words-remove-remove.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.removed"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing changed",
+      "condition": { "!": { ">": [{ "var": "temp_data.removed.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-words-remove-why.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.removed.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_word" },
+        "name": "A word that was listed"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data._orion.response", "logic": { "$from": "constants.no_content" } }
+          ]
+        }
+      }
+    }
+  ]
+}

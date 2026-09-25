@@ -1,22 +1,50 @@
 {
   "workflow_id": "soma-pub-matches-list",
   "name": "Matches, by season, model or owner",
-  "description": "One statement, three listings: a season's matches, one version's history (?model=), or every match a person's versions played (?owner=). Each row carries ALL of its seats, because the seats block is one component. TRIALS ARE PRIVATE -- a trial seats a candidate nobody else may see yet -- so the season listing excludes them and only a query naming the model returns them; the queued, cancelled and failed rows only an owner may see are GET /v1/me/matches, a route of its own rather than a parameter here. Pagination is a KEYSET on (played_at, id): played_at is written once and never moves, so a position here cannot drift the way a live ladder's does. `total` is the filtered count, returned on the first page only, because it is the one part that must scan. `players_min` and `players_max` bound the SEAT COUNT, inclusive, so the site's 2 / 3-4 / 5-8 tabs are two numbers and not a list of boards: how many play is the map's, not the game's. `?map=` is a board's id within the season, and `season` is its slug.",
+  "description": "One statement, three listings: a season's matches, one version's history (?model=), or every match a person's versions played (?owner=), each row match_summary_json(), the card every channel returns. A TRIAL IS PUBLIC ONLY ONCE ITS CANDIDATE IS (match_public, the stored `listed`): the season and owner listings leave trials out, and a query naming the model or version returns its public ones; the rest are GET /v1/me/matches. Each sort is its own branch with its own KEYSET cursor on (key, id), and only the asked one runs, so a season-wide sort reads its page off its partial index rather than sorting the season; a row with no key (a shared first has no margin) is outside that sort. `discussed` ranks by live comments in the `since` window and pages by OFFSET, because a live count moves under a keyset. The seat filters (`model`, `version`, `owner`, `vs`, `top`) are sets of matches read off match_seats, so a model's listing and its total cost the model's matches. `total` is counted on the first page only and stops at 10,000 (`total_capped`), because it is the one part that must scan.",
   "tags": ["soma", "pub", "matches"],
   "tasks": [
     {
-      "id": "defaults",
-      "name": "Apply query defaults",
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
+      "id": "sort",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "metadata.query.sort" } },
             {
-              "path": "temp_data.q.limit",
-              "logic": { "or": [{ "var": "metadata.query.limit" }, "25"] }
+              "!": {
+                "in": [
+                  { "var": "metadata.query.sort" },
+                  ["newest", "closest", "upset", "longest", "discussed"]
+                ]
+              }
             }
           ]
-        }
+        },
+        "status": 400,
+        "body": {
+          "error": "sort_invalid",
+          "detail": "`sort` is newest, closest, upset, longest or discussed."
+        },
+        "name": "A known sort"
+      }
+    },
+    {
+      "id": "vs",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "metadata.query.vs" } },
+            { "!": { "var": "metadata.query.model" } }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "vs_needs_model",
+          "detail": "`vs` names the other model of a head to head, beside `model`."
+        },
+        "name": "A head to head names both models"
       }
     },
     {
@@ -35,12 +63,16 @@
             { "var": "metadata.query.map" },
             { "var": "metadata.query.outcome" },
             { "var": "metadata.query.cursor" },
-            { "var": "temp_data.q.limit" },
+            { "var": "metadata.query.limit" },
             { "var": "metadata.query.model" },
             { "var": "metadata.query.owner" },
             { "var": "metadata.query.version" },
             { "var": "metadata.query.players_min" },
-            { "var": "metadata.query.players_max" }
+            { "var": "metadata.query.players_max" },
+            { "var": "metadata.query.sort" },
+            { "var": "metadata.query.since" },
+            { "var": "metadata.query.top" },
+            { "var": "metadata.query.vs" }
           ],
           "output": "temp_data.rows"
         }

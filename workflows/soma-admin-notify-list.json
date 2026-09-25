@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-admin-notify-list",
+  "name": "Notify log",
+  "description": "Every send, newest first: the text, the link, the audience as chosen, who sent it, when, how many received it and how many of those rows are read. Read, not opened: a notification records read_at and nothing more.",
+  "tags": ["soma", "admin", "notifications"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-sends.sql" },
+          "params": [null],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

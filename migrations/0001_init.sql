@@ -344,6 +344,10 @@ CREATE TABLE seasons (
     -- as the record that the close was asked for rather than reached.
     close_requested_at   timestamptz,
 
+    -- COUNTED MATCHES, trials excluded: moved by count's fold, the statement that rates one, so
+    -- season_json() reads a number rather than counting the season on every read.
+    matches_played       int         NOT NULL DEFAULT 0,
+
     -- THE WHOLE DESCRIPTION OF THIS CONTEST. One document, each rule under its own block with an
     -- `enabled` flag; season_rule_spec() is what it may say and season_rules_ok() is the CHECK.
     -- Every rule that supersedes a [vars] value is read `coalesce(rule, var)`, so a season that
@@ -426,8 +430,25 @@ CREATE TABLE users (
     -- one field PATCH /v1/me lets a competitor edit. Null falls back to the handle.
     display_name text,
 
+    -- One line a competitor writes about themselves, on their profile. REFUSED, not held, on a
+    -- listed word (text_hold_tag): the author rewrites a line rather than waiting on an admin. A
+    -- URL is allowed and drawn as plain text.
+    bio         text,
+
+    -- COMMENTING SWITCHED OFF, by an admin, until this instant -- `infinity` for good -- with the
+    -- reason the author reads in the composer's place. The row holds only the current switch;
+    -- every switch, on and off, is a line in audit_log.
+    comments_off_until  timestamptz,
+    comments_off_reason text,
+
     role        user_role   NOT NULL DEFAULT 'competitor',
     created_at  timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT users_bio_size CHECK (bio IS NULL OR char_length(bio) <= 160),
+    CONSTRAINT users_comments_off_shape
+        CHECK ((comments_off_until IS NULL) = (comments_off_reason IS NULL)
+               AND (comments_off_reason IS NULL
+                    OR (btrim(comments_off_reason) <> '' AND char_length(comments_off_reason) <= 300))),
 
     CONSTRAINT users_human_has_github_id
         CHECK (role = 'baseline' OR github_id IS NOT NULL),
@@ -666,6 +687,10 @@ CREATE TABLE model_versions (
 
     reject_reason   text,
 
+    -- The owner's one line about this version, public on the model page: written at submission and
+    -- editable after. Refused on a listed word, like the bio.
+    note            text,
+
     -- THE ADMIT CLOCK'S CLAIM, held while it prepares a submission for a runner and again while it
     -- judges what the runner found. One row per item, so this per-row claim is the mutual exclusion
     -- -- a run that dies mid-batch releases what it never reached at once, and the row it held after
@@ -684,6 +709,9 @@ CREATE TABLE model_versions (
 
     CONSTRAINT model_versions_version_positive
         CHECK (version >= 1),
+
+    CONSTRAINT model_versions_note_size
+        CHECK (note IS NULL OR (btrim(note) <> '' AND char_length(note) <= 120)),
 
     -- Past 'testing' a row must know what it is: pair joins on status and would otherwise seat a
     -- null weights_hash.
@@ -774,6 +802,12 @@ CREATE TABLE ratings (
     seed_sigma      float8,
 
     matches_played  int         NOT NULL DEFAULT 0,
+    -- THE RECORD, moved by the fold with matches_played: a win is first alone, a draw a shared
+    -- first, anything else a loss (a disqualification included). A model's season page sums its
+    -- versions' Open rows rather than re-reading every match they played.
+    wins            int         NOT NULL DEFAULT 0,
+    draws           int         NOT NULL DEFAULT 0,
+    losses          int         NOT NULL DEFAULT 0,
     updated_at      timestamptz NOT NULL DEFAULT now(),
 
     PRIMARY KEY (version_id, ladder)
@@ -802,6 +836,19 @@ CREATE TABLE season_maps (
     players     smallint    NOT NULL,
     rows        smallint    NOT NULL,
     cols        smallint    NOT NULL,
+    -- WHAT THE NAME SAYS, split by season_map_name(): `large-cave-4p-3h` is size `large`, terrain
+    -- `cave`, and 3 hills a player -- which the upload checks against the file's own `hills`
+    -- array (players x H entries). Soma keeps no list of sizes or terrains; the words are stored as
+    -- given. NULLABLE, with no CHECK on the name: a board uploaded before the name rule keeps its
+    -- row through a restore, and the upload refuses a name off the pattern instead.
+    size        text,
+    terrain     text,
+    hills       smallint,     -- hills PER PLAYER, the name's `Hh`
+    -- COUNTED MATCHES ON THIS BOARD, trials excluded, and the newest of them: moved by count's
+    -- fold, so the maps page reads two columns rather than counting the season once per board.
+    -- latest_match_id's foreign key is added after `matches`.
+    matches          int      NOT NULL DEFAULT 0,
+    latest_match_id  uuid,
     -- sha256 of board::text -- Postgres's own canonical rendering of the jsonb, not the uploaded
     -- file's bytes, which a workflow never sees. Enough to refuse the same board uploaded twice.
     digest      text        NOT NULL,
@@ -820,7 +867,10 @@ CREATE TABLE season_maps (
     -- cartridge's `limits.boards`, which the upload checks against the game row it can read.
     CONSTRAINT season_maps_players   CHECK (players >= 2),
     CONSTRAINT season_maps_sides     CHECK (rows >= 1 AND cols >= 1),
-    CONSTRAINT season_maps_board     CHECK (jsonb_typeof(board) = 'object')
+    CONSTRAINT season_maps_board     CHECK (jsonb_typeof(board) = 'object'),
+    CONSTRAINT season_maps_name_parts CHECK ((size IS NULL) = (terrain IS NULL)
+                                             AND (size IS NULL) = (hills IS NULL)
+                                             AND (hills IS NULL OR hills >= 1))
 );
 
 -- Every enable and disable, so "which boards were in play on 3 October" has an answer. Written in
@@ -934,8 +984,22 @@ CREATE TABLE matches (
     -- ---- what count reports
     rated_at             timestamptz,
     rated_seq            bigint,
+    -- THE TWO SORT KEYS the match listing cannot compute per page, written by the statement that
+    -- rates the row, from match_sort_keys(). `margin` is the winner's score minus
+    -- the runner-up's, null for a shared first place; the trial verdicts write it too, since a
+    -- promoted candidate's trial is public. `upset` is the fold's alone: it is read off the Open
+    -- ladder, and a trial feeds no ladder.
+    margin               int,
+    upset                float8,
+
+    -- WHETHER ANYONE MAY SEE IT, as a column, so match_public() is `m.listed` and every public
+    -- read is an index scan. Set by the statement that makes it so: finish, for a match with no
+    -- trial, and a trial's `pass`, whose candidate goes public in the same statement. A trial in
+    -- progress or a rejected candidate's never is. Nothing unsets it.
+    listed               boolean      NOT NULL DEFAULT false,
 
     CONSTRAINT matches_seat_count         CHECK (seat_count >= 2),
+    CONSTRAINT matches_listed_played      CHECK (NOT listed OR status IN ('finished', 'rated')),
     CONSTRAINT matches_strike_ceiling     CHECK (strike_ceiling > 0),
     CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
 
@@ -962,6 +1026,9 @@ CREATE TABLE matches (
                               AND played_at IS NULL
         END)
 );
+
+ALTER TABLE season_maps
+    ADD CONSTRAINT season_maps_latest_match_fkey FOREIGN KEY (latest_match_id) REFERENCES matches (id);
 
 -- The order count folded matches in. A sequence rather than a timestamp: two matches can share a
 -- played_at to the microsecond, and the audit needs a total order.
@@ -1058,6 +1125,366 @@ CREATE TABLE rating_events (
            AND (match_id IS NULL) = (seat IS NULL))
 );
 
+-- --------------------------------------------------------------- match_frames
+
+-- A MATCH'S LAST FRAME, AS THE RUNNER SENT IT AT FINISH: what a card rests on. A replay stores each
+-- turn's actions and no state, so the state at the last turn exists only where the match ended --
+-- on the runner -- and is sent once, in the finish body. OPAQUE: Soma stores it as given and never
+-- reads inside it, because game state is the cartridge's (the board's static layer is already
+-- season_maps.board, so the frame carries only what moved).
+--
+-- lz4 rather than pglz: a frame is written once and read by every card that shows it.
+--
+-- Its own table so the match row, which claim, renew and finish update in a loop, stays small. The
+-- size CHECK is a backstop: finish writes no frame over it rather than failing the match, because
+-- a card on turn zero is a better outcome than a result lost for want of a picture.
+CREATE TABLE match_frames (
+    match_id    uuid        PRIMARY KEY REFERENCES matches (id),
+    turn        int         NOT NULL,
+    frame       jsonb       COMPRESSION lz4 NOT NULL,
+    CONSTRAINT match_frames_turn_nonneg CHECK (turn >= 0),
+    CONSTRAINT match_frames_frame_shape CHECK (jsonb_typeof(frame) = 'object'
+                                               AND octet_length(frame::text) <= 65536)
+);
+
+-- -------------------------------------------------------------- season_podium
+
+-- THE PODIUM, FROZEN WHEN THE SEASON CLOSES: first to third on each ladder, written by withdraw's
+-- close from podium_of() in the same statement that closes the season. The leaderboard's podium,
+-- a profile's medals and the champions read these rows rather than re-rank every closed ladder on
+-- every profile view. One place per owner (their best version stands for them) and no baselines:
+-- the second unique below is that rule as an index.
+CREATE TABLE season_podium (
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    ladder      ladder      NOT NULL,
+    place       smallint    NOT NULL,
+    version_id  uuid        NOT NULL REFERENCES model_versions (id),
+    owner_id    uuid        NOT NULL REFERENCES users (id),
+    rating      float8      NOT NULL,     -- the conservative rating it closed on
+    PRIMARY KEY (season_id, ladder, place),
+    UNIQUE (season_id, ladder, owner_id),
+    CONSTRAINT season_podium_place CHECK (place BETWEEN 1 AND 3)
+);
+CREATE INDEX season_podium_owner_idx ON season_podium (owner_id);
+
+-- ------------------------------------------------------------------ community
+--
+-- Comments, stories, posts, announcements, picks: everything a person writes for others to read.
+-- SOFT DELETE THROUGHOUT -- soma-db refuses DELETE -- so deleting, removing, unpinning, taking a
+-- word off the list and disabling an announcement each set a state or a timestamp.
+
+-- THE TEXT RULES, one function each, asked by the table's CHECK, the write's WHERE and the `why`
+-- that explains a refusal -- so the three cannot disagree about what a text may be.
+--
+-- One line: not blank, at most `n` characters, no line break.
+CREATE FUNCTION line_ok(t text, n int) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(btrim(t) <> '' AND char_length(t) <= n AND position(E'\n' IN t) = 0, false);
+$$;
+
+-- A link inside the site: a path, never `//host` (which a browser reads as another origin).
+CREATE FUNCTION site_path_ok(l text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(left(l, 1) = '/' AND left(l, 2) <> '//' AND char_length(l) <= 500, false);
+$$;
+
+-- A link an admin may publish on an announcement: a site path, or an https:// URL.
+CREATE FUNCTION link_ok(l text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(site_path_ok(l) OR (char_length(l) <= 500 AND l ~ '^https://[^/\s]+'), false);
+$$;
+
+-- A slug: lower-case words joined by single hyphens.
+CREATE FUNCTION slug_ok(t text, n int) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(t ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND char_length(t) <= n, false);
+$$;
+
+-- A listed word: letters, digits and single spaces, hyphens or apostrophes between them, lower
+-- case -- none of which is special in a regular expression, so text_hold_tag needs no escaping.
+CREATE FUNCTION comment_word_ok(w text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(w = lower(w) AND char_length(w) <= 40 AND w ~ '^[[:alnum:]]+([ ''-][[:alnum:]]+)*$', false);
+$$;
+
+-- A uuid out of caller text, or NULL for anything else -- never a 22P02 on a request path.
+CREATE FUNCTION try_uuid(t text) RETURNS uuid LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN t ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN t::uuid END;
+$$;
+
+-- The uuids in a caller's JSON array, the rest dropped; nothing for anything but an array.
+CREATE FUNCTION jsonb_uuids(j jsonb) RETURNS SETOF uuid LANGUAGE sql IMMUTABLE AS $$
+    SELECT u FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]'::jsonb END) x,
+                  LATERAL try_uuid(x) u
+     WHERE u IS NOT NULL;
+$$;
+
+-- The words that hold a comment or a story and refuse a bio or a note. A word is matched whole and
+-- case-insensitively; it may be a phrase ("dm me"), shaped by comment_word_ok(). A change applies
+-- to the next text, never to the ones already through.
+CREATE TABLE comment_words (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    word        text        NOT NULL,
+    added_by    uuid        NOT NULL REFERENCES users (id),
+    added_at    timestamptz NOT NULL DEFAULT now(),
+    removed_at  timestamptz,
+    removed_by  uuid        REFERENCES users (id),
+    CONSTRAINT comment_words_shape CHECK (comment_word_ok(word)),
+    CONSTRAINT comment_words_removed CHECK ((removed_at IS NULL) = (removed_by IS NULL))
+);
+CREATE UNIQUE INDEX comment_words_live_uniq ON comment_words (word) WHERE removed_at IS NULL;
+
+-- WHY A TEXT IS HELD OR REFUSED, or null when it is not: the first listed word it contains, else
+-- `link` when links count (p_links) and it carries one. Comments, stories, bios and notes all ask
+-- this, so every route holds or refuses a text for the same reason. Postgres has the regex
+-- datalogic lacks. A link holds a comment and not a story, whose normal content links are.
+--
+-- ONE REGEX FOR THE WHOLE LIST FIRST, a word at a time only on a hit to name it. Postgres caches
+-- 32 compiled regexes, so a pattern per word recompiles every word for every text once the list
+-- is longer than that; the alternation is one pattern, the same string until the list changes.
+CREATE FUNCTION text_hold_tag(p_body text, p_links boolean) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT coalesce(
+        CASE WHEN p_body ~* (SELECT '\m(' || string_agg(w.word, '|' ORDER BY w.word) || ')\M'
+                               FROM comment_words w WHERE w.removed_at IS NULL)
+             THEN (SELECT w.word FROM comment_words w
+                    WHERE w.removed_at IS NULL AND p_body ~* ('\m' || w.word || '\M')
+                    ORDER BY w.word LIMIT 1) END,
+        CASE WHEN p_links AND p_body ~* ('(https?://|\mwww\.|\m[[:alnum:]-]+\.'
+                                         || '(com|net|org|io|dev|gg|co|xyz|ru|cn|info|biz|me|app|ly|tk|to)\M)')
+             THEN 'link' END);
+$$;
+
+-- ONE THREAD PER HOST, a match or a model, made on its first comment or lock. It holds the lock and
+-- the count so a comment never updates the match row that claim, renew and finish update in a
+-- loop. `comments` counts LIVE comments -- what a card and the Most discussed sort print -- and is
+-- moved by each comment write in its own statement.
+CREATE TABLE threads (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id    uuid        UNIQUE REFERENCES matches (id),
+    model_id    uuid        UNIQUE REFERENCES models (id),
+    comments    int         NOT NULL DEFAULT 0,
+    locked_at   timestamptz,
+    locked_by   uuid        REFERENCES users (id),
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT threads_one_host      CHECK (num_nonnulls(match_id, model_id) = 1),
+    CONSTRAINT threads_lock_whole    CHECK ((locked_at IS NULL) = (locked_by IS NULL)),
+    CONSTRAINT threads_count_nonneg  CHECK (comments >= 0)
+);
+
+-- One row per comment. `root_id` is the top-level comment a reply hangs under, and a top-level
+-- comment's own id, so "twenty threads with their replies" is one indexed read. The composite keys
+-- hold a parent and a root to the same thread as the reply.
+--
+--   live     -- public
+--   held     -- tagged by text_hold_tag; its author sees it, nobody else does until an admin decides
+--   removed  -- an admin's; restorable
+--   deleted  -- its author's
+--
+-- A removed or deleted comment with replies is kept as a placeholder by comment_json().
+CREATE TABLE comments (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id   uuid        NOT NULL REFERENCES threads (id),
+    parent_id   uuid,
+    root_id     uuid        NOT NULL,
+    author_id   uuid        NOT NULL REFERENCES users (id),
+    body        text        NOT NULL,
+    state       text        NOT NULL DEFAULT 'live',
+    hold_tag    text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    decided_at  timestamptz,
+    decided_by  uuid        REFERENCES users (id),
+    UNIQUE (id, thread_id),
+    FOREIGN KEY (parent_id, thread_id) REFERENCES comments (id, thread_id),
+    FOREIGN KEY (root_id, thread_id)   REFERENCES comments (id, thread_id),
+    CONSTRAINT comments_state      CHECK (state IN ('live', 'held', 'removed', 'deleted')),
+    CONSTRAINT comments_body_shape CHECK (line_ok(body, 500)),
+    CONSTRAINT comments_root_shape CHECK ((parent_id IS NULL) = (root_id = id)),
+    CONSTRAINT comments_held_tag   CHECK (state <> 'held' OR hold_tag IS NOT NULL),
+    CONSTRAINT comments_decided    CHECK ((decided_at IS NULL) = (decided_by IS NULL))
+);
+CREATE INDEX comments_thread_idx ON comments (thread_id, root_id, created_at);
+CREATE INDEX comments_author_idx ON comments (author_id, created_at DESC);
+CREATE INDEX comments_held_idx   ON comments (created_at) WHERE state = 'held';
+-- Most discussed: live comments in a `since` window, counted per thread, from the index alone.
+CREATE INDEX comments_live_recent_idx ON comments (created_at, thread_id) WHERE state = 'live';
+-- The admin desk's All tab, newest first across every state, with a keyset cursor.
+CREATE INDEX comments_recent_idx ON comments (created_at DESC, id DESC);
+-- A thread's page of top-level comments, newest first, off the index however long the thread.
+CREATE INDEX comments_thread_roots_idx ON comments (thread_id, created_at DESC, id DESC) WHERE parent_id IS NULL;
+
+-- A reader's flag on a comment: one per reader per comment, both halves optional.
+CREATE TABLE comment_reports (
+    comment_id  uuid        NOT NULL REFERENCES comments (id),
+    reporter_id uuid        NOT NULL REFERENCES users (id),
+    reason      text,
+    words       text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (comment_id, reporter_id),
+    CONSTRAINT comment_reports_reason CHECK (reason IS NULL
+                                             OR reason IN ('spam', 'abuse', 'off_topic', 'other')),
+    CONSTRAINT comment_reports_words  CHECK (words IS NULL
+                                             OR (btrim(words) <> '' AND char_length(words) <= 200))
+);
+CREATE INDEX comment_reports_reporter_idx ON comment_reports (reporter_id, created_at DESC);
+
+-- A MODEL'S STORY, one per model, written by its owner. The public reads `title` and `body`, the
+-- approved text; an edit that trips the word list waits in `pending_*` with its tag, and the owner
+-- reads it through their own route while the public keeps the approved text. A clean edit
+-- replaces the approved text at once. Text only: headings, links and lists, no picture.
+CREATE TABLE model_stories (
+    model_id      uuid        PRIMARY KEY REFERENCES models (id),
+    title         text,
+    body          text,
+    pending_title text,
+    pending_body  text,
+    hold_tag      text,
+    featured_at   timestamptz,
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    approved_at   timestamptz,
+    removed_at    timestamptz,
+    CONSTRAINT model_stories_title_size CHECK (title IS NULL OR line_ok(title, 80)),
+    CONSTRAINT model_stories_pending_title_size CHECK (pending_title IS NULL OR line_ok(pending_title, 80)),
+    CONSTRAINT model_stories_body_size  CHECK (body IS NULL OR char_length(body) <= 20000),
+    CONSTRAINT model_stories_pending_body_size CHECK (pending_body IS NULL OR char_length(pending_body) <= 20000),
+    CONSTRAINT model_stories_held       CHECK ((pending_body IS NULL) = (hold_tag IS NULL))
+);
+CREATE INDEX model_stories_featured_idx ON model_stories (featured_at DESC) WHERE featured_at IS NOT NULL;
+
+-- THE TEAM'S POSTS. Keyed by id, so the slug stays editable until and after publishing; unique
+-- while it is anyone's. A draft has no published_at, and unpublishing clears it.
+CREATE TABLE posts (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug         text        NOT NULL UNIQUE,
+    title        text        NOT NULL,
+    author_id    uuid        NOT NULL REFERENCES users (id),
+    body         text        NOT NULL DEFAULT '',
+    published_at timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT posts_slug_shape  CHECK (slug_ok(slug, 80)),
+    CONSTRAINT posts_title_shape CHECK (line_ok(title, 120)),
+    CONSTRAINT posts_body_size   CHECK (char_length(body) <= 100000)
+);
+CREATE INDEX posts_published_idx ON posts (published_at DESC, id DESC) WHERE published_at IS NOT NULL;
+
+-- A LINE ACROSS EVERY PAGE. Live while not disabled and not past `ends_at`. Its link is a site path
+-- or an https:// URL: only an admin writes one. (Notify keeps the site-path rule, since each send
+-- becomes a notifications row.)
+CREATE TABLE announcements (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind         text        NOT NULL,
+    body         text        NOT NULL,
+    link         text,
+    dismissable  boolean     NOT NULL DEFAULT true,
+    ends_at      timestamptz,
+    published_by uuid        NOT NULL REFERENCES users (id),
+    published_at timestamptz NOT NULL DEFAULT now(),
+    disabled_at  timestamptz,
+    disabled_by  uuid        REFERENCES users (id),
+    CONSTRAINT announcements_kind      CHECK (kind IN ('notice', 'season', 'maintenance', 'incident')),
+    CONSTRAINT announcements_body      CHECK (line_ok(body, 200)),
+    CONSTRAINT announcements_link      CHECK (link IS NULL OR link_ok(link)),
+    CONSTRAINT announcements_disabled  CHECK ((disabled_at IS NULL) = (disabled_by IS NULL))
+);
+CREATE INDEX announcements_live_idx ON announcements (published_at DESC) WHERE disabled_at IS NULL;
+
+-- ONE ADMIN SEND to an audience. Each recipient gets a notifications row keyed `notify:<id>`, in
+-- the one INSERT ... SELECT that writes this row's count; `audience` is the chips as chosen.
+CREATE TABLE notify_sends (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject     text        NOT NULL,
+    link        text,
+    audience    jsonb       NOT NULL,
+    sent_by     uuid        NOT NULL REFERENCES users (id),
+    sent_at     timestamptz NOT NULL DEFAULT now(),
+    recipients  int         NOT NULL DEFAULT 0,
+    CONSTRAINT notify_sends_subject  CHECK (line_ok(subject, 200)),
+    CONSTRAINT notify_sends_link     CHECK (link IS NULL OR site_path_ok(link)),
+    CONSTRAINT notify_sends_audience CHECK (jsonb_typeof(audience) = 'object'),
+    CONSTRAINT notify_sends_count    CHECK (recipients >= 0)
+);
+CREATE INDEX notify_sends_sent_idx ON notify_sends (sent_at DESC);
+
+-- STAFF PICKS: matches an admin pinned, in order, until unpinned. A pick names a public match only
+-- (match_public), which the pin checks.
+CREATE TABLE picks (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id    uuid        NOT NULL REFERENCES matches (id),
+    position    int         NOT NULL,
+    pinned_by   uuid        NOT NULL REFERENCES users (id),
+    pinned_at   timestamptz NOT NULL DEFAULT now(),
+    unpinned_at timestamptz,
+    unpinned_by uuid        REFERENCES users (id),
+    CONSTRAINT picks_unpinned CHECK ((unpinned_at IS NULL) = (unpinned_by IS NULL))
+);
+CREATE UNIQUE INDEX picks_live_uniq ON picks (match_id) WHERE unpinned_at IS NULL;
+
+-- ------------------------------------------------------------------ audit_log
+
+-- EVERY ADMIN WRITE, written inside that write's own statement as a data-modifying CTE, so an
+-- action and its line cannot disagree. `action` is `<thing>.<verb>` (`season.create`,
+-- `comment.remove`); `target_id` is text because a season and a board are addressed by slug.
+-- season_map_events and baseline_events stay: pairing reads them, and this table is for people.
+CREATE TABLE audit_log (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    admin_id    uuid        NOT NULL REFERENCES users (id),
+    action      text        NOT NULL,
+    target_kind text        NOT NULL,
+    target_id   text,
+    reason      text,
+    detail      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT audit_log_action CHECK (action ~ '^[a-z_]+\.[a-z_]+$'),
+    CONSTRAINT audit_log_kind   CHECK (target_kind ~ '^[a-z_]+$'),
+    CONSTRAINT audit_log_reason CHECK (reason IS NULL OR char_length(reason) <= 300),
+    CONSTRAINT audit_log_detail CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE INDEX audit_log_at_idx    ON audit_log (at DESC);
+CREATE INDEX audit_log_admin_idx ON audit_log (admin_id, at DESC);
+-- The lines naming one thing -- a user's desk reads its user's.
+CREATE INDEX audit_log_target_idx ON audit_log (target_kind, target_id, at DESC);
+
+-- --------------------------------------------------------------- watch_events
+
+-- WHAT PEOPLE WATCH, counted per day and never per person: no user, no address. `visit` is one
+-- page load and names no match; `opened` names how the viewer got there; `finished` is a replay
+-- watched to its end. Upserted `n = n + 1` on the key, which treats a null match and a null `via`
+-- as values (NULLS NOT DISTINCT, PostgreSQL 15+).
+--
+-- SHARDED: the writer picks `shard` at random (0-15) and a reader sums over it. Every page load's
+-- `visit` is the same key for a whole day, and one row would queue every visit on one row lock.
+CREATE TABLE watch_events (
+    match_id    uuid        REFERENCES matches (id),
+    day         date        NOT NULL,
+    event       text        NOT NULL,
+    via         text,
+    shard       smallint    NOT NULL DEFAULT 0,
+    n           bigint      NOT NULL DEFAULT 1,
+    CONSTRAINT watch_events_key   UNIQUE NULLS NOT DISTINCT (match_id, day, event, via, shard),
+    CONSTRAINT watch_events_shard CHECK (shard BETWEEN 0 AND 15),
+    CONSTRAINT watch_events_event CHECK (event IN ('visit', 'opened', 'finished')),
+    CONSTRAINT watch_events_match CHECK ((event = 'visit') = (match_id IS NULL)),
+    CONSTRAINT watch_events_via   CHECK (CASE WHEN event = 'opened'
+                                              THEN via IN ('tv', 'shelf', 'grid', 'next', 'rail', 'link')
+                                              ELSE via IS NULL END),
+    CONSTRAINT watch_events_n     CHECK (n >= 1)
+);
+CREATE INDEX watch_events_day_idx ON watch_events (day);
+
+-- ----------------------------------------------------------- ladder_snapshots
+
+-- THE FIELD ON EACH LADDER, ON THE HOUR: ladder_at() at the top of every hour a season is live,
+-- written by the withdraw clock's first tick in that hour. `version_ids` is the field in rank order
+-- and `ratings` each one's conservative rating, so a rank is an array position. The rating series
+-- and a model's "rank a week ago" read these rows, whose number grows with hours and not with
+-- matches; ladder_at() over the whole event history at every point of a series does not scale.
+-- An hour with nobody standing is an empty snapshot, not a missing one.
+CREATE TABLE ladder_snapshots (
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    ladder      ladder      NOT NULL,
+    at          timestamptz NOT NULL,
+    version_ids uuid[]      NOT NULL,
+    ratings     real[]      NOT NULL,
+    PRIMARY KEY (season_id, ladder, at),
+    CONSTRAINT ladder_snapshots_hour  CHECK (at = date_trunc('hour', at)),
+    CONSTRAINT ladder_snapshots_shape CHECK (cardinality(version_ids) = cardinality(ratings))
+);
+
 -- --------------------------------------------------------------------- clocks
 
 -- One table, two flavours of fence:
@@ -1142,12 +1569,25 @@ CREATE INDEX matches_in_flight_idx
 CREATE INDEX matches_finished_idx
     ON matches (played_at, id) WHERE status = 'finished';
 
--- The public match listing, and the `matches_played` count a season carries (which reads the
--- season_id prefix alone). The trailing id makes the keyset cursor total: two matches can share a
--- played_at to the microsecond, and a page boundary that is not total repeats or skips a row.
+-- The public match listing. Partial on `listed`, which match_public() is, so the listing's own
+-- predicate proves the index. The trailing id makes the keyset cursor total: two matches can
+-- share a played_at to the microsecond, and a page boundary that is not total repeats or skips.
 CREATE INDEX matches_season_played_idx
     ON matches (season_id, played_at DESC, id DESC)
-    WHERE status IN ('finished', 'rated');
+    WHERE listed;
+
+-- The listing's three stored sorts: closest, biggest upset, longest, over the season's public
+-- matches that are not trials -- the season listing's own predicate, so each sort reads its first
+-- page off the index. A promoted trial reaches a sort through a model's listing, which is small.
+CREATE INDEX matches_season_margin_idx
+    ON matches (season_id, margin, id)
+    WHERE listed AND trial_version_id IS NULL;
+CREATE INDEX matches_season_upset_idx
+    ON matches (season_id, upset DESC, id DESC)
+    WHERE listed AND trial_version_id IS NULL;
+CREATE INDEX matches_season_turns_idx
+    ON matches (season_id, turns DESC, id DESC)
+    WHERE listed AND trial_version_id IS NULL;
 
 -- A disable's cancel: the pending rows on one board.
 CREATE INDEX matches_pending_map_idx
@@ -1186,6 +1626,11 @@ CREATE INDEX match_seats_weights_idx
 -- the rating change a given match produced, for the Version screen
 CREATE INDEX rating_events_match_idx
     ON rating_events (match_id, seat);
+
+-- A version's rating AT AN INSTANT: ladder_at() reads the last event at or before t, per version,
+-- for every edge of a series.
+CREATE INDEX rating_events_at_idx
+    ON rating_events (version_id, ladder, created_at);
 
 -- There is deliberately no index on ratings.conservative. Only active versions are ranked, status
 -- lives on model_versions, and Postgres cannot build a partial index across a join -- so it would
@@ -1234,7 +1679,8 @@ $$;
 -- different questions: `entries` is how many models are in the field, `active_versions` the
 -- ladder's size, `entered_versions` everything ever submitted, `in_flight_versions` what "18
 -- versions are mid-trial" means. `matches_played` EXCLUDES TRIALS so it agrees with what
--- GET /v1/matches can reach.
+-- GET /v1/matches can reach, and is the column count's fold moves: RATED matches, so one finished
+-- a moment ago is counted within the minute.
 CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT json_build_object(
         'name',   s.name,
@@ -1255,8 +1701,10 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
                                WHERE v.season_id = s.id AND v.status = 'active'),
         'entered_versions',   (SELECT count(*) FROM model_versions v
                                WHERE v.season_id = s.id),
-        'matches_played',     (SELECT count(*) FROM matches mt
-                               WHERE mt.season_id = s.id AND mt.status IN ('finished', 'rated')
+        'matches_played',     s.matches_played,
+        -- On a board right now: claimed or running, trials excluded, like matches_played.
+        'playing',            (SELECT count(*) FROM matches mt
+                               WHERE mt.season_id = s.id AND mt.status IN ('claimed', 'running')
                                  AND mt.trial_version_id IS NULL),
         'in_flight_versions', (SELECT count(*) FROM model_versions v
                                WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')),
@@ -1285,11 +1733,48 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
                   WHERE v.season_id = s.id));
 $$;
 
+-- WHETHER ANYONE MAY SEE A VERSION: `active`, `disabled` (a baseline switched off) or `superseded`.
+-- One still being admitted, waiting for its trial or rejected is its owner's, read through
+-- /v1/me/versions/{id}. Every public version route and match_public() ask this.
+CREATE FUNCTION version_public(p_status model_status) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT p_status IN ('active', 'disabled', 'superseded');
+$$;
+
+-- WHETHER ANYONE MAY SEE A MATCH IN A LISTING: `matches.listed`, which finish sets for a match with
+-- no trial and a trial's `pass` sets as its candidate goes public. A trial in progress, and a
+-- rejected candidate's, stay the owner's, read through /v1/me/matches. The listing, the event
+-- counter and a pick ask this. GET /v1/matches/{id} asks it of a trial only: a cancelled or failed
+-- ordinary match is readable there by id. One column and no subquery, so the planner inlines it
+-- and a query that asks it can use the partial indexes built on `listed`.
+CREATE FUNCTION match_public(m matches) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT m.listed;
+$$;
+
+-- WHETHER A USER OWNS A VERSION SEATED IN A MATCH: what lets them read a private match.
+CREATE FUNCTION match_seated(p_match uuid, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (SELECT 1 FROM match_seats ms
+                     JOIN model_versions v ON v.id = ms.version_id
+                     JOIN models e         ON e.id = v.model_id
+                    WHERE ms.match_id = p_match AND e.owner_id = p_user);
+$$;
+
+-- A POINTER TO A MATCH, for a card that shows one it does not list: a profile model's latest, a
+-- podium place's, a board's. `frame` says whether a last frame exists, so a card knows whether to
+-- ask for it. NULL for no match.
+CREATE FUNCTION match_ref_json(p_match uuid) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object('id', m.id, 'played_at', m.played_at,
+                             'frame', EXISTS (SELECT 1 FROM match_frames f WHERE f.match_id = m.id))
+      FROM matches m WHERE m.id = p_match;
+$$;
+
 -- THE HEADER OF AN UPLOADED MAP, or NULL when the file has none worth reading (N28): an `id` that
 -- is a slug and whole-number `players`, `rows` and `cols`. It is what the platform reads out of a
 -- board and ALL it reads -- the rest of the file is the cartridge's, judged by its own worldgen.
 -- Each cast sits behind the pattern that makes it safe, so a file saying "players": "two" is a NULL
 -- header and a 400, never a 22P02 on the upload path.
+--
+-- `hills` is the LENGTH of the file's `hills` array -- players x H entries -- or null when the file
+-- has none. A count and no placement: where the hills are is the cartridge's.
 CREATE FUNCTION season_map_header(v jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE
         WHEN jsonb_typeof(v) = 'object'
@@ -1299,8 +1784,38 @@ CREATE FUNCTION season_map_header(v jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE 
          AND jsonb_typeof(v -> 'rows') = 'number' AND (v ->> 'rows') ~ '^[0-9]{1,3}$'
          AND jsonb_typeof(v -> 'cols') = 'number' AND (v ->> 'cols') ~ '^[0-9]{1,3}$'
         THEN jsonb_build_object('id', v ->> 'id', 'players', (v ->> 'players')::int,
-                                'rows', (v ->> 'rows')::int, 'cols', (v ->> 'cols')::int)
+                                'rows', (v ->> 'rows')::int, 'cols', (v ->> 'cols')::int,
+                                'hills', CASE WHEN jsonb_typeof(v -> 'hills') = 'array'
+                                              THEN jsonb_array_length(v -> 'hills') END)
     END;
+$$;
+
+-- WHAT A BOARD'S NAME SAYS: `size-terrain-Np-Hh` split into its four parts, or NULL for a name off
+-- the pattern. The words are stored as given; Soma keeps no list of sizes or terrains, so a second
+-- game with other words needs no schema change. The upload refuses a NULL, and a name whose `Np`
+-- or `Hh` disagrees with the file.
+CREATE FUNCTION season_map_name(p_map_id text) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN p_map_id ~ '^[a-z]+-[a-z]+-[0-9]{1,3}p-[0-9]{1,3}h$'
+                THEN jsonb_build_object(
+                    'size',    split_part(p_map_id, '-', 1),
+                    'terrain', split_part(p_map_id, '-', 2),
+                    'players', rtrim(split_part(p_map_id, '-', 3), 'p')::int,
+                    'hills',   rtrim(split_part(p_map_id, '-', 4), 'h')::int) END;
+$$;
+
+-- WHY AN UPLOADED BOARD'S NAME IS REFUSED, or NULL when it is not: off the pattern, a seat count
+-- that is not the file's `players`, or hills that are not the file's `hills` array divided by its
+-- players. Asked by the upload's context read, which answers the 422, and by its insert, which
+-- stores nothing the read would refuse.
+CREATE FUNCTION season_map_name_problem(h jsonb) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN n IS NULL THEN 'map_name_pattern'
+        WHEN (n ->> 'players')::int <> (h ->> 'players')::int THEN 'map_name_players'
+        WHEN (h ->> 'hills') IS NULL
+          OR (h ->> 'hills')::int <> (n ->> 'hills')::int * (h ->> 'players')::int
+            THEN 'map_name_hills'
+    END
+      FROM (SELECT season_map_name(h ->> 'id') AS n) x;
 $$;
 
 -- WHETHER A HEADER FITS THE GAME'S ENVELOPE: the cartridge's `limits.boards`, which it derives from
@@ -1318,17 +1833,22 @@ $$;
 -- ONE SEASON MAP, as four routes return it (N28): the header the platform reads, whether it is in
 -- play, and how many counted matches it has carried. The board itself is not here -- it is the
 -- cartridge's, and only the routes that draw one ask for it, beside this.
+--
+-- `latest_match` is what the maps page's Watch opens: the board's newest counted match. Both it
+-- and `matches` are columns the fold moves, so the page costs a row per board.
 CREATE FUNCTION season_map_json(sm season_maps) RETURNS json LANGUAGE sql STABLE AS $$
     SELECT json_build_object(
         'map_id',   sm.map_id,
         'players',  sm.players,
         'rows',     sm.rows,
         'cols',     sm.cols,
+        'size',     sm.size,
+        'terrain',  sm.terrain,
+        'hills',    sm.hills,
         'enabled',  sm.enabled,
         'added_at', sm.added_at,
-        'matches',  (SELECT count(*) FROM matches m
-                      WHERE m.season_map_id = sm.id AND m.status IN ('finished', 'rated')
-                        AND m.trial_version_id IS NULL));
+        'matches',  sm.matches,
+        'latest_match', match_ref_json(sm.latest_match_id));
 $$;
 
 -- A BASELINE'S ACCOUNT, from the name an admin gives it (N29): `baseline.` and the name's slug, by
@@ -1484,17 +2004,20 @@ $$;
 -- the leaderboard, and a version's own "rank 6 of 47" -- and a ladder whose two readers disagreed
 -- about its membership would print a rank a page cannot justify.
 --
--- standings.ranked_per_user_max is applied HERE and nowhere else. It is work the entry split makes
--- necessary: one active version per entry per season means a competitor with five entries holds
--- five rows, and without a cap the top ten is one name.
+-- standings.ranked_per_user_max is read HERE and nowhere else -- ladder_field() and ladder_at()
+-- both cap by it. It is work the entry split makes necessary: one active version per entry per
+-- season means a competitor with five entries holds five rows, and without a cap the top ten is
+-- one name. No cap is int's maximum, so a caller compares without a coalesce.
+CREATE FUNCTION season_owner_cap(p_season uuid) RETURNS int LANGUAGE sql STABLE AS $$
+    SELECT coalesce((SELECT CASE WHEN coalesce((s.rules -> 'standings' ->> 'enabled')::bool, false)
+                                 THEN (s.rules -> 'standings' ->> 'ranked_per_user_max')::int END
+                       FROM seasons s WHERE s.id = p_season), 2147483647);
+$$;
+
 CREATE FUNCTION ladder_field(p_season uuid, p_ladder ladder)
 RETURNS TABLE (version_id uuid, owner_id uuid, conservative float8)
 LANGUAGE sql STABLE AS $$
-    WITH cap AS (
-        SELECT CASE WHEN coalesce((s.rules -> 'standings' ->> 'enabled')::bool, false)
-                    THEN (s.rules -> 'standings' ->> 'ranked_per_user_max')::int END AS n
-          FROM seasons s WHERE s.id = p_season),
-    eligible AS (
+    WITH eligible AS (
         SELECT v.id, e.owner_id, r.conservative,
                row_number() OVER (PARTITION BY e.owner_id
                                   ORDER BY r.conservative DESC, v.id) AS per_owner
@@ -1504,8 +2027,8 @@ LANGUAGE sql STABLE AS $$
          WHERE v.season_id = p_season AND v.status = 'active'
            AND (p_ladder = 'open' OR v.weight_class = p_ladder))
     SELECT eligible.id, eligible.owner_id, eligible.conservative
-      FROM eligible, cap
-     WHERE eligible.per_owner <= coalesce(cap.n, 2147483647);
+      FROM eligible
+     WHERE eligible.per_owner <= season_owner_cap(p_season);
 $$;
 
 -- Which of the two clocks a version is waiting on, in the words the pages print. Four routes say
@@ -1686,6 +2209,469 @@ LANGUAGE sql STABLE AS $$
      ORDER BY s.seat;
 $$;
 
+-- ------------------------------------------------------------- the redesign's shapes
+
+-- A MATCH AS A CARD: the public listing's row, which the owner's listing, the related rail, the
+-- picks and the match page return too. `margin` and `upset` are the stored sort keys, `comments`
+-- the thread's live count, and `frame` whether a last frame exists, so a card asks for one only
+-- when there is one. It takes the ROW, which every caller already holds, so a page of cards is not
+-- a page of primary-key reads. `p_viewer` adds `mine` to each seat, for the owner's listing.
+CREATE FUNCTION match_summary_json(m matches, p_viewer uuid DEFAULT NULL) RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+    SELECT jsonb_build_object(
+        'id',         m.id,
+        'game',       (SELECT g.slug FROM games g WHERE g.id = m.game_id),
+        'season',     (SELECT se.slug FROM seasons se WHERE se.id = m.season_id),
+        'status',     m.status,
+        'map',        (SELECT sm.map_id FROM season_maps sm WHERE sm.id = m.season_map_id),
+        'seed',       m.seed,
+        'reason',     m.reason,
+        'turns',      m.turns,
+        'played_at',  m.played_at,
+        'ladders',    array_to_json(m.ladders),
+        'is_trial',   m.trial_version_id IS NOT NULL,
+        'margin',     m.margin,
+        'upset',      m.upset,
+        'comments',   coalesce((SELECT t.comments FROM threads t WHERE t.match_id = m.id), 0),
+        'frame',      EXISTS (SELECT 1 FROM match_frames f WHERE f.match_id = m.id),
+        'seats', (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                     'seat', s.seat, 'version_id', s.version_id, 'model_id', s.model_id,
+                     'model', s.model_name, 'owner', s.owner, 'baseline', s.baseline,
+                     'class', s.class, 'version', s.version, 'rank', s.rank, 'score', s.score,
+                     'strikes', s.strikes, 'outcome', s.outcome)
+                     || CASE WHEN p_viewer IS NULL THEN '{}'::jsonb
+                             ELSE jsonb_build_object('mine', s.owner_id = p_viewer) END
+                     ORDER BY s.seat), '[]'::jsonb)
+                    FROM match_seat_rows(m.id) s));
+$$;
+
+-- ONE MATCH, WHOLE: the match page's shape, which the public route and the owner's route both
+-- return -- the card (match_summary_json) with each seat's rating_change, and what only the page
+-- prints. Who may read it is each route's question: the public one asks match_public() of a
+-- trial, and /v1/me/matches/{id} asks match_seated(), in any status -- which is how the owner of a
+-- rejected candidate watches the trial it forfeited. The replay URL is signed by the route.
+CREATE FUNCTION match_detail_json(mt matches) RETURNS jsonb LANGUAGE sql STABLE AS $$
+    SELECT (c - 'comments') || jsonb_build_object(
+        'played_ms',        mt.played_ms,
+        'created_at',       mt.created_at,
+        'withdrawn_reason', mt.withdrawn_reason,
+        'successor_id',     mt.successor_version_id,
+        'fault_reason',     mt.fault_reason,
+        'engine_digest',    mt.engine_digest_played,
+        'orion_version',    mt.orion_version,
+        'strike_limit',     mt.strike_ceiling,
+        'successor', (SELECT jsonb_build_object('version_id', sv.id, 'model_id', e.id, 'model', e.name,
+                                                'owner', u.handle, 'version', sv.version)
+                        FROM model_versions sv
+                        JOIN models e ON e.id = sv.model_id
+                        JOIN users u  ON u.id = e.owner_id
+                       WHERE sv.id = mt.successor_version_id),
+        'seats', (SELECT coalesce(jsonb_agg(x || jsonb_build_object(
+                     'rating_change', (SELECT jsonb_object_agg(r.ladder, jsonb_build_object(
+                                           'mu_before', r.mu_before, 'sigma_before', r.sigma_before,
+                                           'mu_after', r.mu_after, 'sigma_after', r.sigma_after))
+                                         FROM rating_events r
+                                        WHERE r.match_id = mt.id AND r.seat = (x ->> 'seat')::smallint))
+                     ORDER BY (x ->> 'seat')::int), '[]'::jsonb)
+                    FROM jsonb_array_elements(c -> 'seats') x))
+      FROM (SELECT match_summary_json(mt) AS c) card;
+$$;
+
+-- A MATCH'S TWO SORT KEYS, from one read of its seats. NULL both for a shared first place or a
+-- match without a result.
+--
+-- `margin`: the winner's score minus the runner-up's. The runner-up is the best rank below first,
+-- which is a forfeit's too when it is the only one left: a DQ is still a score the winner beat.
+--
+-- `upset`, on the Open ladder: the best conservative rating BEFORE THE MATCH among the seats the
+-- winner beat, disqualified seats left out, minus the winner's own. Positive is an upset; NULL when
+-- nobody was beaten fairly. "Before the match" is read two ways and they agree. The fold computes
+-- it in the statement that rates the match, where this match's rating_events do not exist yet and
+-- `ratings` is still the snapshot before the fold's own update -- so the coalesce falls through to
+-- `ratings`. The cutover's backfill runs long after, where `ratings` has moved on and the event's
+-- `*_before` is the number the fold would have read. A trial's verdict takes `margin` alone.
+CREATE FUNCTION match_sort_keys(p_match uuid) RETURNS TABLE (margin int, upset float8)
+LANGUAGE sql STABLE AS $$
+    WITH seat AS (
+        SELECT s.rank, s.score, s.strikes >= m.strike_ceiling AS dq,
+               coalesce((SELECT e.mu_before - 3 * e.sigma_before FROM rating_events e
+                          WHERE e.match_id = s.match_id AND e.seat = s.seat AND e.ladder = 'open'),
+                        (SELECT r.conservative FROM ratings r
+                          WHERE r.version_id = s.version_id AND r.ladder = 'open')) AS rating
+          FROM match_seats s JOIN matches m ON m.id = s.match_id
+         WHERE s.match_id = p_match AND s.rank IS NOT NULL),
+    second AS (SELECT min(seat.rank) AS rank FROM seat WHERE seat.rank > 1)
+    SELECT CASE WHEN count(*) FILTER (WHERE seat.rank = 1) = 1
+                THEN max(seat.score) FILTER (WHERE seat.rank = 1)
+                     - max(seat.score) FILTER (WHERE seat.rank = second.rank) END,
+           CASE WHEN count(*) FILTER (WHERE seat.rank = 1) = 1
+                THEN max(seat.rating) FILTER (WHERE seat.rank > 1 AND NOT seat.dq)
+                     - max(seat.rating) FILTER (WHERE seat.rank = 1) END
+      FROM seat, second;
+$$;
+
+-- ONE VERSION, as every route that shows one returns it: the version page, a model's list, the
+-- owner's own. WHO MAY SEE IT is the route's question, not this function's -- the public routes ask
+-- for `active`, `disabled` and `superseded` and answer 404 otherwise, and /v1/me/versions/{id}
+-- returns the rest to the owner. The id is `version_id`, as every seat, list and ladder names it.
+CREATE FUNCTION version_json(v model_versions, p_settled_sigma float8) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'version_id',    v.id,
+        'model_id',      e.id,
+        'model',         e.name,
+        'owner',         u.handle,
+        'baseline',      u.role = 'baseline',
+        'game',          g.slug,
+        'season',        se.slug,
+        'version',       v.version,
+        'note',          v.note,
+        'class',         v.weight_class,
+        'class_max_bytes', (SELECT (x ->> 'max_bytes')::bigint
+                              FROM jsonb_array_elements(se.weight_classes) AS x
+                             WHERE x ->> 'class' = v.weight_class::text),
+        'size_bytes',    v.size_bytes,
+        'param_count',   v.param_count,
+        'infer_us',      v.infer_us,
+        'weights_hash',  v.weights_hash,
+        'manifest_hash', v.manifest_hash,
+        'orion_version', v.orion_version,
+        'status',        v.status,
+        'phase',         model_phase(v),
+        'admit_attempt', CASE WHEN v.status = 'testing'
+                              THEN (SELECT a.attempts FROM admissions a WHERE a.version_id = v.id) END,
+        'successor',     (SELECT s.version FROM model_versions s
+                           WHERE s.model_id = v.model_id AND s.season_id = v.season_id
+                             AND s.status = 'active' AND v.status = 'superseded'),
+        'reject_reason', v.reject_reason,
+        'created_at',    v.created_at,
+        'trial',         (SELECT json_build_object(
+                              'match_id', t.id, 'status', t.status, 'map', tm.map_id,
+                              'queued_at', t.created_at,
+                              'waiting_s', CASE WHEN t.status = 'pending'
+                                                THEN round(extract(epoch FROM now() - t.created_at))::bigint END)
+                            FROM matches t JOIN season_maps tm ON tm.id = t.season_map_id
+                           WHERE t.trial_version_id = v.id
+                           ORDER BY t.created_at DESC LIMIT 1),
+        'ratings',       model_ratings(v.id, p_settled_sigma),
+        'last_played_at', (SELECT max(mt.played_at) FROM match_seats ms
+                             JOIN matches mt ON mt.id = ms.match_id
+                            WHERE ms.version_id = v.id))
+      FROM models e
+      JOIN users u    ON u.id = e.owner_id
+      JOIN games g    ON g.id = e.game_id
+      JOIN seasons se ON se.id = v.season_id
+     WHERE e.id = v.model_id;
+$$;
+
+-- A MATCH THAT COUNTS: public and not a trial -- what every season listing, sort and count reads,
+-- and the predicate each partial index on `matches` is built on. Row-local, so it inlines.
+CREATE FUNCTION match_counted(m matches) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT m.listed AND m.trial_version_id IS NULL;
+$$;
+
+-- A THREAD'S HOST, as every route names it: `match` or `model`, its id, and the link to a comment
+-- on it. Notifications carry the link, so a page and the bell cannot disagree about where it is.
+CREATE FUNCTION thread_host(t threads) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN t.match_id IS NOT NULL THEN 'match' ELSE 'model' END;
+$$;
+CREATE FUNCTION thread_host_id(t threads) RETURNS uuid LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(t.match_id, t.model_id);
+$$;
+CREATE FUNCTION comment_link(t threads, p_comment uuid) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN t.match_id IS NOT NULL THEN '/matches/' ELSE '/models/' END
+           || coalesce(t.match_id, t.model_id) || '#comment-' || p_comment;
+$$;
+
+-- WHO OWNS A THREAD'S HOST: the model's owner, or each owner of a version seated in the match.
+-- The Owner tag on a comment and the `comment` notification both ask this.
+CREATE FUNCTION thread_owners(t threads) RETURNS SETOF uuid LANGUAGE sql STABLE AS $$
+    SELECT e.owner_id FROM models e WHERE e.id = t.model_id
+    UNION
+    SELECT e.owner_id FROM match_seats ms
+      JOIN model_versions v ON v.id = ms.version_id
+      JOIN models e         ON e.id = v.model_id
+     WHERE ms.match_id = t.match_id;
+$$;
+
+-- WHETHER A HOST MAY CARRY A THREAD: exactly one of a match anyone may see and a model.
+CREATE FUNCTION thread_host_ok(p_match uuid, p_model uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN p_match IS NOT NULL AND p_model IS NULL
+                THEN EXISTS (SELECT 1 FROM matches m WHERE m.id = p_match AND match_public(m))
+                WHEN p_model IS NOT NULL AND p_match IS NULL
+                THEN EXISTS (SELECT 1 FROM models e WHERE e.id = p_model)
+                ELSE false END;
+$$;
+
+-- COMMENTING SWITCHED OFF RIGHT NOW: the end and the reason while it is, NULL once it has run out
+-- or was never off. Every route that shows the switch or obeys it reads these.
+CREATE FUNCTION commenting_off_until(u users) RETURNS timestamptz LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN u.comments_off_until > now() THEN u.comments_off_until END;
+$$;
+CREATE FUNCTION commenting_off_reason(u users) RETURNS text LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN u.comments_off_until > now() THEN u.comments_off_reason END;
+$$;
+-- The end of a switch-off an admin asks for: a day, a week, a month, or for good. NULL for any
+-- other word.
+CREATE FUNCTION commenting_off_end(p_term text) RETURNS timestamptz LANGUAGE sql STABLE AS $$
+    SELECT CASE p_term WHEN 'day'     THEN now() + interval '1 day'
+                       WHEN 'week'    THEN now() + interval '7 days'
+                       WHEN 'month'   THEN now() + interval '1 month'
+                       WHEN 'forever' THEN 'infinity'::timestamptz END;
+$$;
+
+-- HOW LONG A USER MUST WAIT TO COMMENT: `wait_s` until 15 s after their last comment, and
+-- `day_wait_s` until the oldest of their last hundred leaves the 24 hours. Every state counts, so
+-- deleting and writing again resets neither. NULL for a limit not in force. The post writes only
+-- when both are NULL, and `why` returns them.
+CREATE FUNCTION comment_wait(p_user uuid) RETURNS TABLE (wait_s int, day_wait_s int)
+LANGUAGE sql STABLE AS $$
+    WITH recent AS (
+        SELECT c.created_at FROM comments c
+         WHERE c.author_id = p_user AND c.created_at > now() - interval '24 hours'
+         ORDER BY c.created_at DESC LIMIT 100)
+    SELECT (SELECT ceil(extract(epoch FROM max(r.created_at) + interval '15 seconds' - now()))::int
+              FROM recent r WHERE r.created_at > now() - interval '15 seconds'),
+           CASE WHEN (SELECT count(*) FROM recent) >= 100
+                THEN (SELECT ceil(extract(epoch FROM min(r.created_at) + interval '24 hours' - now()))::int
+                        FROM recent r) END;
+$$;
+
+-- A STORY'S HELD EDIT, as its writer and the admin desk see it; NULL while none waits.
+CREATE FUNCTION story_pending_json(s model_stories) RETURNS json LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN s.hold_tag IS NOT NULL
+                THEN json_build_object('title', s.pending_title, 'body', s.pending_body,
+                                       'hold_tag', s.hold_tag) END;
+$$;
+
+-- AN ANNOUNCEMENT IN FORCE: not disabled and not past its end.
+CREATE FUNCTION announcement_live(a announcements) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT a.disabled_at IS NULL AND (a.ends_at IS NULL OR a.ends_at > now());
+$$;
+
+-- A STORY THE PUBLIC READS: approved text, not removed.
+CREATE FUNCTION story_public(s model_stories) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT s.removed_at IS NULL AND s.title IS NOT NULL AND s.body IS NOT NULL;
+$$;
+
+-- THE LIVE COUNT ON A THREAD, kept by the table rather than by each writer: a comment entering
+-- `live` adds one, leaving it takes one away, whoever writes the state -- a post, a delete, an
+-- admin's decision, a restore.
+CREATE FUNCTION threads_count_live() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (NEW.state = 'live') IS DISTINCT FROM (TG_OP = 'UPDATE' AND OLD.state = 'live') THEN
+        UPDATE threads SET comments = comments + CASE WHEN NEW.state = 'live' THEN 1 ELSE -1 END
+         WHERE id = NEW.thread_id;
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER comments_count_live AFTER INSERT OR UPDATE OF state ON comments
+    FOR EACH ROW EXECUTE FUNCTION threads_count_live();
+
+-- WHETHER A USER MAY WRITE A MODEL'S STORY OR ITS VERSIONS' NOTES: its owner, or an admin for a
+-- baseline's model, whose words the team writes.
+CREATE FUNCTION model_writable_by(p_model uuid, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (SELECT 1 FROM models e
+                     JOIN users o ON o.id = e.owner_id
+                     JOIN users u ON u.id = p_user
+                    WHERE e.id = p_model
+                      AND (e.owner_id = u.id OR (u.role = 'admin' AND o.role = 'baseline')));
+$$;
+
+-- A NOTIFY AUDIENCE, VALIDATED: chips that combine as a union. {"everyone": true}; {"game",
+-- "season"}, a season's submitters, narrowed by "class" to one weight class; "models", each
+-- model's owner; "handles", typed by hand. Every set function sits behind a CASE, because SQL does
+-- not promise to evaluate the type tests first and jsonb_object_keys() on a scalar raises.
+CREATE FUNCTION notify_audience_ok(a jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(jsonb_typeof(a) = 'object'
+        AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a) = 'object'
+                                                             THEN a ELSE '{}'::jsonb END) k
+                         WHERE k NOT IN ('everyone', 'game', 'season', 'class', 'models', 'handles'))
+        AND (a -> 'everyone' = 'true'::jsonb OR a ? 'season' OR a ? 'models' OR a ? 'handles')
+        AND (NOT a ? 'everyone' OR jsonb_typeof(a -> 'everyone') = 'boolean')
+        AND (NOT a ? 'season'
+             OR (jsonb_typeof(a -> 'season') = 'string' AND jsonb_typeof(a -> 'game') = 'string'))
+        AND (NOT a ? 'game' OR a ? 'season')
+        AND (NOT a ? 'class'
+             OR (a ? 'season' AND (a ->> 'class') IN (SELECT l::text FROM unnest(enum_range(NULL::ladder)) l
+                                                       WHERE l <> 'open')))
+        AND (NOT a ? 'models'
+             OR (jsonb_typeof(a -> 'models') = 'array'
+                 AND jsonb_array_length(CASE WHEN jsonb_typeof(a -> 'models') = 'array'
+                                             THEN a -> 'models' ELSE '[]'::jsonb END) BETWEEN 1 AND 100))
+        AND (NOT a ? 'handles'
+             OR (jsonb_typeof(a -> 'handles') = 'array'
+                 AND jsonb_array_length(CASE WHEN jsonb_typeof(a -> 'handles') = 'array'
+                                             THEN a -> 'handles' ELSE '[]'::jsonb END) BETWEEN 1 AND 500)),
+        false);
+$$;
+
+-- WHO A NOTIFY AUDIENCE NAMES: a union of id sets, each read the cheap way, baselines dropped --
+-- nobody signs in to one. Nobody for an audience notify_audience_ok() refuses. The count route
+-- and the send ask this, so what a count promised is who a send writes to.
+CREATE FUNCTION notify_audience(a jsonb) RETURNS TABLE (user_id uuid) LANGUAGE sql STABLE AS $$
+    SELECT w.id
+      FROM (SELECT u.id FROM users u
+             WHERE a -> 'everyone' = 'true'::jsonb
+            UNION
+            SELECT e.owner_id FROM games g
+              JOIN seasons s        ON s.game_id = g.id
+              JOIN model_versions v ON v.season_id = s.id
+              JOIN models e         ON e.id = v.model_id
+             WHERE a ? 'season' AND g.slug = a ->> 'game' AND s.slug = a ->> 'season'
+               AND (NOT a ? 'class' OR v.weight_class::text = a ->> 'class')
+            UNION
+            SELECT e.owner_id FROM models e
+             WHERE e.id::text IN (SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(a -> 'models') = 'array'
+                                                                       THEN a -> 'models' ELSE '[]'::jsonb END))
+            UNION
+            SELECT u.id FROM users u
+             WHERE lower(u.handle) IN (SELECT lower(h) FROM jsonb_array_elements_text(
+                                          CASE WHEN jsonb_typeof(a -> 'handles') = 'array'
+                                               THEN a -> 'handles' ELSE '[]'::jsonb END) h)) w
+      JOIN users u ON u.id = w.id AND u.role <> 'baseline'
+     WHERE notify_audience_ok(a);
+$$;
+
+-- ONE COMMENT, as the thread and the profile return it. A removed or deleted comment keeps its place
+-- while it has replies, with no author and no body. `owner` is the Owner tag: on a model's thread
+-- the author owns the model, on a match's the author owns a version seated in it.
+CREATE FUNCTION comment_json(c comments) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'id',         c.id,
+        'parent_id',  c.parent_id,
+        'root_id',    c.root_id,
+        'state',      c.state,
+        'hold_tag',   CASE WHEN c.state = 'held' THEN c.hold_tag END,
+        'body',       CASE WHEN c.state IN ('live', 'held') THEN c.body END,
+        'author',     CASE WHEN c.state IN ('live', 'held') THEN u.handle END,
+        'owner',      c.state IN ('live', 'held')
+                      AND c.author_id IN (SELECT o FROM thread_owners(t) o),
+        'created_at', c.created_at)
+      FROM users u, threads t
+     WHERE u.id = c.author_id AND t.id = c.thread_id;
+$$;
+
+-- THE FIELD ON ONE LADDER AT AN INSTANT, and each version's conservative rating then. No column
+-- records when a version joined or left a ladder; `rating_events` seq 0 does both. A version stands
+-- from its own seq-0 row on Open, and until a later version of the same entry has one; a baseline
+-- stands while its latest enable or disable at t is an enable. Its rating is its last event at or
+-- before t. The per-owner cap is season_owner_cap(), as ladder_field() applies it, so a series and today's
+-- leaderboard agree at `now()` about who is on the ladder.
+--
+-- It writes each hour's ladder_snapshots row and a series' last point; rating_events_at_idx is its
+-- index. Anything that reads the field at many instants reads the snapshots instead.
+CREATE FUNCTION ladder_at(p_season uuid, p_ladder ladder, p_t timestamptz)
+RETURNS TABLE (version_id uuid, model_id uuid, owner_id uuid, conservative float8, rank bigint)
+LANGUAGE sql STABLE AS $$
+    WITH seeded AS (
+        SELECT v.id, v.model_id, v.version, v.weight_class, e.owner_id,
+               u.role = 'baseline' AS baseline
+          FROM model_versions v
+          JOIN models e        ON e.id = v.model_id
+          JOIN users u         ON u.id = e.owner_id
+          JOIN rating_events z ON z.version_id = v.id AND z.ladder = 'open' AND z.seq = 0
+         WHERE v.season_id = p_season AND z.created_at <= p_t),
+    standing AS (
+        SELECT s.* FROM seeded s
+         WHERE (p_ladder = 'open' OR s.weight_class = p_ladder)
+           AND NOT EXISTS (SELECT 1 FROM seeded n WHERE n.model_id = s.model_id AND n.version > s.version)
+           AND (NOT s.baseline
+                OR coalesce((SELECT b.action = 'enable' FROM baseline_events b
+                              WHERE b.version_id = s.id AND b.action <> 'upload' AND b.at <= p_t
+                              ORDER BY b.at DESC, b.id DESC LIMIT 1), false))),
+    rated AS (
+        SELECT st.id, st.model_id, st.owner_id,
+               (SELECT ev.mu_after - 3 * ev.sigma_after FROM rating_events ev
+                 WHERE ev.version_id = st.id AND ev.ladder = p_ladder AND ev.created_at <= p_t
+                 ORDER BY ev.created_at DESC, ev.seq DESC LIMIT 1) AS c
+          FROM standing st),
+    capped AS (
+        SELECT r.*, row_number() OVER (PARTITION BY r.owner_id ORDER BY r.c DESC, r.id) AS per_owner
+          FROM rated r WHERE r.c IS NOT NULL)
+    SELECT c.id, c.model_id, c.owner_id, c.c, row_number() OVER (ORDER BY c.c DESC, c.id)
+      FROM capped c
+     WHERE c.per_owner <= season_owner_cap(p_season);
+$$;
+
+-- THE RATING SERIES, IN BUCKETS: every version that stood on the ladder at any of `p_points` evenly
+-- spaced edges from `p_since` to now (or the close), with its rating and rank at each edge and null
+-- where it did not stand, and its `model_id` so a page joins a model's versions into one line.
+-- Every edge but the last reads the hour's snapshot at or before it (ladder_snapshots), so a series
+-- costs its points times the field, whatever the season's length; the last edge is ladder_at() at
+-- that instant, so a live ladder's line ends where the leaderboard stands now.
+CREATE FUNCTION rating_series(p_season uuid, p_ladder ladder, p_since timestamptz, p_points int)
+RETURNS json LANGUAGE sql STABLE AS $$
+    WITH span AS (
+        SELECT least(p_since, e.t) AS since, e.t AS until, greatest(least(p_points, 200), 2) AS n
+          FROM (SELECT coalesce(s.closed_at, now()) AS t FROM seasons s WHERE s.id = p_season) e),
+    edges AS (
+        SELECT i, span.since + (span.until - span.since) * (i::float8 / (span.n - 1)) AS t,
+               i = span.n - 1 AS last
+          FROM span, generate_series(0, span.n - 1) AS i),
+    at AS (
+        SELECT ed.i, u.version_id, u.c, u.rank
+          FROM edges ed
+         CROSS JOIN LATERAL (SELECT sn.version_ids, sn.ratings FROM ladder_snapshots sn
+                              WHERE sn.season_id = p_season AND sn.ladder = p_ladder AND sn.at <= ed.t
+                              ORDER BY sn.at DESC LIMIT 1) sn
+         CROSS JOIN LATERAL unnest(sn.version_ids, sn.ratings) WITH ORDINALITY AS u (version_id, c, rank)
+         WHERE NOT ed.last
+        UNION ALL
+        SELECT ed.i, l.version_id, l.conservative, l.rank
+          FROM edges ed, ladder_at(p_season, p_ladder, ed.t) l
+         WHERE ed.last),
+    -- Every version against every edge in ONE grouped join, null where it did not stand.
+    series AS (
+        SELECT w.version_id,
+               json_agg(round(a.c::numeric, 2) ORDER BY ed.i) AS ratings,
+               json_agg(a.rank ORDER BY ed.i) AS ranks
+          FROM (SELECT DISTINCT at.version_id FROM at) w
+         CROSS JOIN edges ed
+          LEFT JOIN at a ON a.i = ed.i AND a.version_id = w.version_id
+         GROUP BY w.version_id)
+    SELECT json_build_object(
+        'edges', (SELECT json_agg(ed.t ORDER BY ed.i) FROM edges ed),
+        'versions', coalesce((
+            SELECT json_agg(json_build_object(
+                'version_id', sr.version_id,
+                'model_id',   v.model_id,
+                'model',      e.name,
+                'owner',      u.handle,
+                'baseline',   u.role = 'baseline',
+                'version',    v.version,
+                'ratings',    sr.ratings,
+                'ranks',      sr.ranks)
+                ORDER BY e.name, v.version)
+              FROM series sr
+              JOIN model_versions v ON v.id = sr.version_id
+              JOIN models e         ON e.id = v.model_id
+              JOIN users u          ON u.id = e.owner_id), '[]'::json));
+$$;
+
+-- THE LADDER READ BY OWNER: each owner's best version stands for them, baselines left out, ranked.
+-- The podium is its first three places, and the close's "you finished 4th of 31" reads the same
+-- ranks, so the notification and the podium cannot disagree about who placed where.
+CREATE FUNCTION owner_ranks(p_season uuid, p_ladder ladder)
+RETURNS TABLE (place bigint, version_id uuid, owner_id uuid, rating float8, field bigint)
+LANGUAGE sql STABLE AS $$
+    SELECT row_number() OVER (ORDER BY b.conservative DESC, b.version_id),
+           b.version_id, b.owner_id, b.conservative, count(*) OVER ()
+      FROM (SELECT DISTINCT ON (f.owner_id) f.version_id, f.owner_id, f.conservative
+              FROM ladder_field(p_season, p_ladder) f
+              JOIN users u ON u.id = f.owner_id AND u.role <> 'baseline'
+             ORDER BY f.owner_id, f.conservative DESC, f.version_id) b;
+$$;
+
+-- THE PODIUM of one ladder: first to third of owner_ranks(). The close writes season_podium from
+-- this, and the cutover's backfill calls the same function for every season already closed.
+CREATE FUNCTION podium_of(p_season uuid, p_ladder ladder)
+RETURNS TABLE (place smallint, version_id uuid, owner_id uuid, rating float8)
+LANGUAGE sql STABLE AS $$
+    SELECT o.place::smallint, o.version_id, o.owner_id, o.rating
+      FROM owner_ranks(p_season, p_ladder) o
+     WHERE o.place <= 3;
+$$;
+
 -- ---------------------------------------------------------------- table storage
 
 -- Every match row is updated at least four times after insert -- claim, start, renew (repeatedly),
@@ -1735,13 +2721,21 @@ GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
 -- only, and on the two columns that carry it: a runner's terms are read here, never decided here.
 GRANT SELECT (id, game_id, rules, engine_digest, closed_at) ON seasons TO runner_gate;
 GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
--- The match player's columns, plus `played_by`, which the claim writes.
+-- The match player's columns, plus `played_by`, which the claim writes, and `listed`, which finish
+-- writes. The runner decides no part of `listed`: finish sets it to `trial_version_id IS NULL`,
+-- read off the row inside the statement, so a runner can publish an ordinary match it finished
+-- and no trial.
 GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
               reason, turns, played_ms, engine_digest_played, orion_version,
-              replay_key, played_at, fault_reason, closed_at, played_by)
+              replay_key, played_at, fault_reason, closed_at, played_by, listed)
     ON matches TO runner_gate;
 GRANT UPDATE (rank, score, strikes, infer_us_total, infer_us_max, infer_turns)
     ON match_seats TO runner_gate;
+-- THE LAST FRAME, which finish inserts beside the result under the same claim. INSERT and nothing
+-- else: a frame is written once, by the statement that finishes its match, and never read back or
+-- rewritten by a runner. It is opaque display material and decides nothing, so a runner that could
+-- write any frame it liked could change a card's picture and no result.
+GRANT INSERT ON match_frames TO runner_gate;
 -- Runner identity, which the gate needs: the key lookup the token
 -- exchange probes by, the self-registration it performs, and the liveness JOIN every statement
 -- carries. INSERT on `runners` because a runner self-registers; there is no enrolment flow.

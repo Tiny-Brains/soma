@@ -1,0 +1,137 @@
+{
+  "workflow_id": "soma-admin-posts-update",
+  "name": "Save, publish or unpublish a post",
+  "description": "Every field is kept unless sent: `slug`, `title`, `body`, and `published`. `published: true` stamps published_at ONCE, so saving a published post keeps its date; `false` clears it and takes the post off Stories, so publishing again is a new date. A slug another post holds is 409 -- the predicate turns it into no row, never a unique violation -- and a bad field 400. The audit line is post.publish or post.unpublish when the state changes, post.update otherwise.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "published",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!==": [{ "var": "data.req.published" }, null] },
+            { "!==": [{ "var": "data.req.published" }, true] },
+            { "!==": [{ "var": "data.req.published" }, false] }
+          ]
+        },
+        "status": 400,
+        "body": { "error": "published_invalid", "detail": "published is true, false or absent." },
+        "name": "A state, stated"
+      }
+    },
+    {
+      "id": "write",
+      "name": "Save it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-posts-update-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" },
+            { "var": "data.req.slug" },
+            { "var": "data.req.title" },
+            { "var": "data.req.body" },
+            { "var": "data.req.published" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was written",
+      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-post-why.sql" },
+          "params": [{ "var": "metadata.params.id" }, { "var": "data.req.slug" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_post" },
+        "name": "No such post"
+      }
+    },
+    {
+      "id": "taken",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "!!": { "var": "temp_data.why.0.body.slug_taken" } }
+          ]
+        },
+        "status": 409,
+        "body": { "error": "slug_taken" },
+        "name": "A slug another post holds"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 400,
+        "body": {
+          "error": "post_invalid",
+          "detail": "slug: a-z0-9 words joined by hyphens, up to 80; title: 1 to 120 characters; body: up to 100,000."
+        },
+        "name": "Refuse a bad field"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-post.sql" },
+          "params": [{ "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

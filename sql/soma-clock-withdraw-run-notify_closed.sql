@@ -5,12 +5,10 @@ WITH closed AS (
      ORDER BY s.closed_at DESC
      LIMIT 1
 ), standing AS (
-    SELECT f.owner_id, min(f.rank) AS rank, max(f.field) AS field
-      FROM (SELECT lf.owner_id,
-                   row_number() OVER (ORDER BY lf.conservative DESC, lf.version_id) AS rank,
-                   count(*) OVER () AS field
-              FROM closed, ladder_field(closed.id, 'open') lf) f
-     GROUP BY f.owner_id
+    -- Ranked the podium's way (owner_ranks): each owner once, by their best version, baselines
+    -- left out -- so "you finished 2nd" and the podium's second place are the same person.
+    SELECT o.owner_id, o.place AS rank, o.field
+      FROM closed, owner_ranks(closed.id, 'open') o
 ), entrants AS (
     SELECT DISTINCT e.owner_id
       FROM closed

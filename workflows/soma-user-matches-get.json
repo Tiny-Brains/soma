@@ -1,0 +1,70 @@
+{
+  "workflow_id": "soma-user-matches-get",
+  "name": "One of my matches",
+  "description": "The owner's half of GET /v1/matches/{id}: the same match_detail_json() shape and a replay URL signed for an hour, for any match in which the caller owns a seated version -- a trial in progress, a rejected candidate's forfeited trial, a cancelled or failed row. A route of its own because the public one is cached under a key that holds nothing about the caller. live_sessions is the outer FROM, so a live session always yields a row: no row is a 401, and a row whose body is null is a match the caller has no seat in, which answers 404 exactly as one that does not exist.",
+  "tags": ["soma", "user", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-matches-get-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "Not a match the caller sat in",
+        "description": "No such match, or one with no seat of the caller's."
+      }
+    },
+    {
+      "id": "presign",
+      "name": "Sign the replay URL",
+      "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
+      "function": {
+        "name": "storage_presign",
+        "input": {
+          "connector": "soma-blobs",
+          "method": "GET",
+          "key": { "var": "temp_data.rows.0.replay_key" },
+          "expires_in": "1h",
+          "output": "temp_data.replay_url"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

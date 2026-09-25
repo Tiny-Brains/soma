@@ -14,10 +14,13 @@ seen AS (
     FROM sessions s
     GROUP BY s.user_id ),
 rows AS (
-    SELECT u.role, u.handle, u.display_name, seen.at AS seen_at, json_build_object('id', u.id, 'handle',
+    SELECT u.id, u.role, u.handle, u.display_name, seen.at AS seen_at, json_build_object('id', u.id, 'handle',
             u.handle, 'display_name', u.display_name, 'role', u.role, 'by_deployment', coalesce(u.github_id::text
                 = ANY (d.ids), false), 'you', u.id = me.id, 'joined_at', u.created_at, 'last_seen_at',
-            seen.at) AS j
+            seen.at, 'commenting', CASE
+        WHEN commenting_off_until(u) IS NULL THEN 'on'
+        ELSE 'off'
+        END, 'comments_off_until', commenting_off_until(u)) AS j
     FROM users u
     CROSS JOIN me
     CROSS JOIN deployment d
@@ -34,12 +37,30 @@ shown AS (
     SELECT *
     FROM matching
     ORDER BY seen_at DESC NULLS LAST, lower(handle)
-    LIMIT 50 )
-SELECT json_build_object('admins', coalesce((SELECT json_agg(r.j
-                ORDER BY lower(r.handle))
+    LIMIT 50 ),
+listed AS (
+    -- Every row the page draws -- the admins and the page of competitors -- with its comment counts,
+    -- each read off comments_author_idx for that user alone and merged once.
+    SELECT x.role, x.handle, x.seen_at, x.j::jsonb || jsonb_build_object('comments', k.c) AS j
+    FROM (SELECT s.role, s.handle, s.seen_at, s.j, s.id
+            FROM shown s
+          UNION ALL
+          SELECT r.role, r.handle, r.seen_at, r.j, r.id
             FROM rows r
-            WHERE r.role = 'admin'), '[]'::json), 'users', coalesce((SELECT json_agg(s.j
-                ORDER BY s.seen_at DESC NULLS LAST, lower(s.handle))
-            FROM shown s), '[]'::json), 'matching', (SELECT count(*)
+           WHERE r.role = 'admin') x
+    CROSS JOIN LATERAL (SELECT jsonb_build_object('held', count(*) FILTER (WHERE c.state = 'held'),
+                                   'reported', count(*) FILTER (WHERE EXISTS (SELECT 1
+                                                   FROM comment_reports r
+                                                   WHERE r.comment_id = c.id)),
+                                   'removed', count(*) FILTER (WHERE c.state = 'removed')) AS c
+            FROM comments c
+            WHERE c.author_id = x.id) k )
+SELECT json_build_object('admins', coalesce((SELECT json_agg(l.j
+                ORDER BY lower(l.handle))
+            FROM listed l
+            WHERE l.role = 'admin'), '[]'::json), 'users', coalesce((SELECT json_agg(l.j
+                ORDER BY l.seen_at DESC NULLS LAST, lower(l.handle))
+            FROM listed l
+            WHERE l.role <> 'admin'), '[]'::json), 'matching', (SELECT count(*)
         FROM matching)) AS body
 FROM me

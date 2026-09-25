@@ -1,0 +1,73 @@
+{
+  "workflow_id": "soma-admin-picks-reorder",
+  "name": "Reorder the picks",
+  "description": "`{ids}`: every live pick's id, once each, in the new order; position is the place in the array. Anything less than the whole order changes nothing and is 409, so two admins reordering at once cannot interleave into an order neither chose.",
+  "tags": ["soma", "admin", "matches"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "write",
+      "name": "Reorder",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-picks-reorder-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.ids" }
+          ],
+          "output": "temp_data.wrote"
+        }
+      }
+    },
+    {
+      "id": "incomplete",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "status": 409,
+        "body": {
+          "error": "order_incomplete",
+          "detail": "ids names every live pick exactly once."
+        },
+        "name": "The whole order"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the picks",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-picks.sql" },
+          "params": [],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

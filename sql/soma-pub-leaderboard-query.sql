@@ -2,6 +2,8 @@ WITH season AS (
     SELECT s.id, s.slug, s.name, (s.closed_at IS NOT NULL) AS closed
     FROM games g, current_season(g.id, ($6)::text) s
     WHERE g.slug = ($1)::text ),
+lim AS (
+    SELECT least(greatest(($3)::int, 1), 200) AS n ),
 field AS (
     SELECT f.version_id
     FROM season, ladder_field(season.id, ($2)::ladder) f ),
@@ -32,14 +34,17 @@ page AS (
     JOIN users u ON u.id = e.owner_id
     ORDER BY r.conservative DESC, v.id
     OFFSET ($4)::int
-    LIMIT ($3)::int)
+    LIMIT (SELECT n
+        FROM lim))
 SELECT json_build_object( 'season', (SELECT slug
         FROM season), 'season_name', (SELECT name
         FROM season), 'closed', (SELECT closed
         FROM season), 'total', (SELECT count(*)
         FROM field), 'entries', coalesce(json_agg(page
             ORDER BY page.rank), '[]'::json), 'next_cursor', CASE
-    WHEN count(*) = ($3)::int THEN (($4)::int + ($3)::int)::text
+    WHEN count(*) = (SELECT n
+        FROM lim) THEN (($4)::int + (SELECT n
+            FROM lim))::text
     ELSE NULL
     END) AS body
 FROM page

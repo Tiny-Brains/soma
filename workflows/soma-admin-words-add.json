@@ -1,0 +1,83 @@
+{
+  "workflow_id": "soma-admin-words-add",
+  "name": "Add a word to the list",
+  "description": "Admin only: `{word}`, lower-cased and trimmed: letters and digits, with single spaces, hyphens or apostrophes between them, at most 40 characters -- none of which is special in a regular expression, so the hold needs no escaping. 201 with the word, and an audit line. 400 `word_invalid` for any other shape; 409 `word_listed` for a word already on the list.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "add",
+      "name": "List it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-words-add-add.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.word" }
+          ],
+          "output": "temp_data.added"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-words-add-read.sql" },
+          "params": [{ "var": "data.req.word" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "shape",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.shape_ok" } },
+        "status": 400,
+        "body": {
+          "error": "word_invalid",
+          "detail": "Letters and digits, with single spaces, hyphens or apostrophes between them; at most 40 characters."
+        },
+        "name": "A word the list can hold"
+      }
+    },
+    {
+      "id": "listed",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { ">": [{ "var": "temp_data.added.rows_affected" }, 0] } },
+        "status": 409,
+        "body": { "error": "word_listed", "word": { "var": "temp_data.rows.0.body" } },
+        "name": "Already listed"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

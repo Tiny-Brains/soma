@@ -132,17 +132,20 @@ EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60, 'c1000000-0000-0000
 \echo '--- kalam: a malformed result naming one seat twice (expect 0, row still running); finish both rows (expect UPDATE 2 seats each); finish again (expect 0)'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":0,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001', NULL);
 SELECT seed, status FROM matches WHERE seed = 42;
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
-  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001');
+  'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/x/t1.json', 'c1000000-0000-0000-0000-000000000001',
+  '{"ants": [[3, 4, 0]], "food": [[5, 5]], "scores": [10, 3]}');
+-- m43 sends a frame OVER 64 KB: the match still finishes (UPDATE 2) and no frame is stored.
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002',
+  json_build_object('pad', repeat('x', 70000))::jsonb);
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000002', :'m43',
   '[{"seat":0,"rank":2,"score":3,"strikes":1},{"seat":1,"rank":1,"score":10,"strikes":0}]',
-  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002');
+  'all_food', 200, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/ants/y/t1.json', 'c1000000-0000-0000-0000-000000000002', NULL);
 -- m46 has to BE running and BE this runner's before any of the four below tests what it means to
 -- test. Without this they all answer 0 on `status = 'running'` and the gates look like they work
 -- while doing nothing -- which is how a negative test passes for the wrong reason.
@@ -159,25 +162,28 @@ EXECUTE k_start ('30000000-0000-0000-0000-000000000003', 'c1000000-0000-0000-000
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
   'all_food', 120, now() - interval '4 seconds', 'sha256:SOMETHING-ELSE', '1.8.1', 'replays/x.json',
-  'c1000000-0000-0000-0000-000000000002');
+  'c1000000-0000-0000-0000-000000000002', NULL);
 -- STRIKES ABOVE THE CEILING THE ROW WAS QUEUED UNDER. Pair pins strike_ceiling on the row
 -- so a trial is judged by the rule it was played under; this is that rule read back.
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":1,"score":10,"strikes":99},{"seat":1,"rank":2,"score":3,"strikes":0}]',
   'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
-  'c1000000-0000-0000-0000-000000000002');
+  'c1000000-0000-0000-0000-000000000002', NULL);
 -- A RANK OUTSIDE THE BOUND. Not a permutation check: Ants ranks from 1 and allows ties, so {1,1}
 -- is a draw and the commonest two-seat result. What is bounded is 1 <= rank <= 2*seat_count, the
 -- ceiling being the forfeit rule (engine_rank + seat_count).
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":0,"score":10,"strikes":0},{"seat":1,"rank":2,"score":3,"strikes":0}]',
   'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
-  'c1000000-0000-0000-0000-000000000002');
-\echo '--- and a DRAW, which is a real result and must pass (expect UPDATE 2)'
+  'c1000000-0000-0000-0000-000000000002', NULL);
+\echo '--- and a DRAW, which is a real result and must pass (expect UPDATE 2); its frame is not an object, so none is stored'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000003', :'m46',
   '[{"seat":0,"rank":1,"score":7,"strikes":0},{"seat":1,"rank":1,"score":7,"strikes":0}]',
   'all_food', 120, now() - interval '4 seconds', 'sha256:e1', '1.8.1', 'replays/x.json',
-  'c1000000-0000-0000-0000-000000000002');
+  'c1000000-0000-0000-0000-000000000002', '[1, 2, 3]');
+\echo '--- the last frame: m42 sent one and it is stored at its turn; m43 sent one over 64 KB and m46 one that is not an object, and neither is (expect 42 | 120 | t, and nothing else)'
+SELECT m.seed, f.turn, f.frame ? 'ants' AS opaque_as_sent
+  FROM match_frames f JOIN matches m ON m.id = f.match_id ORDER BY m.seed;
 
 \echo '--- and the read-back that tells a DUPLICATE DELIVERY from a stale token: finished and still mine is a success, not a 409'
 SELECT seed, status AS state, (claim_token = '30000000-0000-0000-0000-000000000002') AS mine FROM matches WHERE seed = 43;
@@ -223,6 +229,39 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 SELECT seed, status, rated_seq FROM matches WHERE seed = 42;
 \echo '--- count: pass again (expect INSERT 0 0)'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
+\echo '--- the sort keys: the fold wrote m43''s margin (10 - 3) and its upset -- alice v1''s conservative open rating before the fold, 20.50, over the winning baseline''s 0.00, so positive: an upset. The pass wrote the trial''s margin and no upset: a trial feeds no ladder (expect 42 7 null, 43 7 20.50)'
+SELECT seed, margin, round(upset::numeric, 2) AS upset FROM matches WHERE seed IN (42, 43) ORDER BY seed;
+\echo '    read again long after, through rating_events.*_before, the upset is the one the fold stored; a disqualified loser is no upset at all (expect 20.50, then t), rolled back'
+SELECT round(k.upset::numeric, 2) AS upset_from_events FROM match_sort_keys(:'m43') k;
+BEGIN;
+UPDATE match_seats SET strikes = 5 WHERE match_id = :'m43' AND seat = 0;
+SELECT k.upset IS NULL AS dq_left_out FROM match_sort_keys(:'m43') k;
+ROLLBACK;
+\echo '--- the counts the fold moved, which the maps page and the season read: one rated ordinary match on its board and in the season, the board''s latest; the passed trial is listed and counted nowhere (expect 1 | 1 | t)'
+SELECT sm.matches, se.matches_played, sm.latest_match_id = :'m43' AS latest
+  FROM matches m JOIN season_maps sm ON sm.id = m.season_map_id JOIN seasons se ON se.id = m.season_id
+ WHERE m.seed = 43;
+\echo '--- the last frame of a public match: m42''s trial went public with its frame, m43 sent none (expect 120 t, then null f)'
+EXECUTE x_frame (:'m42') \gset f42_
+SELECT (:'f42_body'::json)->>'turn' AS turn, :'f42_has_frame' AS has_frame;
+EXECUTE x_frame (:'m43') \gset f43_
+SELECT (:'f43_body'::json)->>'turn' AS turn, :'f43_has_frame' AS has_frame;
+\echo '--- watch events: a visit, an opened public match, and a random id that writes nothing (expect INSERT 0 1, INSERT 0 1, INSERT 0 0; then opened tv 1, visit 1), rolled back'
+BEGIN;
+EXECUTE x_events ('visit', NULL, NULL);
+EXECUTE x_events ('opened', :'m43', 'tv');
+EXECUTE x_events ('opened', '30000000-0000-0000-0000-999999999999', 'tv');
+SELECT event, via, sum(n) FROM watch_events GROUP BY 1, 2 ORDER BY 1, 2;
+ROLLBACK;
+\echo '--- a live season''s podium is empty; an unknown season answers no row (expect {}, then 0 rows)'
+EXECUTE x_podium ('ants', 'summer-2026') \gset po_
+SELECT (:'po_body'::json)->'ladders' AS ladders;
+EXECUTE x_podium ('ants', 'no-such-season');
+\echo '--- who may see a trial: alice v2''s, now that v2 is active (expect t); an ordinary match (expect t)'
+SELECT m.seed, match_public(m) FROM matches m WHERE m.seed IN (42, 43) ORDER BY m.seed;
+\echo '--- a version is public once it is: v2 active answers, v1 superseded answers (expect 2 rows, versions 1 and 2)'
+EXECUTE v_public ('20000000-0000-0000-0000-000000000002', 2.0);
+EXECUTE v_public ('20000000-0000-0000-0000-000000000001', 2.0);
 \echo '--- promotion statement 2: withdraw the pending rows naming v1 (expect 1: the other-board row, successor v2)'
 EXECUTE c_withdraw_pred ('20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
 SELECT seed, status, withdrawn_reason, successor_version_id FROM matches WHERE seed = 46;
@@ -262,6 +301,19 @@ UPDATE matches SET status = 'failed', fault_reason = 'LEASE_LAPSED', lapses = 3,
 EXECUTE c_batch_doc (10, 1);
 EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'UNPLAYABLE');
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
+\echo '--- a rejected candidate stays private: its version answers nothing publicly, and its trial is no public match (expect 0 rows, then 50 f)'
+EXECUTE v_public ('20000000-0000-0000-0000-000000000003', 2.0);
+SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 50;
+\echo '    ... but its owner watches it: alice''s session reads the trial whole, a session of someone with no seat reads nothing, and a missing session no row at all (expect alice''s session and the failed trial''s body, then the admin''s session and a null body, then 0 rows), rolled back'
+BEGIN;
+INSERT INTO sessions (sid, user_id, expires_at) VALUES
+  ('5e000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1', now() + interval '1 day'),
+  ('5e000000-0000-0000-0000-0000000000ad', '00000000-0000-0000-0000-0000000000ad', now() + interval '1 day');
+SELECT id AS m50_id FROM matches WHERE seed = 50 \gset
+EXECUTE u_match ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', :'m50_id');
+EXECUTE u_match ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', :'m50_id');
+EXECUTE u_match ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000ff', :'m50_id');
+ROLLBACK;
 SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '===== notifications: what the clocks tell a competitor ====='
@@ -310,7 +362,7 @@ VALUES ('00000000-0000-0000-0000-0000000000a1', 'submissions', false, false, NUL
 INSERT INTO notification_settings (user_id, category, app, push, level)
 VALUES ('00000000-0000-0000-0000-0000000000a1', 'ratings', true, false, 'all');
 DELETE FROM notification_settings;
-\echo '--- the settings object: five categories for a competitor, six for an admin, none for a baseline (expect 5, 6, 0)'
+\echo '--- the settings object: six categories for a competitor, seven for an admin, none for a baseline (expect 6, 7, 0)'
 SELECT json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000a1')) AS competitor,
        json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000ad')) AS admin,
        json_array_length(notification_settings_json('00000000-0000-0000-0000-0000000000b1')) AS baseline;
@@ -327,12 +379,75 @@ EXECUTE n_expired ('40000000-0000-0000-0000-0000000000e1');
 EXECUTE n_expired ('40000000-0000-0000-0000-0000000000e1');
 SELECT subject, tone, data ->> 'reason_code' AS reason_code FROM notifications WHERE version_id = '20000000-0000-0000-0000-0000000000e1';
 ROLLBACK;
-\echo '--- the close: everyone who entered is told once, with where they finished on open; the baseline is not (expect INSERT 0 1, then INSERT 0 0), rolled back'
+\echo '--- the close: everyone who entered is told once, with where they finished on open, ranked the podium''s way -- one place per owner and no baselines, so 1st of 1; the baseline is not told (expect INSERT 0 1, then INSERT 0 0), rolled back'
 BEGIN;
 UPDATE seasons SET closed_at = now() WHERE id = '50000000-0000-0000-0000-000000000001';
 EXECUTE n_season ('00000000-0000-0000-0000-00000000000a');
 EXECUTE n_season ('00000000-0000-0000-0000-00000000000a');
 SELECT subject, description, link, season, data FROM notifications WHERE category = 'season';
+ROLLBACK;
+\echo '--- the close freezes the podium: one place per owner -- alice''s better entry stands for her and her other is not a second place -- and the baseline is skipped; then a medal per place, once (expect nano and open each alice then carol, INSERT 0 4, INSERT 0 0, four medal rows), rolled back'
+BEGIN;
+INSERT INTO users (id, github_id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 777, 'carol');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'ants lord'),
+  ('e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', 'colony');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, weights_hash, manifest_hash, orion_version) VALUES
+  ('20000000-0000-0000-0000-0000000000a2', 'e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 'sha256:wl1', 'sha256:ml1', '1.8.1'),
+  ('20000000-0000-0000-0000-0000000000c1', 'e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 'sha256:wc1', 'sha256:mc1', '1.8.1');
+INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
+  ('20000000-0000-0000-0000-0000000000a2', 'nano', 40, 2), ('20000000-0000-0000-0000-0000000000a2', 'open', 40, 2),
+  ('20000000-0000-0000-0000-0000000000c1', 'nano', 28, 2), ('20000000-0000-0000-0000-0000000000c1', 'open', 28, 2);
+UPDATE seasons SET close_requested_at = now() WHERE id = '50000000-0000-0000-0000-000000000001';
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 2.0, 3);
+SELECT sp.ladder, sp.place, u.handle, e.name, sp.rating FROM season_podium sp
+  JOIN users u ON u.id = sp.owner_id JOIN model_versions v ON v.id = sp.version_id JOIN models e ON e.id = v.model_id
+ ORDER BY sp.ladder, sp.place;
+EXECUTE n_medal ('00000000-0000-0000-0000-00000000000a');
+EXECUTE n_medal ('00000000-0000-0000-0000-00000000000a');
+SELECT u.handle, n.category, n.subject, n.data, n.dedupe_key FROM notifications n JOIN users u ON u.id = n.user_id
+ WHERE n.kind = 'medal' ORDER BY u.handle, n.subject;
+ROLLBACK;
+\echo '--- the word list: a listed word holds whole and case-blind, a phrase too; a link holds only where links count (expect scam, dm me, link, null, null)'
+BEGIN;
+INSERT INTO comment_words (word, added_by) VALUES ('scam', '00000000-0000-0000-0000-0000000000ad'), ('dm me', '00000000-0000-0000-0000-0000000000ad');
+SELECT text_hold_tag('this ladder is a SCAM', true) AS word, text_hold_tag('please DM me later', false) AS phrase,
+       text_hold_tag('see https://example.io/x', true) AS link, text_hold_tag('see https://example.io/x', false) AS link_allowed,
+       text_hold_tag('scampi for dinner', true) AS whole_words_only;
+\echo '    and a word is one line of letters, digits and single separators (expect check violation)'
+INSERT INTO comment_words (word, added_by) VALUES ('sc.m', '00000000-0000-0000-0000-0000000000ad');
+ROLLBACK;
+\echo '--- the field at an instant: a version stands from its seq-0 row on Open until a later version of its entry has one (expect on 1 Feb x v1 18.00 #1 and colony 10.00 #2; on 1 Mar x v2 22.00 #1 and colony 10.00 #2); the hour''s snapshots, written once (expect INSERT 0 6, INSERT 0 6, then INSERT 0 0); the series reads them for each edge but the last (expect 3 edges; x v1 then null, x v2 null then a rating)'
+BEGIN;
+INSERT INTO users (id, github_id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 777, 'carol');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'x'),
+  ('e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', 'colony');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, weights_hash, manifest_hash, orion_version) VALUES
+  ('20000000-0000-0000-0000-0000000000a3', 'e0000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'superseded', 'nano', 'sha256:wx1', 'sha256:mx1', '1.8.1'),
+  ('20000000-0000-0000-0000-0000000000a4', 'e0000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'active', 'nano', 'sha256:wx2', 'sha256:mx2', '1.8.1'),
+  ('20000000-0000-0000-0000-0000000000c1', 'e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 'sha256:wc1', 'sha256:mc1', '1.8.1');
+INSERT INTO rating_events (version_id, ladder, seq, mu_after, sigma_after, created_at) VALUES
+  ('20000000-0000-0000-0000-0000000000a3', 'open', 0, 30, 4, '2026-01-01'),
+  ('20000000-0000-0000-0000-0000000000c1', 'open', 0, 22, 4, '2026-01-01'),
+  ('20000000-0000-0000-0000-0000000000a4', 'open', 0, 34, 4, '2026-02-15');
+SELECT '1 Feb' AS at, e.name, v.version, round(l.conservative::numeric, 2) AS rating, l.rank
+  FROM ladder_at('50000000-0000-0000-0000-000000000001', 'open', '2026-02-01') l
+  JOIN model_versions v ON v.id = l.version_id JOIN models e ON e.id = v.model_id ORDER BY l.rank;
+SELECT '1 Mar' AS at, e.name, v.version, round(l.conservative::numeric, 2) AS rating, l.rank
+  FROM ladder_at('50000000-0000-0000-0000-000000000001', 'open', '2026-03-01') l
+  JOIN model_versions v ON v.id = l.version_id JOIN models e ON e.id = v.model_id ORDER BY l.rank;
+UPDATE seasons SET submissions_open_at = '2026-01-01' WHERE id = '50000000-0000-0000-0000-000000000001';
+SELECT date_trunc('hour', timestamptz '2026-01-15') AS h0,
+       date_trunc('hour', timestamptz '2026-01-15' + (now() - timestamptz '2026-01-15') / 2) AS h1 \gset
+EXECUTE w_snapshot ('00000000-0000-0000-0000-00000000000a', :'h0');
+EXECUTE w_snapshot ('00000000-0000-0000-0000-00000000000a', :'h1');
+EXECUTE w_snapshot ('00000000-0000-0000-0000-00000000000a', :'h1');
+SELECT json_array_length(r -> 'edges') AS edges, x ->> 'model' AS model, x ->> 'version' AS version,
+       (x -> 'ratings' ->> 0) AS first_edge, (x -> 'ratings' ->> 1) AS second_edge
+  FROM (SELECT rating_series('50000000-0000-0000-0000-000000000001', 'open', '2026-01-15', 3) AS r) s,
+       json_array_elements(s.r -> 'versions') x
+ WHERE x ->> 'model' IN ('x', 'colony') ORDER BY 2, 3;
 ROLLBACK;
 
 \echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0)'
@@ -469,9 +584,67 @@ EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 4, 'c1
 EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
-  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001');
+  'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001', NULL);
 \echo '--- a trial played but not yet decided is still live, as matches_one_live_trial_uniq counts it: the trial read does not offer v4 a second one (expect n 0)'
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+\echo '--- and it is nobody''s but its owner''s yet: a trial finished and not yet decided is no public match, and its verified candidate no public version (expect 60 f, then 0 rows)'
+SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 60;
+EXECUTE v_public ('20000000-0000-0000-0000-000000000004', 2.0);
+\echo '--- comments: a link holds a reply; approval audits it and tells the parent''s author once; too fast; a lock refuses (expect INSERT 0 1 x2, held link, INSERT 0 1, INSERT 0 1 then 0, INSERT 0 0 wait_s 15, INSERT 0 1, INSERT 0 0 locked t), rolled back'
+BEGIN;
+INSERT INTO sessions (sid, user_id, expires_at) VALUES
+  ('5e000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1', now() + interval '1 day'),
+  ('5e000000-0000-0000-0000-0000000000ad', '00000000-0000-0000-0000-0000000000ad', now() + interval '1 day');
+EXECUTE cm_thread ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', NULL, 'e0000000-0000-0000-0000-0000000000a1');
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'nice model', 'c0000000-0000-0000-0000-000000000001');
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', 'c0000000-0000-0000-0000-000000000001', 'see https://x.io/y', 'c0000000-0000-0000-0000-000000000002');
+SELECT state, hold_tag FROM comments WHERE id = 'c0000000-0000-0000-0000-000000000002';
+EXECUTE cm_decide ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', '["c0000000-0000-0000-0000-000000000002"]', 'approve', 'fine');
+EXECUTE cm_reply (NULL, '["c0000000-0000-0000-0000-000000000002"]');
+EXECUTE cm_reply (NULL, '["c0000000-0000-0000-0000-000000000002"]');
+SELECT action, reason FROM audit_log WHERE action = 'comment.approve';
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'again', 'c0000000-0000-0000-0000-000000000003');
+EXECUTE cm_why ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'again');
+EXECUTE cm_lock ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, true, 'heated');
+UPDATE comments SET created_at = created_at - interval '1 minute';
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'hello', 'c0000000-0000-0000-0000-000000000004');
+EXECUTE cm_why ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'hello');
+\echo '    and the daily limit: alice''s approved reply and 99 more make 100 in a day, and the 101st is refused (expect INSERT 0 0, day_wait_s set and wait_s null); and the trigger counted every live comment on the thread (expect 101)'
+UPDATE threads SET locked_at = NULL, locked_by = NULL;
+INSERT INTO comments (id, thread_id, root_id, author_id, body, created_at)
+SELECT g.id, t.id, g.id, '00000000-0000-0000-0000-0000000000a1', 'x', now() - interval '1 hour'
+  FROM threads t, (SELECT gen_random_uuid() AS id FROM generate_series(1, 99)) g;
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'the 101st', 'c0000000-0000-0000-0000-000000000005');
+EXECUTE cm_why ('00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', NULL, 'e0000000-0000-0000-0000-0000000000a1', NULL, 'x');
+SELECT comments FROM threads;
+ROLLBACK;
+\echo '--- a story edit with a listed word is held: the public keeps the clean text, the owner sees it waiting (expect INSERT 0 1 twice, then How it reads | scam), rolled back'
+BEGIN;
+INSERT INTO comment_words (word, added_by) VALUES ('scam', '00000000-0000-0000-0000-0000000000ad');
+INSERT INTO sessions (sid, user_id, expires_at) VALUES ('5e000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1', now() + interval '1 day');
+EXECUTE e_story_put ('e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', 'How it reads', 'It reads the board.');
+EXECUTE e_story_put ('e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', 'A scam', 'new text');
+SELECT title, hold_tag FROM model_stories;
+\echo '    and a listed word in a note is refused and named (expect UPDATE 0, then scam)'
+EXECUTE e_note_w ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', 'a scam build');
+EXECUTE e_note_r ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000a1', '5e000000-0000-0000-0000-0000000000a1', 'a scam build', 2.0) \gset nr_
+SELECT :'nr_note_word' AS note_word;
+ROLLBACK;
+\echo '--- a post: draft, publish, saved again (date kept), unpublish; each audit line says what changed (expect post.create, post.publish, post.update, post.unpublish, and no public row at the end); Notify: one row per recipient, and the same send again writes nothing; a pick names a public match only (expect INSERT 0 0 for the trial in progress, INSERT 0 1 for m43), rolled back'
+BEGIN;
+INSERT INTO sessions (sid, user_id, expires_at) VALUES ('5e000000-0000-0000-0000-0000000000ad', '00000000-0000-0000-0000-0000000000ad', now() + interval '1 day');
+EXECUTE e_post_c ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'a0000000-0000-0000-0000-000000000001', 'week-two', 'Week two', '# Hello');
+EXECUTE e_post_u ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'a0000000-0000-0000-0000-000000000001', NULL, NULL, NULL, true);
+EXECUTE e_post_u ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'a0000000-0000-0000-0000-000000000001', NULL, 'Edited', NULL, true);
+EXECUTE e_post_u ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'a0000000-0000-0000-0000-000000000001', NULL, NULL, NULL, false);
+SELECT action FROM audit_log WHERE target_kind = 'post' ORDER BY at;
+EXECUTE e_post_pub ('week-two');
+EXECUTE e_send ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'b0000000-0000-0000-0000-000000000001', 'Boards are up', '/maps', '{"everyone": true}');
+EXECUTE e_send ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', 'b0000000-0000-0000-0000-000000000001', 'Boards are up', '/maps', '{"everyone": true}');
+SELECT count(*) AS rows, count(DISTINCT user_id) AS people, (SELECT recipients FROM notify_sends) AS recorded FROM notifications WHERE kind = 'broadcast';
+EXECUTE e_pick_c ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', :'m60');
+EXECUTE e_pick_c ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000ad', :'m43');
+ROLLBACK;
 EXECUTE c_pass_reversed ('2026-09-07 10:00:00+00', 2, :'m60', '20000000-0000-0000-0000-000000000004', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
@@ -515,11 +688,20 @@ EXECUTE m_flip ('ants', 'summer-2026', 'other-map', false, '00000000-0000-0000-0
 EXECUTE m_flip ('ants', 'summer-2026', 'other-map', true, '00000000-0000-0000-0000-0000000000ad');
 SELECT enabled, cancelled FROM season_map_events ORDER BY at;
 ROLLBACK;
-\echo '--- the upload insert stores a board disabled, its header read out of the file (expect INSERT 0 1, then basic-small-3p 3 36 36 f); the same board again writes nothing (expect INSERT 0 0)'
+\echo '--- a board name says size-terrain-Np-Hh, and must agree with the file (expect null, map_name_pattern, map_name_players, map_name_hills, and a split name)'
+SELECT season_map_name_problem('{"id": "small-open-3p-2h", "players": 3, "rows": 36, "cols": 36, "hills": 6}') AS ok,
+       season_map_name_problem('{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "hills": 3}') AS off_pattern,
+       season_map_name_problem('{"id": "small-open-2p-2h", "players": 3, "rows": 36, "cols": 36, "hills": 6}') AS players,
+       season_map_name_problem('{"id": "small-open-3p-2h", "players": 3, "rows": 36, "cols": 36, "hills": 3}') AS hills,
+       season_map_name('large-cave-4p-3h') AS split;
+\echo '--- the upload insert stores a board disabled, its header and name read out of the file, with an audit line (expect INSERT 0 1, then small-open-3p-2h 3 36 36 small open 2 f, map.add); the same board again writes nothing (expect INSERT 0 0)'
 BEGIN;
-EXECUTE m_insert ('ants', 'summer-2026', '{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296]}', '00000000-0000-0000-0000-0000000000ad');
-SELECT map_id, players, rows, cols, enabled FROM season_maps WHERE map_id = 'basic-small-3p';
-EXECUTE m_insert ('ants', 'summer-2026', '{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296]}', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "small-open-3p-2h", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296], "hills": [[1,1],[2,2],[3,3],[4,4],[5,5],[6,6]]}', '00000000-0000-0000-0000-0000000000ad');
+SELECT map_id, players, rows, cols, size, terrain, hills, enabled FROM season_maps WHERE map_id = 'small-open-3p-2h';
+SELECT action, target_kind, target_id, detail FROM audit_log WHERE action = 'map.add';
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "small-open-3p-2h", "players": 3, "rows": 36, "cols": 36, "water": [0, 1296], "hills": [[1,1],[2,2],[3,3],[4,4],[5,5],[6,6]]}', '00000000-0000-0000-0000-0000000000ad');
+\echo '    ... and nothing for a name off the pattern, which the context read refuses first (expect INSERT 0 0)'
+EXECUTE m_insert ('ants', 'summer-2026', '{"id": "basic-small-3p", "players": 3, "rows": 36, "cols": 36, "hills": [[1,1],[2,2],[3,3]]}', '00000000-0000-0000-0000-0000000000ad');
 \echo '    ... and nothing into a closed season (expect INSERT 0 0)'
 UPDATE seasons SET closed_at = now() WHERE slug = 'summer-2026';
 EXECUTE m_insert ('ants', 'summer-2026', '{"id": "another", "players": 2, "rows": 24, "cols": 24}', '00000000-0000-0000-0000-0000000000ad');
@@ -628,9 +810,9 @@ EXECUTE a_batch_doc ('0b000000-0000-0000-0000-000000000001', 13, 19, '[]', 'tb.v
 SELECT right(i ->> 'model_id', 2) AS version, i ->> 'uploading' AS uploading
   FROM json_array_elements((:'body')::json -> 'items') i ORDER BY 1;
 \echo '    and the same two hashes POSTed again are a re-mint only inside that window (expect c1 t, c2 f)'
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL) \gset
 SELECT (:'body')::json ->> 'same_submission' AS c1 \gset
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL) \gset
 SELECT :'c1' AS c1, (:'body')::json ->> 'same_submission' AS c2;
 UPDATE model_versions SET created_at = now() WHERE id = '20000000-0000-0000-0000-0000000000c2';
 EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{"name": "tb.v20000000-0000-0000-0000-0000000000c1"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');

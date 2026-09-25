@@ -1,0 +1,101 @@
+{
+  "workflow_id": "soma-admin-users-commenting",
+  "name": "Switch an account's commenting",
+  "description": "Admin only: `{off: \"day\" | \"week\" | \"month\" | \"forever\", reason}` SWITCHES AN ACCOUNT'S COMMENTING OFF until the end of that term, and `{off: null}` switches it back on. The reason is required to switch it off, at most 300 characters, and the author reads it in the composer's place with the end. A second `off` replaces the first, running from now. It changes nothing already written: the comments desk removes what needs removing. Every switch, off and on, is an audit line, which is its history on the user's desk. 200 with the switch as it stands; 200 unchanged for `on` when it is already on. 400 `body_invalid`; 404 `unknown_user`; 409 `not_a_person` for a baseline.",
+  "tags": ["soma", "admin", "users"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "change",
+      "name": "Switch it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-users-commenting-change.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.params.id" },
+            { "var": "data.req" }
+          ],
+          "output": "temp_data.changed"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-users-commenting-read.sql" },
+          "params": [{ "var": "data.req" }, { "var": "metadata.params.id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "body",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body_ok" } },
+        "status": 400,
+        "body": {
+          "error": "body_invalid",
+          "detail": "{\"off\": \"day\" | \"week\" | \"month\" | \"forever\", \"reason\": \"...\"} switches it off; {\"off\": null} switches it on."
+        },
+        "name": "A switch, stated"
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body.id" } },
+        "status": 404,
+        "body": { "error": "unknown_user" },
+        "name": "An account"
+      }
+    },
+    {
+      "id": "baseline",
+      "use": "refuse",
+      "with": {
+        "when": { "var": "temp_data.rows.0.baseline" },
+        "status": 409,
+        "body": {
+          "error": "not_a_person",
+          "detail": "A baseline is an uploaded opponent that nobody signs in to."
+        },
+        "name": "Not a baseline"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body.changed",
+              "logic": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

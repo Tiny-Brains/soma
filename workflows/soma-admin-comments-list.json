@@ -1,0 +1,59 @@
+{
+  "workflow_id": "soma-admin-comments-list",
+  "name": "The comments desk",
+  "description": "Admin only: THE COMMENTS DESK, one list at a time. `?view=held` is every held comment oldest first -- a held comment waits however long it takes; `reported` is every live or held comment a reader flagged, most reports first; `all` is every comment newest first. `?q=` narrows any of them: `@handle` to one author, anything else to a substring of the text. Each branch reads its own index and fifty rows: `all` pages by a keyset cursor, `held` and `reported` by an OFFSET, because a report count moves under a keyset. Each row is the whole comment in every state -- the desk reads what the public cannot -- with its author and their commenting switch, its host and thread (locked or not), and its reports: the count, the count per reason and the ten latest with their words. `counts` carries the tab badges. The detail pane's thread is GET /v1/threads, and its actions are the decide, lock and commenting routes.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "view",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "metadata.query.view" } },
+            { "!": { "in": [{ "var": "metadata.query.view" }, ["held", "reported", "all"]] } }
+          ]
+        },
+        "status": 400,
+        "body": { "error": "view_invalid", "detail": "view is held, reported or all." },
+        "name": "A known view"
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-comments-list-query.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.view" },
+            { "var": "metadata.query.q" },
+            { "var": "metadata.query.cursor" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

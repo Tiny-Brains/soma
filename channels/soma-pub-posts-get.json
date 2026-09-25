@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-pub-posts-get",
+  "name": "soma-pub-posts-get",
+  "description": "One published post by its slug. Public and cached.",
+  "tags": ["soma", "pub", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/posts/{slug}",
+  "workflow_id": "soma-pub-posts-get",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.public_rate" },
+    "cache": { "$from": "constants.hot_cache" }
+  }
+}

@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-me-update",
   "name": "Edit your own profile",
-  "description": "The one field a competitor may change. The handle is not among them -- it is GitHub's, it is the profile's URL, and it is re-read on every sign-in. Empty or blank clears it back to null rather than storing a name made of spaces, and the profile then falls back to the handle. The UPDATE joins live_sessions so a revoked session cannot write, and the row is read back so the response is what was stored rather than what was sent.",
+  "description": "The two fields a competitor may change: the display name and the bio. The handle is not among them -- it is GitHub's, it is the profile's URL, and it is re-read on every sign-in. A key the body leaves out is kept; a key sent empty or blank clears it to null rather than storing a name made of spaces, and the profile then falls back to the handle. THE BIO IS REFUSED, NOT HELD, on a listed word (text_hold_tag): a 422 names the word and the competitor rewrites one line rather than waiting on an admin. A URL in it is allowed and drawn as plain text. The UPDATE joins live_sessions so a revoked session cannot write, and the row is read back so the response is what was stored rather than what was sent.",
   "tags": ["soma", "user", "profile"],
   "tasks": [
     {
@@ -32,17 +32,39 @@
       }
     },
     {
+      "id": "biotoolong",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.bio" }, ""] }
+              ]
+            },
+            160
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "bio_too_long",
+          "detail": "A bio is one line of at most 160 characters."
+        },
+        "name": "Refuse a bio too long"
+      }
+    },
+    {
       "id": "update",
       "name": "Update",
       "function": {
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": "UPDATE users u SET display_name = nullif(btrim(coalesce(($3)::text, '')), '') FROM live_sessions ls WHERE u.id = ($1)::uuid AND ls.sid = ($2)::uuid AND ls.user_id = u.id",
+          "query": { "$sql": "../sql/soma-user-me-update-update.sql" },
           "params": [
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.auth.claims.sid" },
-            { "var": "data.req.display_name" }
+            { "var": "data.req" }
           ],
           "output": "temp_data.updated"
         }
@@ -56,7 +78,11 @@
         "input": {
           "connector": "soma-db",
           "query": { "$sql": "../sql/soma-user-me-update-read.sql" },
-          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req" }
+          ],
           "output": "temp_data.rows"
         }
       }
@@ -65,6 +91,21 @@
       "id": "deny",
       "use": "deny-revoked",
       "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "word",
+      "use": "refuse",
+      "with": {
+        "when": { "!!": { "var": "temp_data.rows.0.bio_word" } },
+        "status": 422,
+        "body": {
+          "error": "bio_word_listed",
+          "word": { "var": "temp_data.rows.0.bio_word" },
+          "detail": "The bio uses a word the site does not allow. Nothing was changed."
+        },
+        "name": "Refuse a listed word",
+        "description": "Reached after deny, so a signed-out caller is told 401 and never which word."
+      }
     },
     {
       "id": "respond",

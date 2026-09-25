@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-admin-notify-count",
+  "name": "soma-admin-notify-count",
+  "description": "Counts who a send would reach. Admin, read rate: the page asks as its chips change.",
+  "tags": ["soma", "admin", "notifications"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/admin/notify/count",
+  "workflow_id": "soma-admin-notify-count",
+  "config": {
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

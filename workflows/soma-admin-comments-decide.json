@@ -1,0 +1,160 @@
+{
+  "workflow_id": "soma-admin-comments-decide",
+  "name": "Approve, remove or restore comments",
+  "description": "Admin only: ONE DECISION OVER A SELECTION, `{ids: [...], action, reason?}`, at most 100 ids. `approve` puts a held comment live, `remove` takes a live or held one down (a placeholder while replies hang beneath it), `restore` puts a removed one back; a comment in any other state is left as it is, so a second click decides nothing. One statement: the states, and an audit line per decided comment with the reason; the threads' live counts are the trigger's. 200 with each named comment's state now and how many were decided. An approval then tells whom the comment concerns -- its parent's author and the host's owners -- as a post would have, each allowed to fail and read off the rows. Locking a thread and switching an author off are their own routes.",
+  "tags": ["soma", "admin", "community"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "action",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "in": [{ "var": "data.req.action" }, ["approve", "remove", "restore"]] } },
+        "status": 400,
+        "body": { "error": "action_invalid", "detail": "action is approve, remove or restore." },
+        "name": "A known action"
+      }
+    },
+    {
+      "id": "ids",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [
+            { "!": { "var": "data.req.ids" } },
+            {
+              ">": [
+                {
+                  "length": [
+                    { "or": [{ "var": "data.req.ids" }, []] }
+                  ]
+                },
+                100
+              ]
+            }
+          ]
+        },
+        "status": 400,
+        "body": { "error": "ids_invalid", "detail": "ids is a list of one to 100 comment ids." },
+        "name": "A selection"
+      }
+    },
+    {
+      "id": "reason",
+      "use": "refuse",
+      "with": {
+        "when": {
+          ">": [
+            {
+              "length": [
+                { "or": [{ "var": "data.req.reason" }, ""] }
+              ]
+            },
+            300
+          ]
+        },
+        "status": 400,
+        "body": { "error": "reason_too_long", "detail": "At most 300 characters." },
+        "name": "A short reason"
+      }
+    },
+    {
+      "id": "decide",
+      "name": "Decide",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-comments-decide-decide.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.ids" },
+            { "var": "data.req.action" },
+            { "var": "data.req.reason" }
+          ],
+          "output": "temp_data.decided"
+        }
+      }
+    },
+    {
+      "id": "notify",
+      "name": "Tell whom an approval concerns",
+      "description": "Only for an approval that decided something. The notifiers read state off the rows, so a comment approved and removed again in between is told nothing.",
+      "condition": {
+        "and": [
+          { "==": [{ "var": "data.req.action" }, "approve"] },
+          { ">": [{ "var": "temp_data.decided.rows_affected" }, 0] }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "notify_reply",
+          "name": "Tell the parents' authors",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-community-shared-notify_reply.sql" },
+              "params": [null, { "var": "data.req.ids" }],
+              "output": "temp_data.notified_reply"
+            }
+          }
+        },
+        {
+          "id": "notify_comment",
+          "name": "Tell the hosts' owners",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-community-shared-notify_comment.sql" },
+              "params": [null, { "var": "data.req.ids" }],
+              "output": "temp_data.notified_comment"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "name": "Read them back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-comments-decide-read.sql" },
+          "params": [{ "var": "data.req.ids" }, { "var": "data.req.action" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body.decided",
+              "logic": { "or": [{ "var": "temp_data.decided.rows_affected" }, 0] }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}
