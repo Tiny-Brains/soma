@@ -9,6 +9,7 @@
   "route_pattern": "/v1/admin/words",
   "workflow_id": "soma-admin-words-add",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.session_rate" },

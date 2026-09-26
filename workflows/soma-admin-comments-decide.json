@@ -49,20 +49,12 @@
     },
     {
       "id": "reason",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.reason" }, ""] }
-              ]
-            },
-            300
-          ]
-        },
-        "status": 400,
-        "body": { "error": "reason_too_long", "detail": "At most 300 characters." },
+        "field": "reason",
+        "max": 300,
+        "error": "reason_too_long",
+        "detail": "At most 300 characters.",
         "name": "A short reason"
       }
     },
@@ -86,45 +78,28 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.decided.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "notify",
-      "name": "Tell whom an approval concerns",
-      "description": "Only for an approval that decided something. The notifiers read state off the rows, so a comment approved and removed again in between is told nothing.",
-      "condition": {
-        "and": [
-          { "==": [{ "var": "data.req.action" }, "approve"] },
-          { ">": [{ "var": "temp_data.decided.rows_affected" }, 0] }
-        ]
-      },
-      "tasks": [
-        {
-          "id": "notify_reply",
-          "name": "Tell the parents' authors",
-          "continue_on_error": true,
-          "function": {
-            "name": "db_write",
-            "input": {
-              "connector": "soma-db",
-              "query": { "$sql": "../sql/soma-community-shared-notify_reply.sql" },
-              "params": [null, { "var": "data.req.ids" }],
-              "output": "temp_data.notified_reply"
-            }
-          }
+      "use": "notify-comments",
+      "with": {
+        "when": {
+          "and": [
+            { "==": [{ "var": "data.req.action" }, "approve"] },
+            { ">": [{ "var": "temp_data.decided.rows_affected" }, 0] }
+          ]
         },
-        {
-          "id": "notify_comment",
-          "name": "Tell the hosts' owners",
-          "continue_on_error": true,
-          "function": {
-            "name": "db_write",
-            "input": {
-              "connector": "soma-db",
-              "query": { "$sql": "../sql/soma-community-shared-notify_comment.sql" },
-              "params": [null, { "var": "data.req.ids" }],
-              "output": "temp_data.notified_comment"
-            }
-          }
-        }
-      ]
+        "comment": null,
+        "ids": { "var": "data.req.ids" },
+        "name": "Tell whom an approval concerns",
+        "description": "Only for an approval that decided something. The notifiers read state off the rows, so a comment approved and removed again in between is told nothing."
+      }
     },
     {
       "id": "read",

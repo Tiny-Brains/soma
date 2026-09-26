@@ -26,10 +26,18 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "unknown",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 404,
         "body": { "error": "unknown_pick" },
         "name": "No live pick"

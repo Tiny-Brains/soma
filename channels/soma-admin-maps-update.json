@@ -9,6 +9,7 @@
   "route_pattern": "/v1/games/{game}/seasons/{slug}/maps/{map_id}",
   "workflow_id": "soma-admin-maps-update",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 20000,
     "rate_limit": { "$from": "constants.session_rate" },

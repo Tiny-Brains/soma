@@ -1,4 +1,10 @@
-SELECT json_build_object( 'season', s.slug, 'note_word', text_hold_tag(($7)::text, false), 'state', CASE
+-- WHY NOTHING WAS INSERTED. `session_ok` first: the insert joins live_sessions, so a dead session
+-- writes nothing and would otherwise read as a season, model or note refusal.
+WITH me AS (
+    SELECT true AS live FROM live_sessions ls
+     WHERE ls.sid = ($8)::uuid AND ls.user_id = ($2)::uuid
+)
+SELECT coalesce(me.live, false) AS session_ok, json_build_object( 'season', s.slug, 'note_word', text_hold_tag(($7)::text, false), 'state', CASE
     WHEN s.id IS NOT NULL THEN season_state(s)
     END, 'submissions_open_at', s.submissions_open_at, 'submissions_close_at', s.submissions_close_at,
         'model', (SELECT json_build_object('model_id', e.id, 'model', e.name, 'retired', e.retired_at
@@ -49,6 +55,7 @@ SELECT json_build_object( 'season', s.slug, 'note_word', text_hold_tag(($7)::tex
         AND e.owner_id = ($2)::uuid
         AND e.id = ($4)::uuid)) AS body
 FROM games g
+LEFT JOIN me ON true
 LEFT JOIN seasons s ON s.game_id = g.id
 AND s.closed_at IS NULL
 WHERE g.slug = ($1)::text

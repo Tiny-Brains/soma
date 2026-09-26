@@ -1,5 +1,5 @@
 # Orion config for the SOMA unit: the REST surface, the runner gate and the five clocks, in cluster mode.
-# Requires 1.9.1. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
+# Requires 1.10.0. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
 # kalam's docker/runner.toml.tmpl.
 #
 # ${NAME:-default} is substituted by orion-server from the container's environment before the file
@@ -142,12 +142,28 @@ rate_signin_rps              = ${SOMA_RATE_SIGNIN_RPS:-5}
 rate_signin_burst            = ${SOMA_RATE_SIGNIN_BURST:-10}
 
 # ------------------------------------------------------------------------------ RESPONSE CACHE
-# How long an anonymous read is served from `soma-cache` (the LRU Redis). Raising these is the one
-# lever that takes load off BOTH the database pool and the node, so it is the first thing to reach
-# for on a machine that is too small, before the pools above. The connector itself has nothing to
-# size: Orion's redis backend is one multiplexed connection, not a pool.
-hot_cache_ttl_secs           = ${SOMA_HOT_CACHE_TTL_SECS:-10}
-season_cache_ttl_secs        = ${SOMA_SEASON_CACHE_TTL_SECS:-60}
+# The CEILING on how long an anonymous read is served from `soma-cache` (the LRU Redis), not its
+# freshness: every cached route declares `cache.namespaces`, and every writer of public data bumps
+# the namespaces it touched in its own run (shared/soma.json, the `invalidate` fragment), so an
+# entry is served until the data it was built from changes. The TTL bounds only what a Redis an
+# invalidation could not reach still serves. Raising these costs nothing in staleness and takes
+# load off BOTH the database pool and the node; lowering them is the lever for a Redis that is too
+# small. The connector itself has nothing to size: Orion's redis backend is one multiplexed
+# connection, not a pool.
+hot_cache_ttl_secs           = ${SOMA_HOT_CACHE_TTL_SECS:-600}
+season_cache_ttl_secs        = ${SOMA_SEASON_CACHE_TTL_SECS:-600}
+
+# THE IDLE CACHES, on `soma-cache` too (shared/soma.json, the `bump` fragment): a generation counter
+# per kind of work (`gen:work` for match rows, `gen:finished` for results to count), moved by every
+# write that makes such work, and a marker per poller that found nothing, written with the
+# generation it read. A poll whose marker still equals the generation answers idle, or skips its
+# tick, with no statement. Generations carry no TTL (the cache Redis runs volatile-lru, so eviction
+# never takes one; a missing generation means "do not cache"); every marker has one. A runner's
+# marker lives this long, so a change nothing bumped for (there is none by design) is seen within
+# it; a clock's marker lives 60 s, so every clock still runs at least once a minute whatever
+# happens to Redis. cache_entry_ttl_secs is the ceiling on any other entry a workflow keeps.
+cache_entry_ttl_secs         = ${SOMA_CACHE_ENTRY_TTL_SECS:-600}
+idle_marker_ttl_secs         = ${SOMA_IDLE_MARKER_TTL_SECS:-30}
 
 # ------------------------------------------------------------------------------- CLOCKS
 # Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here
@@ -208,7 +224,7 @@ model_prefix = "tb.v"
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
 # a different thing that moves for different reasons. AN ADMITTING RUNNER MUST RUN THIS ONE: the
 # admission claim refuses any other, because the stats a verdict is judged on are its Orion's.
-orion_version = "${ORION_VERSION:-1.9.1}"
+orion_version = "${ORION_VERSION:-1.10.0}"
 
 # ADMISSION. The admit clock prepares up to admit_batch submissions a tick and holds each for
 # admit_timeout_s; the model itself is admitted on an ADMITTING RUNNER (kalam, RUNNER_ROLE=admit),
@@ -370,6 +386,14 @@ shutdown_timeout_secs = ${ORION_CRON_SHUTDOWN_SECS:-60}
 # together is pair, count, withdraw and reap waiting behind admit, which is an idle ladder on a node
 # whose /readyz says ok. Raise it for a node carrying more clocks; lower it only by removing one.
 workers = ${SOMA_CRON_WORKERS:-4}
+
+# HOW LONG A DEAD NODE'S CLOCK RUNS HOLD THEIR SINGLETON SLOTS before a peer recovers them, and,
+# since Orion 1.10.0, also how long a state-database outage a running clock survives: a run that
+# cannot renew for this minus one heartbeat (45 s at the defaults) stops itself and is attempted
+# again once the database is back. admit holds its batch under its token for up to 600 s, so a
+# cancelled admit costs its items one admit_timeout_s wait; count loses a batch mid-fold, fenced.
+# Raise it to ride out a longer outage at the cost of slower recovery from a dead node.
+claim_lease_secs = ${SOMA_CRON_CLAIM_LEASE_SECS:-60}
 
 # Soma reaches Postgres through raw db_read, so these bind no endpoint today; set so a dialect task
 # added later inherits sane numbers.

@@ -25,7 +25,7 @@
       "id": "nothing",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "revoked" } },
         "status": 404,
         "body": { "error": "unknown_runner" },
         "name": "Nothing to revoke"

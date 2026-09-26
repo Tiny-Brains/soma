@@ -22,9 +22,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing changed",
-      "condition": { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "deleted" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -45,7 +53,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "deleted" } },
             { "!": { "var": "temp_data.why.0.session_ok" } }
           ]
         },
@@ -60,7 +68,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.deleted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "deleted" } },
             { "!": { "var": "temp_data.why.0.state" } }
           ]
         },

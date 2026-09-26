@@ -31,20 +31,12 @@
     },
     {
       "id": "words",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.words" }, ""] }
-              ]
-            },
-            200
-          ]
-        },
-        "status": 400,
-        "body": { "error": "words_too_long", "detail": "At most 200 characters." },
+        "field": "words",
+        "max": 200,
+        "error": "words_too_long",
+        "detail": "At most 200 characters.",
         "name": "A short line"
       }
     },
@@ -70,7 +62,7 @@
     {
       "id": "why",
       "name": "Why nothing was filed",
-      "condition": { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "reported" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -91,7 +83,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "reported" } },
             { "!": { "var": "temp_data.why.0.session_ok" } }
           ]
         },
@@ -106,7 +98,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "reported" } },
             { "var": "temp_data.why.0.body.own" }
           ]
         },
@@ -119,7 +111,7 @@
       "id": "unknown",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.reported.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "reported" } },
         "status": 404,
         "body": { "error": "unknown_comment" },
         "name": "A live comment"

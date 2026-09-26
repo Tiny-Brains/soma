@@ -49,10 +49,11 @@ VALUES ('00000000-0000-0000-0000-0000000000ad', 9, 'ops', 'admin');
 INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix)
 VALUES ('c0000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000ad',
         'the fleet', 'sha256:not-a-real-digest', 'tbr_deadbeef');
-INSERT INTO runners (id, key_id, label, engine_digest, max_in_flight) VALUES
-  ('c1000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'mini-1', 'sha256:e1', 4),
-  ('c1000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000001', 'mini-2', 'sha256:e1', 1),
-  ('c1000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001', 'gone',   'sha256:e1', 4);
+INSERT INTO runners (id, key_id, label, engine_digest, max_in_flight, match_timeout_ms, seat_concurrency) VALUES
+  ('c1000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'mini-1', 'sha256:e1', 4, 2400000, 2),
+  ('c1000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000001', 'mini-2', 'sha256:e1', 1, 2400000, 1),
+  ('c1000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001', 'gone',   'sha256:e1', 4, NULL, NULL),
+  ('c1000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000001', 'short',  'sha256:e1', 4, 60000, 8);
 UPDATE runners SET revoked_at = now() WHERE id = 'c1000000-0000-0000-0000-000000000003';
 SELECT label, max_in_flight FROM live_runners ORDER BY label;
 
@@ -107,21 +108,26 @@ SELECT id AS m42 FROM matches WHERE seed = 42 \gset
 SELECT id AS m43 FROM matches WHERE seed = 43 \gset
 SELECT id AS m46 FROM matches WHERE seed = 46 \gset
 
-\echo '--- kalam: reap (expect 0); claim ONE row, trials first (expect 1)'
+\echo '--- kalam: reap (expect 0); nothing in flight yet (expect f); claim ONE row, trials first (expect 1)'
 EXECUTE k_reap;
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_in_flight;
+\echo '--- a runner whose channel cannot hold a 1000-turn match at 1 s claims nothing (expect 0)'
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000000', 60, 4, 'c1000000-0000-0000-0000-000000000004', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+\echo '--- one row claimed: something is in flight (expect t)'
+EXECUTE k_in_flight;
 -- Eight parameters: the read-back also builds the execution contract, so it carries
 -- the deploy fallbacks the coalesce lands on when a season declares nothing and the game's
 -- manifest has no limits -- which is this fixture, so `turn_ms` here is the 1000 below.
 EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v', 'replays', 30, 300, 1000, 1000, 5);
 \echo '--- a second runner takes the NEXT row rather than queueing behind the first: SKIP LOCKED is the only coordinator there is (expect 1)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 4, 'c1000000-0000-0000-0000-000000000002');
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 4, 'c1000000-0000-0000-0000-000000000002', 1000, 1000, 5);
 \echo '--- the in-flight ceiling: mini-2 is allowed one row, so its next claim takes nothing (expect 0)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000003', 60, 4, 'c1000000-0000-0000-0000-000000000002');
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000003', 60, 4, 'c1000000-0000-0000-0000-000000000002', 1000, 1000, 5);
 \echo '--- a REVOKED runner claims nothing, however live its token: the check is a JOIN inside the statement (expect 0)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 4, 'c1000000-0000-0000-0000-000000000003');
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 4, 'c1000000-0000-0000-0000-000000000003', 1000, 1000, 5);
 \echo '--- mini-1 takes the row that is left, and every claim named the machine that took it'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 SELECT m.seed, r.label AS played_by FROM matches m JOIN runners r ON r.id = m.played_by ORDER BY m.seed;
 \echo '--- kalam: start on ANOTHER runner''s claim (expect 0); start it properly (expect 1 each); renew (expect 1); renew on a foreign token (expect 0)'
 EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000002', :'m42');
@@ -209,6 +215,10 @@ EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m43',
   '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"nano","mu":29.2,"sigma":3.8},{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"nano","mu":27.9,"sigma":6.1},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m43', '[]');
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m42', '[]');
+\echo '--- count: why a fold moved nothing -- under the stale fence (expect mine f); under the live fence on the rated row (expect mine t, unfoldable f); on a row still finished (expect mine t, unfoldable t)'
+EXECUTE c_held_why ('2026-09-07 10:00:00+00', 1, :'m43');
+EXECUTE c_held_why ('2026-09-07 10:00:00+00', 2, :'m43');
+EXECUTE c_held_why ('2026-09-07 10:00:00+00', 2, :'m42');
 SELECT seed, status, rated_seq FROM matches WHERE seed IN (42, 43) ORDER BY seed;
 EXECUTE s_match_change (:'m43');
 \echo '--- rating events: a duplicate seq is refused by the chain key (expect unique violation); the chain audit finds no break (expect 0 rows)'
@@ -454,23 +464,23 @@ ROLLBACK;
 EXECUTE p_insert (2, 'ants', 51, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-000000000006', true, 5, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, lapses FROM matches WHERE seed = 51;
 \echo '    ... the ceiling spent INSIDE the grace does not fail it: the row was paired a moment ago (expect 1; pending, refusals 2, no fault)'
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-000000000007', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 3600);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 \echo '    ... past the grace, a season ceiling above the fallback still holds it: the release reads the value the claim sent (expect 1; pending, refusals 3), rolled back'
 BEGIN;
 UPDATE seasons SET rules = rules || '{"execution": {"enabled": true, "refusal_ceiling": 10}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000b', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000b', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000b', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 ROLLBACK;
 \echo '    ... past the grace at the ceiling (expect 1; failed, refusals 3, MODEL_UNAVAILABLE)'
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000c', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 
@@ -566,7 +576,7 @@ EXECUTE p_insert (2, 'ants', 59, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m59 FROM matches WHERE seed = 59 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000d', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m59', 0);
 SELECT seed, status, fault_reason FROM matches WHERE seed = 59;
 EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
@@ -580,7 +590,7 @@ EXECUTE p_insert (2, 'ants', 60, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 4, 'c1000000-0000-0000-0000-000000000001');
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
@@ -810,9 +820,9 @@ EXECUTE a_batch_doc ('0b000000-0000-0000-0000-000000000001', 13, 19, '[]', 'tb.v
 SELECT right(i ->> 'model_id', 2) AS version, i ->> 'uploading' AS uploading
   FROM json_array_elements((:'body')::json -> 'items') i ORDER BY 1;
 \echo '    and the same two hashes POSTed again are a re-mint only inside that window (expect c1 t, c2 f)'
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL) \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e') \gset
 SELECT (:'body')::json ->> 'same_submission' AS c1 \gset
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL) \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e') \gset
 SELECT :'c1' AS c1, (:'body')::json ->> 'same_submission' AS c2;
 UPDATE model_versions SET created_at = now() WHERE id = '20000000-0000-0000-0000-0000000000c2';
 EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{"name": "tb.v20000000-0000-0000-0000-0000000000c1"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');

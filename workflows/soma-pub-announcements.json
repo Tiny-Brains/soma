@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-pub-announcements",
   "name": "Live announcements",
-  "description": "The line across every page: every announcement not disabled and not past its end, newest first, with whether a reader may dismiss it. Dismissing is the browser's, per reader; Soma keeps no per-reader state. season_cache, so a publish or a disable reaches every page within a minute and an ended one lingers at most that long.",
+  "description": "The line across every page: every announcement not disabled and not past its end, newest first, with whether a reader may dismiss it. Dismissing is the browser's, per reader; Soma keeps no per-reader state. season_cache on the announcements namespace: a publish or a disable invalidates it in the same run, and an ending is a time, so an ended one lingers until the next miss or the TTL, at most ten minutes.",
   "tags": ["soma", "pub", "platform"],
   "tasks": [
     {

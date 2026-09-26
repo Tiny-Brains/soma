@@ -55,12 +55,14 @@
     "hot_cache": {
       "enabled": true,
       "ttl_secs": "var://hot_cache_ttl_secs",
-      "connector": "soma-cache"
+      "connector": "soma-cache",
+      "coalesce_misses": true
     },
     "season_cache": {
       "enabled": true,
       "ttl_secs": "var://season_cache_ttl_secs",
-      "connector": "soma-cache"
+      "connector": "soma-cache",
+      "coalesce_misses": true
     },
     "ok": { "status": 200, "body_path": "data.body" },
     "created": { "status": 201, "body_path": "data.body" },
@@ -73,7 +75,9 @@
     },
     "clock_tracing": { "errors_only": true, "task_details": true },
     "loop_clock_tracing": { "errors_only": true, "task_details": false },
-    "gate_tracing": { "errors_only": true, "task_details": false }
+    "gate_tracing": { "errors_only": true, "task_details": false },
+    "payload_body": { "body_mode": "payload" },
+    "dedup": { "header": "Idempotency-Key", "window_secs": 300, "connector": "soma-cache" }
   },
   "fragments": {
     "refuse": {
@@ -82,7 +86,8 @@
         "status": {},
         "body": {},
         "name": { "default": "Refuse" },
-        "description": { "default": "" }
+        "description": { "default": "" },
+        "headers": { "default": {} }
       },
       "tasks": [
         {
@@ -98,7 +103,11 @@
                 { "path": "data.body", "logic": { "$param": "body" } },
                 {
                   "path": "data._orion.response",
-                  "logic": { "status": { "$param": "status" }, "body_path": "data.body" }
+                  "logic": {
+                    "status": { "$param": "status" },
+                    "body_path": "data.body",
+                    "headers": { "$param": "headers" }
+                  }
                 }
               ]
             }
@@ -173,6 +182,228 @@
                 }
               ]
             }
+          }
+        }
+      ]
+    },
+    "invalidate": {
+      "params": { "namespaces": {}, "when": { "default": true } },
+      "tasks": [
+        {
+          "id": "bump",
+          "name": "Invalidate the response cache",
+          "description": "The write-side half of a cached route's `cache.namespaces`: one INCR per namespace, in the same run as the write that made the entries stale, AFTER it and only when it moved rows. continue_on_error, because the write has committed and a bump that cannot reach a store must not fail it; the channel's ttl_secs is then the ceiling on what that store still serves.",
+          "condition": { "$param": "when" },
+          "continue_on_error": true,
+          "function": {
+            "name": "cache_invalidate",
+            "input": { "namespaces": { "$param": "namespaces" } }
+          }
+        }
+      ]
+    },
+    "require-claim-token": {
+      "tasks": [
+        {
+          "id": "parse",
+          "name": "Parse payload",
+          "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+        },
+        {
+          "id": "declared",
+          "name": "A claim token, declared",
+          "description": "Every fenced statement binds `claim_token`, and a body without one (or with the field misnamed) bound NULL, moved no row and answered 409 claim_lost -- which names the one thing that was right, and sends a healthy but misconfigured runner into claim-again loops (a report goes back to the queue until the submission expires). A missing token is a 400 with its name, before any statement runs.",
+          "condition": { "!": { "var": "data.req.claim_token" } },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "claim_token_required" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 400, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "sign-uploads": {
+      "tasks": [
+        {
+          "id": "sign",
+          "name": "Sign both uploads",
+          "description": "Both presigns are asked the same question -- is there a testing version to upload to -- so the group carries the condition once and the two steps inside carry none. Neither writes what it reads, so one evaluation is the whole answer. One fragment: a competitor's submission and an admin's baseline upload sign the same two keys the admit clock fetches.",
+          "condition": { "!!": { "var": "temp_data.rows.0.body.version_id" } },
+          "tasks": [
+            {
+              "id": "sign_weights",
+              "name": "A one-shot PUT for the ONNX graph",
+              "function": {
+                "name": "storage_presign",
+                "input": {
+                  "connector": "soma-models",
+                  "method": "PUT",
+                  "key": {
+                    "cat": [
+                      "models/",
+                      { "var": "temp_data.rows.0.body.version_id" },
+                      "/",
+                      "model.onnx"
+                    ]
+                  },
+                  "expires_in": { "var": "temp_data.rows.0.upload_s" },
+                  "output": "temp_data.put_weights"
+                }
+              }
+            },
+            {
+              "id": "sign_manifest",
+              "name": "A one-shot PUT for the manifest",
+              "function": {
+                "name": "storage_presign",
+                "input": {
+                  "connector": "soma-models",
+                  "method": "PUT",
+                  "key": {
+                    "cat": [
+                      "models/",
+                      { "var": "temp_data.rows.0.body.version_id" },
+                      "/",
+                      "manifest.json"
+                    ]
+                  },
+                  "expires_in": { "var": "temp_data.rows.0.upload_s" },
+                  "output": "temp_data.put_manifest"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "notify-comments": {
+      "params": {
+        "when": {},
+        "comment": {},
+        "ids": {},
+        "description": {
+          "default": "Only after a write that decided something. Each notifier is its own continue_on_error statement that reads the comment off its row, sends nothing for a held one, and may fail without failing the write."
+        },
+        "name": { "default": "Tell whom it concerns" }
+      },
+      "tasks": [
+        {
+          "id": "notify",
+          "name": { "$param": "name" },
+          "description": { "$param": "description" },
+          "condition": { "$param": "when" },
+          "tasks": [
+            {
+              "id": "notify_reply",
+              "name": "Tell the parent's author",
+              "continue_on_error": true,
+              "function": {
+                "name": "db_write",
+                "input": {
+                  "connector": "soma-db",
+                  "query": { "$sql": "../sql/soma-community-shared-notify_reply.sql" },
+                  "params": [{ "$param": "comment" }, { "$param": "ids" }],
+                  "output": "temp_data.notified_reply"
+                }
+              }
+            },
+            {
+              "id": "notify_comment",
+              "name": "Tell the host's owners",
+              "continue_on_error": true,
+              "function": {
+                "name": "db_write",
+                "input": {
+                  "connector": "soma-db",
+                  "query": { "$sql": "../sql/soma-community-shared-notify_comment.sql" },
+                  "params": [{ "$param": "comment" }, { "$param": "ids" }],
+                  "output": "temp_data.notified_comment"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "none_written": {
+      "params": { "slot": {} },
+      "value": { "!": { ">": [{ "var": "temp_data.{{slot}}.rows_affected" }, 0] } }
+    },
+    "too-long": {
+      "params": {
+        "field": {},
+        "max": {},
+        "error": {},
+        "detail": {},
+        "name": { "default": "Too long" }
+      },
+      "tasks": [
+        {
+          "id": "answer",
+          "use": "refuse",
+          "with": {
+            "when": {
+              ">": [
+                {
+                  "length": [
+                    { "or": [{ "var": "data.req.{{field}}" }, ""] }
+                  ]
+                },
+                { "$param": "max" }
+              ]
+            },
+            "status": 400,
+            "body": { "error": { "$param": "error" }, "detail": { "$param": "detail" } },
+            "name": { "$param": "name" }
+          }
+        }
+      ]
+    },
+    "not-bool": {
+      "params": {
+        "field": {},
+        "error": {},
+        "detail": {},
+        "name": { "default": "A boolean, stated" }
+      },
+      "tasks": [
+        {
+          "id": "answer",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "and": [
+                { "!==": [{ "var": "data.req.{{field}}" }, true] },
+                { "!==": [{ "var": "data.req.{{field}}" }, false] }
+              ]
+            },
+            "status": 400,
+            "body": { "error": { "$param": "error" }, "detail": { "$param": "detail" } },
+            "name": { "$param": "name" }
+          }
+        }
+      ]
+    },
+    "bump": {
+      "params": { "key": {}, "when": { "default": true } },
+      "tasks": [
+        {
+          "id": "bump",
+          "name": "Move a generation",
+          "description": "One INCRBY on soma-cache under a generation key, AFTER the write that made new work and only when it moved rows: every idle marker that embeds the old value stops matching. continue_on_error, because the write has committed and a Redis that cannot be reached must not fail it; the markers' TTLs are then the ceiling. No output: nothing reads the number back.",
+          "condition": { "$param": "when" },
+          "continue_on_error": true,
+          "function": {
+            "name": "cache_incr",
+            "input": { "connector": "soma-cache", "key": { "$param": "key" } }
           }
         }
       ]

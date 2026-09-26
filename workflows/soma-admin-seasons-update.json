@@ -50,9 +50,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why not",
-      "condition": { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "edited" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -69,7 +77,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "edited" } },
             { "!": { "var": "temp_data.why.0.body" } }
           ]
         },
@@ -82,7 +90,7 @@
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "edited" } },
         "status": 409,
         "body": { "error": "season_not_scheduled", "detail": { "var": "temp_data.why.0.body" } },
         "name": "It has already opened"

@@ -14,12 +14,6 @@ FROM matches m
 JOIN season_maps sm ON sm.id = m.season_map_id
 JOIN seasons se ON se.id = m.season_id
 JOIN games g ON g.id = m.game_id
-CROSS JOIN LATERAL (SELECT coalesce(CASE
-        WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'turn_ms')::int
-        END, (g.manifest -> 'limits' ->> 'turn_ms')::int, ($6)::int) AS turn_ms, coalesce(CASE
-        WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'max_turns')::int
-        END, (g.manifest -> 'limits' ->> 'max_turns')::int, ($7)::int) AS max_turns, coalesce(CASE
-        WHEN (se.rules -> 'execution' ->> 'enabled')::boolean THEN (se.rules -> 'execution' ->> 'refusal_ceiling')::int
-        END, ($8)::int) AS refusal_ceiling) e
+CROSS JOIN LATERAL match_execution(m, ($6)::int, ($7)::int, ($8)::int) e
 WHERE m.claim_token = ($1)::uuid
 AND m.status = 'claimed'

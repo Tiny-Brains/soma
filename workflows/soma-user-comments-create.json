@@ -73,9 +73,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing was written",
-      "condition": { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "posted" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -99,7 +107,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "!": { "var": "temp_data.why.0.session_ok" } }
           ]
         },
@@ -114,7 +122,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "!": { "var": "temp_data.why.0.body.body_ok" } }
           ]
         },
@@ -132,7 +140,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "!": { "var": "temp_data.why.0.body.host_ok" } }
           ]
         },
@@ -147,7 +155,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "!": { "var": "temp_data.why.0.body.parent_ok" } }
           ]
         },
@@ -162,7 +170,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "!!": { "var": "temp_data.why.0.body.off_until" } }
           ]
         },
@@ -181,7 +189,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "posted" } },
             { "var": "temp_data.why.0.body.locked" }
           ]
         },
@@ -192,73 +200,59 @@
     },
     {
       "id": "limit",
-      "name": "Too soon",
-      "description": "A refusal of its own rather than the `refuse` fragment, so the 429 carries Retry-After as a header as well as in the body. comment_wait() sets `wait_s` (fifteen seconds apart) or `day_wait_s` (a hundred a day); the first that is set answers.",
-      "condition": {
-        "and": [
-          { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
-          {
-            "or": [
-              { "!!": { "var": "temp_data.why.0.body.wait_s" } },
-              { "!!": { "var": "temp_data.why.0.body.day_wait_s" } }
-            ]
-          }
-        ]
-      },
-      "terminal": true,
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "posted" } },
             {
-              "path": "data.body",
-              "logic": {
-                "error": {
-                  "if": [
-                    { "!!": { "var": "temp_data.why.0.body.wait_s" } },
-                    "too_fast",
-                    "daily_limit"
-                  ]
-                },
-                "retry_after": {
-                  "or": [
-                    { "var": "temp_data.why.0.body.wait_s" },
-                    { "var": "temp_data.why.0.body.day_wait_s" }
-                  ]
-                },
-                "detail": {
-                  "if": [
-                    { "!!": { "var": "temp_data.why.0.body.wait_s" } },
-                    "One comment every fifteen seconds.",
-                    "A hundred comments a day."
-                  ]
-                }
-              }
-            },
-            { "path": "data._orion.response.status", "logic": 429 },
-            { "path": "data._orion.response.body_path", "logic": "data.body" },
-            {
-              "path": "data._orion.response.headers.Retry-After",
-              "logic": {
-                "cat": [
-                  {
-                    "or": [
-                      { "var": "temp_data.why.0.body.wait_s" },
-                      { "var": "temp_data.why.0.body.day_wait_s" }
-                    ]
-                  }
-                ]
-              }
+              "or": [
+                { "!!": { "var": "temp_data.why.0.body.wait_s" } },
+                { "!!": { "var": "temp_data.why.0.body.day_wait_s" } }
+              ]
             }
           ]
-        }
+        },
+        "status": 429,
+        "body": {
+          "error": {
+            "if": [{ "!!": { "var": "temp_data.why.0.body.wait_s" } }, "too_fast", "daily_limit"]
+          },
+          "retry_after": {
+            "or": [
+              { "var": "temp_data.why.0.body.wait_s" },
+              { "var": "temp_data.why.0.body.day_wait_s" }
+            ]
+          },
+          "detail": {
+            "if": [
+              { "!!": { "var": "temp_data.why.0.body.wait_s" } },
+              "One comment every fifteen seconds.",
+              "A hundred comments a day."
+            ]
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "cat": [
+              {
+                "or": [
+                  { "var": "temp_data.why.0.body.wait_s" },
+                  { "var": "temp_data.why.0.body.day_wait_s" }
+                ]
+              }
+            ]
+          }
+        },
+        "name": "Too soon",
+        "description": "A refusal of its own rather than the `refuse` fragment, so the 429 carries Retry-After as a header as well as in the body. comment_wait() sets `wait_s` (fifteen seconds apart) or `day_wait_s` (a hundred a day); the first that is set answers."
       }
     },
     {
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "posted" } },
         "status": 409,
         "body": { "error": "comment_refused", "detail": { "var": "temp_data.why.0.body" } },
         "name": "Refused",
@@ -280,39 +274,12 @@
     },
     {
       "id": "notify",
-      "name": "Tell whom it concerns",
-      "description": "Only after a post that wrote; each notifier reads the comment off its row, sends nothing for a held one, and may fail without failing the post.",
-      "condition": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] },
-      "tasks": [
-        {
-          "id": "notify_reply",
-          "name": "Tell the parent's author",
-          "continue_on_error": true,
-          "function": {
-            "name": "db_write",
-            "input": {
-              "connector": "soma-db",
-              "query": { "$sql": "../sql/soma-community-shared-notify_reply.sql" },
-              "params": [{ "var": "temp_data.cid" }, null],
-              "output": "temp_data.notified_reply"
-            }
-          }
-        },
-        {
-          "id": "notify_comment",
-          "name": "Tell the host's owners",
-          "continue_on_error": true,
-          "function": {
-            "name": "db_write",
-            "input": {
-              "connector": "soma-db",
-              "query": { "$sql": "../sql/soma-community-shared-notify_comment.sql" },
-              "params": [{ "var": "temp_data.cid" }, null],
-              "output": "temp_data.notified_comment"
-            }
-          }
-        }
-      ]
+      "use": "notify-comments",
+      "with": {
+        "when": { ">": [{ "var": "temp_data.posted.rows_affected" }, 0] },
+        "comment": { "var": "temp_data.cid" },
+        "ids": null
+      }
     },
     {
       "id": "respond",

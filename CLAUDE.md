@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Soma is an Orion 1.9.1 package plus the Postgres migrations every TinyBrains package shares, shipped
+Soma is an Orion 1.10.0 package plus the Postgres migrations every TinyBrains package shares, shipped
 as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour is JSON channel and
 workflow definitions whose statements live in `sql/*.sql`, connectors and two
 Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares
@@ -45,8 +45,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   transport: method, `route_pattern`, `auth`, `rate_limit` (keyed on the address, before auth),
   `principal_rate_limit` (keyed on `auth.sub`, after) and `response.mode: "shaped"`. The workflow is
   a flat task list whose last `map` writes `data.body` and `data._orion.response`.
-- Constants and fragments (`refuse`, `deny-revoked`, and `admin-only`, which every admin route
-  opens with) live in `shared/soma.json`, referenced with `$from`/`use`. So the set must be **compiled** before it is applied, which `load-package.sh` does.
+- Constants and fragments live in `shared/soma.json`, referenced with `$from`/`use`/`$use`: `refuse`,
+  `deny-revoked`, `admin-only` (every admin route opens with it), `require-claim-token` (every fenced
+  gate route), `invalidate`, `too-long` and `not-bool` (a refusal on a field's length or shape),
+  `sign-uploads` (the two presigned PUTs a submission and a baseline upload share), `notify-comments`,
+  and the value `none_written` (the zero-rows condition every refuse-after-write tests). A refusal
+  shape that appears twice is a fragment, since clippy's duplication rules see only exact copies. So the set must be **compiled** before it is applied, which `load-package.sh` does.
 - **A workflow's `description` is where a route's reasoning lives.** Read it before changing the
   route. Orion refuses one over 2048 characters, and `check-sql.sh` fails first.
 - **SQL builds the response and the workflow moves it**: queries end `json_build_object(...) AS
@@ -62,8 +66,16 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   CTE over the write's `RETURNING`, so the action and its record cannot disagree.
 - A route that can return something private gets its **own path** (`/v1/me/matches`), never a
   parameter on a public route.
-- **Only a caller-invariant route may declare `cache`.** The response-cache key carries method,
-  path params and query, and nothing about the caller.
+- **Only a caller-invariant route may declare `cache`, and it declares `cache.namespaces`.** The
+  response-cache key carries method, path params and query, and nothing about the caller. The
+  namespaces are drawn from `season`, `ladder`, `matches`, `community` and `announcements`, one or
+  more per route, named beside the `$from` constant (`hot_cache`, `season_cache`; both coalesce
+  misses). **A writer of public data follows its write with `use: invalidate`** (`shared/soma.json`),
+  AFTER the write and only when it moved rows (`when` on the write's `rows_affected`), and inside
+  the group that already carries that condition where one exists, or clippy's
+  `perf.redundant_step_condition` fails the set. The bump is `continue_on_error`: the write has
+  committed, and the channel's TTL is the ceiling on a store the bump could not reach. A new
+  cached route names its namespaces; a new writer bumps them; a new namespace is a change to both.
 - **Every definition carries three tags, `[package, surface, domain]`**, in that order --
   `["soma", "gate", "matches"]`. `?tag=` is an EXACT, SINGLE-TAG match with no prefix and no AND,
   and no list page searches names or ids, so the tag filter is the navigation and each tag has to
@@ -94,21 +106,36 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `{"$param": "n"}` inserts it typed. A repeated condition or shape is a value fragment in
   `shared/soma.json`, spliced with `{"$use": …, "with": {…}}`. None of it reaches the server:
   `compile` expands it all.
-- `group_runs()` folds consecutive tasks sharing a condition into a task group. **Anything that
-  walks a clock workflow must descend into groups**, or it silently skips most of the statements.
+- Consecutive tasks sharing a condition are written as one task group. **Anything that walks a
+  clock workflow must descend into groups**, or it silently skips most of the statements.
 - **Soma runs no model.** `[models]` is off. `soma-clock-admit` prepares a submission (HEAD, manifest,
   rebuilt registration) and queues an `admissions` row; an admitting kalam runner claims it through
   `/v1/runner/admissions/*`, runs Orion's admission and the probe, and reports; the clock judges the
   report. A new admission step that needs a model belongs on the runner, and its verdict here.
-- The loop shape: `loop: {counter: "i", max: N}` replays the whole task list every sweep.
-  `first_sweep()` tasks run on sweep 0, a `more` filter with `on_reject: "halt"` is the real
-  terminator, and `temp_data` survives a sweep, so every per-item slot is cleared as the item is
-  taken.
+- The loop shape: `loop.setup` runs once (the fence or the token, the batch read, the halt that
+  ends an empty run), `over` is the batch's items and `as: "it"` the item in hand, `scratch: "s"`
+  is emptied by the engine before every sweep so every per-item slot lives under `temp_data.s.*`
+  and nothing of one item can reach the next, and `max` is a bound, never the terminator: an
+  empty batch runs no sweep, and a halting `filter` (`fenced`, `boards`, `held`) ends the run.
+  Anything that walks a clock (`scripts/verify/run.sh`, `scripts/check-names.sh`) walks
+  `loop.setup` first.
 - **Correctness rests on SQL fences, never on the singleton.** Count claims a run fence on
   `clocks.count` and every ladder write re-reads it `FOR SHARE`. Pair checks the roster epoch in
   every insert. Admission writes only under its row's `admit_token`. Withdraw is idempotent. Anything
   that changes who contests (promotion, rejection, a close, a baseline flip, an engine patch) bumps
   `clocks.epoch` where `key = 'roster'`.
+- **Reap and count skip a tick from the cache, never a decision.** Each starts with one soft
+  `cache_read` of its generation and its own marker on `soma-cache` (`gen:work` and `idle:reap`;
+  `gen:finished` and `idle:count`) and halts, before any fence, when the two are present and
+  equal; a Redis that cannot answer runs the clock. The marker is written only when the tick found
+  nothing (reap: nothing claimed or running, by the `in_flight` read; count: an empty batch) and
+  only with a generation read at the top, with a 60 s TTL, so every clock still runs once a minute
+  whatever Redis says. **Generations move in the run that made the work, after its write and only
+  when rows moved, through the `bump` fragment:** `gen:work` on pair's insert, the gate's claim and
+  release, and the reap; `gen:finished` on the gate's finish and release, the reap, and withdraw's
+  sweep and close. A generation carries no TTL (the cache Redis runs volatile-lru); a marker never
+  outlives one. Admit and pair keep their ticks: admit cannot tell "nothing waiting" from "waiting
+  but leased" without a read, and pair's demand moves with time.
 - **Only count writes a ladder**, and no clock deletes (`soma-db` sets `operations.delete = false`).
   That a clock never reads `sessions` or rewrites an entry is enforced by review, not by a grant.
 - `tb.pairing` decides quality, never correctness. It must stay pure and seeded by the occurrence
@@ -206,6 +233,17 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A gate route's `data.req.*` field names are the contract with the runner. Diff them against the
   body `kalam/workflows/kalam-match-run.json` sends.
 - `live_runners` is joined **inside** every statement. A JSONLogic guard fails open.
+- **A row goes only to a runner that can finish it.** The claim's `pick` prices the row with
+  `match_execution()` (the one function `row` sends as the contract) against the runner's reported
+  `match_timeout_ms` and `seat_concurrency`: turn_ms × max_turns × the seat batches, plus a tenth.
+  A row no runner can hold stays pending and visible; a runner that reported neither is unbounded.
+- **The idle claim is answered from the cache, per runner.** `claim` reads `gen:work` and
+  `idle:<engine digest>:<runner>` in one `MGET` before the statement and answers `{"idle": true}`
+  when they are present and equal; a claim that moved no row stores the generation it read under
+  that marker (`idle_marker_ttl_secs`), never without one. The marker is the runner's own, because
+  an empty answer may be its own (at its in-flight ceiling, or refused a row by the fit), and its
+  `finish` deletes it so a freed slot re-checks at once. A claim that took a row bumps `gen:work`,
+  since an in-flight row is one the reap must see.
 - `finish` writes, then reads back under the same token: `200 {applied: false}` is a duplicate
   delivery, and `409` is a lost claim. Never conflate them.
 - **`auth.source.scheme` is a scheme NAME, parsed as RFC 9110 defines it.** `"Bearer"` and
@@ -270,8 +308,9 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A JSONLogic `reduce` binds `current`/`accumulator` through `val` only (`var` yields null).
   `metadata.vars` is root scope and reads null inside a `map`/`filter` body, and
   `{">=": [0, null]}` is true, so carry values in explicitly.
-- `http_call` warns and continues on a 4xx without writing its output. Test whether the output
-  exists. datalogic has no regex.
+- **An HTTP non-2xx is a task error**, not an answer: the task fails and the run halts unless the
+  task is `continue_on_error`, in which case it carries on with the output unwritten. Test whether
+  the output exists. datalogic has no regex.
 - `engine.ops_budget` crossed inside a **condition** fails closed to false and is only logged. It
   reads as a routing miss.
 - Twenty tensor operators are live on every expression surface. A single-key object keyed `shape`,
@@ -306,6 +345,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   runs is checked the same way rather than reported as nothing to do.
 - Two REST channels may share a `route_pattern` when their methods do not overlap.
 - `[models]` device `metal` measured 36× slower than `cpu`. Use `cpu`.
+- **A namespace counter (`orion:rc:ns:<name>`) has no TTL, and a missing one reads as version 0.**
+  Under `allkeys-lru` Redis can evict it, and an entry stored before the first bump is then served
+  again. The cache Redis runs `volatile-lru` (web's production compose), so eviction takes entries
+  and never a counter. `cache_invalidate` takes no connector: it bumps the cluster Redis, every
+  in-memory store on the node and every Redis cache connector, and fails only after every
+  reachable store is bumped.
 
 ### Postgres and the schema
 

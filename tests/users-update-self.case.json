@@ -1,0 +1,19 @@
+{
+  "name": "users-update-self: an admin cannot change their own role",
+  "workflow": "../workflows/soma-admin-users-update.json",
+  "input": { "role": "competitor" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "id": "u1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": { "soma-db": [{ "body": { "id": "u1", "role": "admin", "state": "self" } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "not_yourself"
+  },
+  "expect_calls": { "db_write": [{}] }
+}

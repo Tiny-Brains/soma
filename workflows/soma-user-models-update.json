@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-models-update",
   "name": "Rename or retire a model",
-  "description": "The two things about a model a competitor may change. A name is a label and may be edited; `retired` is how a competitor puts a model down and is reversible, because it withdraws nothing that has already been played -- every version keeps its ratings and its seats, so retiring is not a way to restart a version series. A retired model takes no new submissions and frees its slot under entries.max_per_user. THE ENTRY'S ID IS THE KEY AND IS NOT A FIELD, which is what makes the name safe to edit: it used to be the GitHub repository, immutable precisely because a model that could move repositories would be a different entry wearing this one's ratings. Addressing by id removes that problem rather than guarding it. Each field is coalesced against the stored value, which is what PATCH means. Ownership is in the statement, not beside it: the UPDATE names the caller's own row, so someone else's model is simply not found.",
+  "description": "The two things about a model a competitor may change. A name is a label and may be edited; `retired` is how a competitor puts a model down and is reversible, because it withdraws nothing that has already been played -- every version keeps its ratings and its seats, so retiring is not a way to restart a version series. A retired model takes no new submissions and frees its slot under entries.max_per_user. THE ENTRY'S ID IS THE KEY AND IS NOT A FIELD, which is what makes the name safe to edit: a model whose key could change would be a different entry wearing this one's ratings, and addressing by id removes that problem rather than guarding it. Each field is coalesced against the stored value, which is what PATCH means. Ownership is in the statement, not beside it: the UPDATE names the caller's own row, so someone else's model is simply not found.",
   "tags": ["soma", "user", "models"],
   "tasks": [
     {
@@ -29,9 +29,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["ladder", "matches", "community"],
+        "when": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing changed",
-      "condition": { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "written" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -40,10 +48,27 @@
           "params": [
             { "var": "metadata.params.id" },
             { "var": "data.req.name" },
-            { "var": "metadata.auth.claims.sub" }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.why"
         }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "written" } },
+            { "===": [{ "var": "temp_data.why.0.session_ok" }, false] }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "A live session first",
+        "description": "The write joined live_sessions and wrote nothing, and the why says the session is gone: 401, before any reason the same absence could be mistaken for. `===` false, so a why that returned no row (an unknown game) answers its own refusal instead."
       }
     },
     {
@@ -52,7 +77,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "written" } },
             { "!": { "var": "temp_data.why.0.body" } }
           ]
         },
@@ -65,7 +90,7 @@
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "written" } },
         "status": 409,
         "body": {
           "error": {

@@ -1,0 +1,21 @@
+{
+  "name": "notification-settings-empty: a body naming nothing writes nothing, diagnoses nothing, answers the settings",
+  "workflow": "../workflows/soma-user-notification-settings-update.json",
+  "input": {},
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_read": {
+      "soma-db": [
+        {
+          "session_ok": "s1",
+          "body": { "settings": { "app": true, "push": false, "level": "all" } }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.settings.level": "all"
+  },
+  "expect_calls": { "db_write": [], "db_read": [{}] }
+}

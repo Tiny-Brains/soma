@@ -1,0 +1,26 @@
+{
+  "name": "reap-halts: the generation equals the reap's marker, so the tick is skipped with no statement",
+  "workflow": "../workflows/soma-clock-reap-run.json",
+  "input": {},
+  "metadata": {
+    "trigger": {
+      "scheduled_for": "2026-09-26T03:00:00Z",
+      "attempt": 1,
+      "occurrence_id": "01a0-test"
+    },
+    "vars": {
+      "count_batch": 50,
+      "prior_mu": 25.0,
+      "prior_sigma": 8.333333333333334,
+      "repair_cap": 3,
+      "settled_sigma": 3.0,
+      "sigma_inflation": 2.0,
+      "ts_beta": 4.166666666666667,
+      "ts_draw_probability": 0.1,
+      "ts_tau": 0.08333333333333333
+    }
+  },
+  "stubs": { "cache_read": { "soma-cache": [3, 3] } },
+  "expect_calls": { "db_write": [], "db_read": [] },
+  "expect_tasks": ["probe", "fresh"]
+}

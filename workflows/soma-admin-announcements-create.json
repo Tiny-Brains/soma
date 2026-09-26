@@ -62,10 +62,18 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["announcements"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "invalid",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 400,
         "body": {
           "error": "announcement_invalid",

@@ -31,9 +31,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing was pinned",
-      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "wrote" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -50,7 +58,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             { "!": { "var": "temp_data.why.0.body.found" } }
           ]
         },
@@ -65,7 +73,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             { "!": { "var": "temp_data.why.0.body.public" } }
           ]
         },
@@ -81,7 +89,7 @@
       "id": "pinned",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 409,
         "body": { "error": "already_pinned" },
         "name": "Already pinned"

@@ -1,0 +1,34 @@
+{
+  "name": "claim-marks: no row and a generation read before the claim leave this runner's marker behind",
+  "workflow": "../workflows/soma-gate-claim.json",
+  "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": {
+      "lease_seconds": 300,
+      "max_turns": 1000,
+      "model_prefix": "tb.v",
+      "refusal_ceiling": 5,
+      "renew_every_n_turns": 30,
+      "replay_prefix": "replays",
+      "turn_ms": 1000,
+      "idle_marker_ttl_secs": 30
+    }
+  },
+  "stubs": {
+    "db_write": { "soma-db-gate": { "rows_affected": 0 } },
+    "cache_read": { "soma-cache": [7, null] },
+    "cache_write": { "soma-cache": {} }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.idle": true
+  },
+  "expect_calls": {
+    "db_read": [],
+    "cache_incr": [],
+    "cache_write": [{ "key": "idle:sha256:e1:r1", "value": 7, "ttl_secs": 30 }]
+  },
+  "expect_tasks": ["parse", "mint", "probe", "claim", "mark", "idle"]
+}

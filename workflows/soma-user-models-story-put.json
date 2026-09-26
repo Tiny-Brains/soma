@@ -29,6 +29,14 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "read",
       "name": "Read it back",
       "function": {
@@ -64,7 +72,7 @@
       "id": "invalid",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 400,
         "body": {
           "error": "story_invalid",

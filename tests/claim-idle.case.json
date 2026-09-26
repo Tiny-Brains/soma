@@ -1,0 +1,29 @@
+{
+  "name": "claim-idle: nothing pending and no marker is 200 idle, with no read, no bump and no marker (no generation to embed)",
+  "workflow": "../workflows/soma-gate-claim.json",
+  "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": {
+      "lease_seconds": 300,
+      "max_turns": 1000,
+      "model_prefix": "tb.v",
+      "refusal_ceiling": 5,
+      "renew_every_n_turns": 30,
+      "replay_prefix": "replays",
+      "turn_ms": 1000,
+      "idle_marker_ttl_secs": 30
+    }
+  },
+  "stubs": {
+    "db_write": { "soma-db-gate": { "rows_affected": 0 } },
+    "cache_read": { "soma-cache": [null, null] }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.idle": true
+  },
+  "expect_calls": { "db_read": [], "cache_invalidate": [], "cache_write": [] },
+  "expect_tasks": ["parse", "mint", "probe", "claim", "idle"]
+}

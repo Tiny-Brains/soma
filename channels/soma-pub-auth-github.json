@@ -9,6 +9,7 @@
   "route_pattern": "/v1/auth/github",
   "workflow_id": "soma-pub-auth-github",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped", "allowed_headers": ["location"], "cookies": true },
     "timeout_ms": 10000,
     "rate_limit": {

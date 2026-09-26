@@ -1,0 +1,31 @@
+{
+  "name": "submissions-create-revoked: a dead session is 401, not a season refusal",
+  "workflow": "../workflows/soma-user-submissions-create.json",
+  "input": {
+    "game": "ants",
+    "model": "m1",
+    "weights_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "manifest_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "upload_window_s": 1800 }
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "session_ok": false,
+          "body": { "season": "s1", "state": "open", "model": { "model_id": "m1" } }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 401,
+    "data.body.error": "session_revoked"
+  },
+  "expect_tasks": ["parse", "insert", "why", "revoked.answer"]
+}

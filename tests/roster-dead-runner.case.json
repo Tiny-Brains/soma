@@ -1,0 +1,17 @@
+{
+  "name": "roster-dead-runner: a revoked runner gets no row and 401",
+  "workflow": "../workflows/soma-gate-roster.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": { "model_prefix": "tb.v" }
+  },
+  "stubs": { "db_read": { "soma-db-gate": [] } },
+  "expect": {
+    "data._orion.response.status": 401,
+    "data.body.error": "runner_revoked"
+  },
+  "expect_calls": { "db_write": [] },
+  "expect_tasks": ["query", "gone.answer"]
+}

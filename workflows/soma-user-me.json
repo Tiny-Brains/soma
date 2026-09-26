@@ -25,6 +25,8 @@
     {
       "id": "touch",
       "name": "Mark the session used",
+      "description": "Runs only when the session row says it is due: the query beside it reads `touch_due` off the same row, so a page load inside the five-minute bucket costs one statement, not two.",
+      "condition": { "var": "temp_data.rows.0.touch_due" },
       "function": {
         "name": "db_write",
         "input": {

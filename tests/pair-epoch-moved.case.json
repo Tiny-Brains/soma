@@ -1,0 +1,63 @@
+{
+  "name": "pair-epoch-moved: one insert affects no row and the run halts before the second",
+  "workflow": "../workflows/soma-clock-pair-run.json",
+  "input": {},
+  "metadata": {
+    "trigger": {
+      "scheduled_for": "2026-09-26T03:00:00Z",
+      "attempt": 1,
+      "occurrence_id": "01a0-test"
+    },
+    "vars": {
+      "burst": 8,
+      "cross_class_fraction": 0.2,
+      "forfeit_strikes": 5,
+      "game": "ants",
+      "pair_depth_target": 64,
+      "repair_cap": 3,
+      "settled_sigma": 3.0,
+      "steady_cap": 2
+    }
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "id": "g1",
+          "epoch": 3,
+          "body": {
+            "room": 2,
+            "wants": [],
+            "pool": [],
+            "played": [],
+            "limits": {
+              "maps": [{ "id": "map1", "players": 2 }],
+              "self_pairing": false,
+              "cross_class_fraction": 0.2
+            },
+            "n": 2,
+            "pairings": [
+              { "seats": ["a", "b"], "map": "map1", "seed": 1, "trial": "a" },
+              { "seats": ["c", "d"], "map": "map1", "seed": 2, "trial": null }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "expect": { "calls.db_write[0].input.params[0]": 3 },
+  "expect_calls": { "db_write": [{}] },
+  "expect_tasks": [
+    "game",
+    "epoch",
+    "demand",
+    "boards",
+    "trials",
+    "pair",
+    "plan",
+    "pairing",
+    "insert",
+    "held"
+  ]
+}

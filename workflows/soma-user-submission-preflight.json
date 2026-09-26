@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-submission-preflight",
   "name": "May this competitor submit?",
-  "description": "The refusal, on load, so /submit reads as an explanation rather than a door that is shut. The verdict is the one soma-submissions-create computes, in the same words, so the page cannot say one thing before the POST and another after it. THREE OF THE FOUR REFUSALS ARE KNOWABLE HERE; the fourth is not, because weights_already_entered depends on a hash the competitor has not typed yet. Like soma-models-list, live_sessions is the outer FROM: a NULL body is an unknown game and a 404, no row at all is a dead session and a 401, and the two must not be confused.",
+  "description": "The refusal, on load, so /submit reads as an explanation rather than a door that is shut. The verdict is the one soma-user-submissions-create computes, in the same words, so the page cannot say one thing before the POST and another after it. THREE OF THE FOUR REFUSALS ARE KNOWABLE HERE; the fourth is not, because weights_already_entered depends on a hash the competitor has not typed yet. Like soma-user-models-list, live_sessions is the outer FROM: a NULL body is an unknown game and a 404, no row at all is a dead session and a 401, and the two must not be confused.",
   "tags": ["soma", "user", "models"],
   "tasks": [
     {

@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-pub-maps-get",
   "name": "soma-pub-maps-get",
-  "description": "One board, whole, for the viewer to draw. Uncached for the same reason as the list.",
+  "description": "One board, whole, for the viewer to draw. Cached on `season`, invalidated by the same writes as the list.",
   "tags": ["soma", "pub", "maps"],
   "channel_type": "sync",
   "protocol": "rest",
@@ -9,8 +9,10 @@
   "route_pattern": "/v1/games/{game}/seasons/{slug}/maps/{map_id}",
   "workflow_id": "soma-pub-maps-get",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
+    "cache": { "$from": "constants.season_cache", "namespaces": ["season"] },
     "rate_limit": { "$from": "constants.public_rate" }
   }
 }

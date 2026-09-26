@@ -1,0 +1,26 @@
+{
+  "name": "claim-cached: the generation equals this runner's marker, so idle comes from the cache with no statement",
+  "workflow": "../workflows/soma-gate-claim.json",
+  "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": {
+      "lease_seconds": 300,
+      "max_turns": 1000,
+      "model_prefix": "tb.v",
+      "refusal_ceiling": 5,
+      "renew_every_n_turns": 30,
+      "replay_prefix": "replays",
+      "turn_ms": 1000,
+      "idle_marker_ttl_secs": 30
+    }
+  },
+  "stubs": { "cache_read": { "soma-cache": [7, 7] } },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.idle": true
+  },
+  "expect_calls": { "db_read": [], "db_write": [], "cache_write": [], "cache_incr": [] },
+  "expect_tasks": ["parse", "mint", "probe", "cached"]
+}

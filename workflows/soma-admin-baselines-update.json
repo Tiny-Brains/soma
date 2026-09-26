@@ -15,19 +15,11 @@
     },
     {
       "id": "stated",
-      "use": "refuse",
+      "use": "not-bool",
       "with": {
-        "when": {
-          "and": [
-            { "!==": [{ "var": "data.req.enabled" }, true] },
-            { "!==": [{ "var": "data.req.enabled" }, false] }
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "enabled_required",
-          "detail": "The body is {\"enabled\": true} or {\"enabled\": false}."
-        },
+        "field": "enabled",
+        "error": "enabled_required",
+        "detail": "The body is {\"enabled\": true} or {\"enabled\": false}.",
         "name": "A state, stated"
       }
     },
@@ -119,6 +111,14 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.flipped.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "read",
       "name": "Read it back",
       "function": {
@@ -143,6 +143,10 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body.changed",
+              "logic": { ">": [{ "var": "temp_data.flipped.rows_affected" }, 0] }
+            },
             { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }

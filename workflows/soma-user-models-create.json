@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-models-create",
   "name": "Create a model",
-  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, and addressed by its id ever after. It used to be a GitHub repository, normalised by repo_path() and confirmed against `GET /repos/{owner}/{name}` before the insert -- and that requirement limited nothing. Every ceiling on a competitor is a season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights) and not one of them mentioned a repository, while the check cost a SQL normaliser, a season predicate, two unique indexes and an outbound call on the create path THAT FAILED CLOSED -- so a rate-limited GitHub meant nobody could create an entry at all. GitHub is now the sign-in identity and nothing else, and this route reaches no host outside the deployment. Write, then diagnose: the insert carries every remaining rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was, through the same functions. A model is created empty; POST /v1/submissions is what puts a version under it.",
+  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, and addressed by its id ever after. Every ceiling on a competitor is a season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights), none names a repository, and this route reaches no host outside the deployment: GitHub is the sign-in identity and nothing else, so a rate-limited GitHub cannot stop anyone creating an entry. Write, then diagnose: the insert carries every remaining rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was, through the same functions. A model is created empty; POST /v1/submissions is what puts a version under it.",
   "tags": ["soma", "user", "models"],
   "tasks": [
     {
@@ -23,30 +23,6 @@
       }
     },
     {
-      "id": "game",
-      "name": "Find the game",
-      "description": "A game that does not exist is a 404 before any rule is asked. It used to also normalise the repository here, ahead of the call to GitHub; there is no call and no repository now, so the read is the game alone.",
-      "function": {
-        "name": "db_read",
-        "input": {
-          "connector": "soma-db",
-          "query": "SELECT g.id::text AS game_id FROM games g WHERE g.slug = ($1)::text",
-          "params": [{ "var": "metadata.params.game" }],
-          "output": "temp_data.game"
-        }
-      }
-    },
-    {
-      "id": "unknown",
-      "use": "refuse",
-      "with": {
-        "when": { "!": { "var": "temp_data.game.0.game_id" } },
-        "status": 404,
-        "body": { "error": "unknown_game" },
-        "name": "No such game"
-      }
-    },
-    {
       "id": "insert",
       "name": "Create the entry",
       "function": {
@@ -65,9 +41,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["ladder"],
+        "when": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing was created",
-      "condition": { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "written" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -76,10 +60,42 @@
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "data.req.name" }
+            { "var": "data.req.name" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.why"
         }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "written" } },
+            { "===": [{ "var": "temp_data.why.0.session_ok" }, false] }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "A live session first",
+        "description": "The write joined live_sessions and wrote nothing, and the why says the session is gone: 401, before any reason the same absence could be mistaken for. `===` false, so a why that returned no row (an unknown game) answers its own refusal instead."
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "written" } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game"
       }
     },
     {
@@ -88,7 +104,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.written.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "written" } },
             {
               "or": [
                 { "!": { "var": "temp_data.why.0.body.participant" } },
@@ -117,7 +133,7 @@
     {
       "id": "fetch",
       "name": "Read the entry back",
-      "description": "Keyed on the name, which models_owner_game_name_uniq makes a key: db_write answers only rows_affected, so the created row is read back, and the read-back needs a unique predicate. It used to be the repository.",
+      "description": "Keyed on the name, which models_owner_game_name_uniq makes a key: db_write answers only rows_affected, so the created row is read back, and the read-back needs a unique predicate.",
       "function": {
         "name": "db_read",
         "input": {

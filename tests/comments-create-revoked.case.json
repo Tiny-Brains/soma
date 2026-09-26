@@ -1,0 +1,17 @@
+{
+  "name": "comments-create-revoked: a dead session is 401 before any reason",
+  "workflow": "../workflows/soma-user-comments-create.json",
+  "input": { "match": "m1", "body": "hi" },
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [{ "session_ok": false, "body": { "body_ok": false, "host_ok": false } }]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 401,
+    "data.body.error": "session_revoked"
+  },
+  "expect_tasks": ["parse", "name", "thread", "post", "why", "revoked.answer"]
+}

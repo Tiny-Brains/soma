@@ -60,7 +60,7 @@
       "id": "listed",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.added.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "added" } },
         "status": 409,
         "body": { "error": "word_listed", "word": { "var": "temp_data.rows.0.body" } },
         "name": "Already listed"

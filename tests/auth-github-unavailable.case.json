@@ -1,0 +1,17 @@
+{
+  "name": "auth-github-unavailable: GitHub answering no profile ends at the callback page, with nothing written",
+  "workflow": "../workflows/soma-pub-auth-github.json",
+  "input": {},
+  "metadata": {
+    "oauth": { "access_token": "t", "return_to": "/x" },
+    "headers": { "user-agent": "ua" },
+    "vars": { "admin_github_ids": "", "app_url": "http://localhost:5173", "cookie_secure": false }
+  },
+  "stubs": { "http_call": { "soma-github": {} } },
+  "expect": {
+    "data._orion.response.status": 302,
+    "data._orion.response.headers.location": "http://localhost:5173/signin/callback?error=github_unavailable"
+  },
+  "expect_calls": { "db_write": [], "db_read": [] },
+  "expect_tasks": ["sid", "identify", "unavailable.answer"]
+}

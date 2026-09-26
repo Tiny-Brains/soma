@@ -1,0 +1,46 @@
+{
+  "name": "finish-forgets: a finish that moved the row bumps gen:finished and drops this runner's idle marker",
+  "workflow": "../workflows/soma-gate-finish.json",
+  "input": {
+    "claim_token": "ct-1",
+    "result": [
+      { "seat": 0, "rank": 1, "score": 10, "strikes": 0 },
+      { "seat": 1, "rank": 2, "score": 3, "strikes": 1 }
+    ],
+    "reason": "complete",
+    "turns": 30,
+    "opened_at": "2026-09-26T03:00:00Z",
+    "engine_digest": "sha256:e1",
+    "orion_version": "1.10.0",
+    "replay_key": "replays/m1/ct-1.json"
+  },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": { "id": "m1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } },
+    "db_read": { "soma-db-gate": [{ "body": { "state": "finished", "mine": true } }] },
+    "cache_incr": { "soma-cache": 1 },
+    "cache_delete": { "soma-cache": { "deleted": 1 } }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.applied": true
+  },
+  "expect_calls": {
+    "db_read": [],
+    "cache_incr": [{ "key": "gen:finished" }],
+    "cache_delete": [{ "keys": ["idle:sha256:e1:r1"] }],
+    "cache_invalidate": [{ "namespaces": ["matches"] }]
+  },
+  "expect_tasks": [
+    "req.parse",
+    "finish",
+    "invalidate.bump",
+    "bump_finished.bump",
+    "forget",
+    "respond"
+  ]
+}

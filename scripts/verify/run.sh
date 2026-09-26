@@ -39,12 +39,14 @@ strip() { grep -v '^PREPARE$' | grep -v 'all statements prepared'; }
 echo "===== the statements under test are the statements that ship ====="
 python3 - "$SHIPPED" <<'PY'
 import json, re, sys, pathlib
-PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim", "claim"),
+PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-reap-run", "in_flight"),
+         ("k_claim", "soma-gate-claim", "claim"),
          ("k_row", "soma-gate-claim", "row"), ("k_start", "soma-gate-start", "start"),
          ("k_release", "soma-gate-release", "release"), ("k_renew", "soma-gate-renew", "renew"),
          ("k_finish", "soma-gate-finish", "finish"),
          ("c_fence", "soma-clock-count-run", "fence"), ("c_batch_doc", "soma-clock-count-run", "batch"),
          ("c_priors", "soma-clock-count-run", "priors"), ("c_fold", "soma-clock-count-run", "fold"),
+         ("c_held_why", "soma-clock-count-run", "held_why"),
          ("c_pass", "soma-clock-count-run", "pass"), ("c_reject", "soma-clock-count-run", "reject"),
          ("c_withdraw_pred", "soma-clock-count-run", "withdraw"),
          ("p_game", "soma-clock-pair-run", "game"), ("p_epoch", "soma-clock-pair-run", "epoch"),
@@ -66,8 +68,8 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim
          ("cm_thread", "soma-user-comments-create", "thread"),
          ("cm_post", "soma-user-comments-create", "post"),
          ("cm_why", "soma-user-comments-create", "why"),
-         ("cm_reply", "soma-user-comments-create", "notify_reply"),
-         ("cm_reply", "soma-admin-comments-decide", "notify_reply"),
+         ("cm_reply", "soma-user-comments-create", "notify.notify_reply"),
+         ("cm_reply", "soma-admin-comments-decide", "notify.notify_reply"),
          ("cm_decide", "soma-admin-comments-decide", "decide"),
          ("cm_lock", "soma-admin-threads-lock", "lock"),
          ("cm_threads", "soma-pub-threads", "query"),
@@ -98,10 +100,20 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_claim", "soma-gate-claim
          ("s_why", "soma-user-submissions-create", "why"),
          ("b_flip", "soma-admin-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
-def tasks(ts):
+FRAGMENTS = (json.load(open("../../shared/soma.json")).get("fragments") or {})
+def tasks(ts, prefix=""):
+    """Every step, descending into groups and EXPANDING `use` steps from the shared fragments the way
+    compile does: a fragment's ids are prefixed by the call site (`notify.notify_reply`), so a
+    statement a fragment ships is read out of the workflow that uses it, as any other."""
     for t in ts:
+        if "use" in t:
+            frag = FRAGMENTS.get(t["use"]) or {}
+            for f in tasks(frag.get("tasks") or [], prefix + t["id"] + "."):
+                yield f
+            continue
+        t = dict(t, id=prefix + t["id"]) if prefix else t
         yield t
-        yield from tasks(t.get("tasks", []))
+        yield from tasks(t.get("tasks", []), prefix)
 def flat(sql):
     """Orion's `$sql` normal form: comments and runs of whitespace become one space.
 
@@ -149,7 +161,9 @@ def statement(query, wf):
 bad, out, seen = [], [], {}
 for name, wf, task in PAIRS:
     doc = json.load(open(f"../../workflows/{wf}.json"))
-    found = [t for t in tasks(doc["tasks"]) if t["id"] == task]
+    # A looping clock keeps its once-per-run statements (the fence, the batch, the claim) in
+    # loop.setup, which a walk of `tasks` alone would never see.
+    found = [t for t in tasks(doc.get("loop", {}).get("setup", []) + doc["tasks"]) if t["id"] == task]
     if not found:
         bad.append(f"{name}: workflows/{wf}.json ships no task '{task}'")
         continue

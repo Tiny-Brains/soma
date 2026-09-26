@@ -9,6 +9,7 @@
   "route_pattern": "/v1/games/{game}/seasons/{slug}/close",
   "workflow_id": "soma-admin-seasons-close",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.session_rate" },

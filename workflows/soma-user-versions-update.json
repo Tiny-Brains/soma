@@ -11,23 +11,12 @@
     },
     {
       "id": "note_long",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.note" }, ""] }
-              ]
-            },
-            120
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "note_too_long",
-          "detail": "A version note is one line of at most 120 characters."
-        },
+        "field": "note",
+        "max": 120,
+        "error": "note_too_long",
+        "detail": "A version note is one line of at most 120 characters.",
         "name": "Refuse a note too long"
       }
     },
@@ -47,6 +36,14 @@
           ],
           "output": "temp_data.wrote"
         }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["ladder"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
       }
     },
     {
@@ -89,7 +86,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             { "!!": { "var": "temp_data.rows.0.note_word" } }
           ]
         },

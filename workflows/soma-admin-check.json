@@ -1,37 +1,12 @@
 {
   "workflow_id": "soma-admin-check",
   "name": "Is the caller a signed-in admin",
-  "description": "An AUTHORIZATION PROBE, and the only route here whose body nobody reads: it answers 204, 401 or 403 and nothing else. It exists so a reverse proxy can put a gate in front of something that is not Soma -- today the Orion console, which is a static SPA with nowhere to hold a credential -- using nginx's `auth_request`, which allows on 2xx and denies on 401/403 and treats every other status as a server error. That is why `deny` and `forbid` keep the statuses the rest of the package uses rather than collapsing both to one. It is a near-copy of soma-seasons-create's first three tasks ON PURPOSE: the same join is the same revocation check, and a second way of asking `is this an admin` is a second thing to keep right. The role is read off the live session rather than off a claim in the cookie, so revoking a session or demoting a user takes effect on the NEXT request -- which for a proxy gate means the next page load, not the next sign-in. IT IS ALSO THE ONE CHANNEL WITH NO `rate_limit`, and that is the same fact: its caller is never a browser but the console's own nginx, running an `auth_request` subrequest that forwards no `X-Forwarded-For`. An address-keyed limit would put every console user in one bucket keyed on a single container, so the only thing it could ever do is lock the console out of itself. `principal_rate_limit` on `auth.sub` is the correct key here and is what it keeps.",
+  "description": "Whether this session is an admin, for nginx's auth_request in front of the Orion console: 204 for an admin, 401 for a missing or revoked session, 403 for anyone else, and no body -- the three answers and their emptiness are the contract with `auth_request`. It opens with the same `admin-only` fragment every admin route does, so the role is read off the live session row and a demotion takes effect on the console's next request.",
   "tags": ["soma", "admin", "auth"],
   "tasks": [
     {
-      "id": "who",
-      "name": "Who is asking",
-      "function": {
-        "name": "db_read",
-        "input": {
-          "connector": "soma-db",
-          "query": "SELECT json_build_object('id', u.id, 'handle', u.handle, 'role', u.role) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid WHERE u.id = ($1)::uuid",
-          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
-          "output": "temp_data.who"
-        }
-      }
-    },
-    {
-      "id": "deny",
-      "use": "deny-revoked",
-      "with": { "row": "temp_data.who.0.body" }
-    },
-    {
-      "id": "forbid",
-      "use": "refuse",
-      "with": {
-        "when": { "!=": [{ "var": "temp_data.who.0.body.role" }, "admin"] },
-        "status": 403,
-        "body": { "error": "admin_only" },
-        "name": "Admins only",
-        "description": "403 rather than 401 is load-bearing at the proxy: 401 means `you are not signed in`, so the gate sends you to GitHub, and a competitor who signed in correctly would be sent round that loop for ever. 403 means `you are signed in and this is not yours`, which is a page rather than a redirect."
-      }
+      "id": "admin",
+      "use": "admin-only"
     },
     {
       "id": "allow",

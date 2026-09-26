@@ -662,6 +662,15 @@ CREATE TABLE runners (
     -- editing a definition anywhere.
     max_in_flight smallint    NOT NULL DEFAULT 4,
 
+    -- REPORTED AT TOKEN EXCHANGE TOO: the longest match this node's channel can hold, and how many
+    -- seats it asks at once. The claim hands a row only to a runner whose timeout covers the row's
+    -- turn_ms x max_turns x ceil(seats / seat_concurrency) plus a tenth (match_execution() below the
+    -- matches table), so a match a node cannot finish inside its deadline is never claimed, reaped
+    -- and re-claimed for ever: it waits, pending and visible. NULL is a runner from before this was
+    -- reported, or an admitting one, which the claim does not bound.
+    match_timeout_ms bigint,
+    seat_concurrency smallint,
+
     first_seen_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at  timestamptz NOT NULL DEFAULT now(),
     revoked_at    timestamptz,
@@ -678,7 +687,7 @@ CREATE TABLE runners (
 -- live row instead of off a cookie claim. A JSONLogic guard would fail OPEN if it were ever wrong;
 -- a JOIN cannot be forgotten.
 CREATE VIEW live_runners AS
-    SELECT r.id, r.key_id, r.label, r.max_in_flight, k.user_id
+    SELECT r.id, r.key_id, r.label, r.max_in_flight, r.match_timeout_ms, r.seat_concurrency, k.user_id
       FROM runners r
       JOIN runner_keys k ON k.id = r.key_id AND k.revoked_at IS NULL
       JOIN users u       ON u.id = k.user_id AND u.role = 'admin'
@@ -1174,6 +1183,26 @@ CREATE TABLE matches (
 
 ALTER TABLE season_maps
     ADD CONSTRAINT season_maps_latest_match_fkey FOREIGN KEY (latest_match_id) REFERENCES matches (id);
+
+-- THE TERMS A MATCH IS PLAYED UNDER, from the row's own season: coalesce(season rule, the game's
+-- manifest limits, the deployment's [vars]), which the claim's `row` read sends to the runner as the
+-- execution contract and the claim's `pick` uses to hand a row only to a runner that can finish it.
+-- One function, so the two statements cannot disagree about what a match will cost.
+CREATE FUNCTION match_execution(m matches, turn_ms_default int, max_turns_default int, refusal_default int)
+RETURNS TABLE (turn_ms int, max_turns int, refusal_ceiling int)
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
+                         THEN (se.rules -> 'execution' ->> 'turn_ms')::int END,
+                    (g.manifest -> 'limits' ->> 'turn_ms')::int, turn_ms_default),
+           coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
+                         THEN (se.rules -> 'execution' ->> 'max_turns')::int END,
+                    (g.manifest -> 'limits' ->> 'max_turns')::int, max_turns_default),
+           coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
+                         THEN (se.rules -> 'execution' ->> 'refusal_ceiling')::int END,
+                    refusal_default)
+      FROM seasons se, games g
+     WHERE se.id = m.season_id AND g.id = m.game_id
+$$;
 
 -- The order count folded matches in. A sequence rather than a timestamp: two matches can share a
 -- played_at to the microsecond, and the audit needs a total order.
@@ -1847,10 +1876,8 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
         'entered_versions',   (SELECT count(*) FROM model_versions v
                                WHERE v.season_id = s.id),
         'matches_played',     s.matches_played,
-        -- On a board right now: claimed or running, trials excluded, like matches_played.
-        'playing',            (SELECT count(*) FROM matches mt
-                               WHERE mt.season_id = s.id AND mt.status IN ('claimed', 'running')
-                                 AND mt.trial_version_id IS NULL),
+        -- No `playing` here: it moves at every claim, finish and release, so it has its own
+        -- uncached route (soma-pub-playing) and never invalidates the season document.
         'in_flight_versions', (SELECT count(*) FROM model_versions v
                                WHERE v.season_id = s.id AND v.status IN ('testing', 'verified')),
         -- The boards, summarised: how many are in play, how many are not, and the seats and sides

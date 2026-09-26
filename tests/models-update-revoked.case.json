@@ -1,0 +1,19 @@
+{
+  "name": "models-update-revoked: a dead session is 401, not a name refusal",
+  "workflow": "../workflows/soma-user-models-update.json",
+  "input": { "name": "x" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "id": "m1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": { "soma-db": [{ "session_ok": false, "body": { "model_id": "m1" } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 401,
+    "data.body.error": "session_revoked"
+  },
+  "expect_tasks": ["parse", "edit", "why", "revoked.answer"]
+}

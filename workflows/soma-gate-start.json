@@ -5,9 +5,8 @@
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
-      "id": "parse",
-      "name": "Parse payload",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+      "id": "req",
+      "use": "require-claim-token"
     },
     {
       "id": "start",
@@ -30,7 +29,7 @@
       "id": "lost",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.started.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "started" } },
         "status": 409,
         "body": { "error": "claim_lost" },
         "name": "The claim is gone",

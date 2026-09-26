@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-gate-claim",
   "name": "Claim one match",
-  "description": "THE ONLY COORDINATOR THERE IS. No scheduler, no assignment table, no registry consulted at pairing time, and no runner knows another one exists: FOR UPDATE SKIP LOCKED with LIMIT 1 means two runners racing do not queue behind each other -- the second skips the locked row and takes the next -- and Postgres is the arbiter whether the callers are four cron lanes in one process or forty across ten machines. The lease is what recovers a row from a runner that vanished, and it cannot tell that case from a slow one, which is the point: pull-plus-lease is self-healing where an assigning coordinator would need a liveness model and a rebalancer.\n\nTHREE ADDITIONS TO THE STATEMENT KALAM SHIPPED, all about the runner rather than the match. The live_runners EXISTS is the demotion check, inside the statement rather than in a guard task. The in-flight count is the ceiling that stops a wedged machine sitting on rows until their leases lapse -- uncorrelated, so it is an InitPlan evaluated once per claim and not per candidate row. And played_by is written here, at the one moment the answer is known, because without it 'which machine played this' and 'which machine is wedged' are both unanswerable.\n\nTHE IDLE ANSWER IS THE ONE TO MAKE CHEAP. An idle runner polling four lanes every five seconds is 0.8 requests a second whatever the ladder is doing, so an empty queue costs one indexed probe and answers 200 {\"idle\": true} -- not a 204; the `idle` task says why. TRIALS FIRST, ALWAYS, and within trials and within ranked matches a refused row sinks behind a fresh one. A refused trial must not fall behind ranked matches: pair keeps the queue topped up with fresh ones, so a trial that did would wait for as long as the ladder is busy.",
+  "description": "THE ONLY COORDINATOR THERE IS. No scheduler, no assignment table, no registry consulted at pairing time, and no runner knows another one exists: FOR UPDATE SKIP LOCKED with LIMIT 1 means two runners racing do not queue behind each other -- the second skips the locked row and takes the next -- and Postgres is the arbiter whether the callers are four cron lanes in one process or forty across ten machines. The lease is what recovers a row from a runner that vanished, and it cannot tell that case from a slow one, which is the point: pull-plus-lease is self-healing where an assigning coordinator would need a liveness model and a rebalancer.\n\nFOUR THINGS ABOUT THE RUNNER, not the match, live in the statement. The live_runners join is the demotion check, inside the statement rather than in a guard task. The in-flight count is the ceiling that stops a wedged machine sitting on rows until their leases lapse -- uncorrelated, so it is an InitPlan evaluated once per claim and not per candidate row. The fit hands a row only to a runner whose reported channel timeout covers what the row will cost (match_execution(): turn_ms x max_turns x seat batches, plus a tenth), so a match no node can finish waits pending rather than failing three times. And played_by is written here, at the one moment the answer is known, because without it 'which machine played this' and 'which machine is wedged' are both unanswerable.\n\nTHE IDLE ANSWER IS THE ONE TO MAKE CHEAP. An idle runner polling four lanes every five seconds is 0.8 requests a second whatever the ladder is doing, so an empty queue costs one indexed probe and answers 200 {\"idle\": true} -- not a 204; the `idle` task says why. TRIALS FIRST, ALWAYS, and within trials and within ranked matches a refused row sinks behind a fresh one. A refused trial must not fall behind ranked matches: pair keeps the queue topped up with fresh ones, so a trial that did would wait for as long as the ladder is busy.",
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
@@ -32,6 +32,52 @@
       }
     },
     {
+      "id": "probe",
+      "name": "Read the generation and this poller's marker",
+      "description": "One MGET, soft: `gen:work` moves with every write that makes or frees a match row (pair, reap, release, and a claim that took one), and this runner's marker holds the generation it last found nothing under. Equal means nothing has changed since: idle, with no statement. A Redis that cannot answer leaves both unset and the claim runs as before.",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_read",
+        "input": {
+          "connector": "soma-cache",
+          "keys": [
+            "gen:work",
+            {
+              "cat": [
+                "idle:",
+                { "var": "data.req.engine_digest" },
+                ":",
+                { "var": "metadata.auth.claims.sub" }
+              ]
+            }
+          ],
+          "output": "temp_data.gen"
+        }
+      }
+    },
+    {
+      "id": "cached",
+      "name": "Idle, from the cache",
+      "description": "Both values present and equal: no match row was made or freed since this runner last found none, so the queue is still empty for it. 200 {\"idle\": true}, the same answer the statement gives, without the statement. An idle runner polls every five seconds per lane, and this is what makes that poll free.",
+      "condition": {
+        "and": [
+          { "!!": { "var": "temp_data.gen.0" } },
+          { "!!": { "var": "temp_data.gen.1" } },
+          { "==": [{ "var": "temp_data.gen.0" }, { "var": "temp_data.gen.1" }] }
+        ]
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "idle": true } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    },
+    {
       "id": "claim",
       "name": "Claim one row",
       "function": {
@@ -44,33 +90,75 @@
             { "var": "temp_data.token" },
             { "var": "metadata.vars.lease_seconds" },
             { "var": "data.req.seat_count" },
-            { "var": "metadata.auth.claims.sub" }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.vars.turn_ms" },
+            { "var": "metadata.vars.max_turns" },
+            { "var": "metadata.vars.refusal_ceiling" }
           ],
           "output": "temp_data.claimed"
         }
       }
     },
     {
-      "id": "row",
-      "name": "Read the claimed row",
-      "description": "Reads back only under the claim token, and builds THE EXECUTION CONTRACT in the same statement. THE BOARD RIDES THE ROW: `map` is the season_maps row the match was paired on, whole, because the component carries no boards and a runner fetches nothing -- the same reason the contract rides it. Each value is coalesce(season rule, games.manifest limits, [vars]) taken from THE ROW'S OWN SEASON, the shape admission already uses for adapter_ops_max -- so a season that declares nothing plays by the cartridge's published limits, and a queued match keeps the terms it was queued under because seasons.rules is immutable once submissions open. The `enabled` flag is honoured rather than ignored: a block turned off falls through to the defaults, because a rule that reads as on when its author turned it off is the failure season_rules_ok exists to prevent. renew_every_n_turns is DERIVED, not sent: it is the deployment's target clamped by floor(lease_seconds * 1000 / ((seat_count + 1) * turn_ms)) -- a turn can cost every seat's deadline and the step, so the row's own seat count is the multiplier -- and a season raising turn_ms, or a map seating eight, cannot leave the lease expiring before the renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads as a wedged runner. A range check cannot close that: the safe ceiling depends on lease_seconds, which lives in another file.",
+      "id": "when_claimed",
+      "description": "The claim moved a row: bump `gen:work` (an in-flight row is one the reap must see, and every idle marker embedding the old generation stops matching) and read the row back for the runner.",
       "condition": { ">": [{ "var": "temp_data.claimed.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "bump_work",
+          "use": "bump",
+          "with": { "key": "gen:work" }
+        },
+        {
+          "id": "row",
+          "name": "Read the claimed row",
+          "description": "Reads back only under the claim token, and builds THE EXECUTION CONTRACT in the same statement. THE BOARD RIDES THE ROW: `map` is the season_maps row the match was paired on, whole, because the component carries no boards and a runner fetches nothing -- the same reason the contract rides it. Each value is coalesce(season rule, games.manifest limits, [vars]) taken from THE ROW'S OWN SEASON, the shape admission already uses for adapter_ops_max -- so a season that declares nothing plays by the cartridge's published limits, and a queued match keeps the terms it was queued under because seasons.rules is immutable once submissions open. The `enabled` flag is honoured rather than ignored: a block turned off falls through to the defaults, because a rule that reads as on when its author turned it off is the failure season_rules_ok exists to prevent. renew_every_n_turns is DERIVED, not sent: it is the deployment's target clamped by floor(lease_seconds * 1000 / ((seat_count + 1) * turn_ms)) -- a turn can cost every seat's deadline and the step, so the row's own seat count is the multiplier -- and a season raising turn_ms, or a map seating eight, cannot leave the lease expiring before the renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads as a wedged runner. A range check cannot close that: the safe ceiling depends on lease_seconds, which lives in another file.",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db-gate",
+              "query": { "$sql": "../sql/soma-gate-claim-row.sql" },
+              "params": [
+                { "var": "temp_data.token" },
+                { "var": "metadata.vars.model_prefix" },
+                { "var": "metadata.vars.replay_prefix" },
+                { "var": "metadata.vars.renew_every_n_turns" },
+                { "var": "metadata.vars.lease_seconds" },
+                { "var": "metadata.vars.turn_ms" },
+                { "var": "metadata.vars.max_turns" },
+                { "var": "metadata.vars.refusal_ceiling" }
+              ],
+              "output": "temp_data.rows"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mark",
+      "name": "Remember that nothing was here",
+      "description": "The claim moved no row and a generation was read BEFORE it: store that generation under this runner's marker, so its next polls answer idle from the cache until something bumps the generation or the marker's TTL passes. Never written without a generation, so a flushed Redis cannot resurrect a marker. Per runner, because a runner at its in-flight ceiling or refused the row for its own reasons (the fit) saw an empty answer that is only its own; its finish deletes the marker, so a freed slot re-checks at once.",
+      "condition": {
+        "and": [
+          { "$use": "none_written", "with": { "slot": "claimed" } },
+          { "!!": { "var": "temp_data.gen.0" } }
+        ]
+      },
+      "continue_on_error": true,
       "function": {
-        "name": "db_read",
+        "name": "cache_write",
         "input": {
-          "connector": "soma-db-gate",
-          "query": { "$sql": "../sql/soma-gate-claim-row.sql" },
-          "params": [
-            { "var": "temp_data.token" },
-            { "var": "metadata.vars.model_prefix" },
-            { "var": "metadata.vars.replay_prefix" },
-            { "var": "metadata.vars.renew_every_n_turns" },
-            { "var": "metadata.vars.lease_seconds" },
-            { "var": "metadata.vars.turn_ms" },
-            { "var": "metadata.vars.max_turns" },
-            { "var": "metadata.vars.refusal_ceiling" }
-          ],
-          "output": "temp_data.rows"
+          "connector": "soma-cache",
+          "key": {
+            "cat": [
+              "idle:",
+              { "var": "data.req.engine_digest" },
+              ":",
+              { "var": "metadata.auth.claims.sub" }
+            ]
+          },
+          "value": { "var": "temp_data.gen.0" },
+          "ttl_secs": { "var": "metadata.vars.idle_marker_ttl_secs" }
         }
       }
     },
@@ -93,7 +181,7 @@
     {
       "id": "respond",
       "name": "Respond",
-      "description": "THE CONTRACT RIDES THE ROW. turn_ms, max_turns and the rest used to be [vars] on each replica that web's scripts/check/configs.sh asserted equal by reading the other repositories -- which cannot read a machine on somebody's desk. Sending them from the one place that owns them deletes that whole class of failure. engine_digest comes off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.",
+      "description": "THE CONTRACT RIDES THE ROW. turn_ms, max_turns and the rest come from the row's own season through match_execution(), the one place that owns them, and never from a runner's own config: a number typed on a machine on somebody's desk cannot be checked from here, and a number sent from here needs no check. engine_digest comes off the claimed row rather than from a var, so a mixed-engine rollout stays correct by construction.",
       "function": {
         "name": "map",
         "input": {

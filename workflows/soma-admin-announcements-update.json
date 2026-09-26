@@ -41,6 +41,14 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["announcements"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "read",
       "name": "Read it back",
       "function": {

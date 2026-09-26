@@ -1,0 +1,12 @@
+{
+  "name": "notifications-read-nothing: only a literal true means all",
+  "workflow": "../workflows/soma-user-notifications-read.json",
+  "input": { "all": "yes" },
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {},
+  "expect": {
+    "data._orion.response.status": 400,
+    "data.body.error": "nothing_to_mark"
+  },
+  "expect_calls": { "db_write": [], "db_read": [] }
+}

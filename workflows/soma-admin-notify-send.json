@@ -85,7 +85,7 @@
       "id": "invalid",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.sent.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "sent" } },
         "status": 400,
         "body": {
           "error": "notify_invalid",

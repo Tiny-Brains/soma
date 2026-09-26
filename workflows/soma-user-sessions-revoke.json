@@ -46,7 +46,7 @@
         "when": {
           "and": [
             { "!=": [{ "var": "metadata.params.sid" }, "others"] },
-            { "!": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] } }
+            { "$use": "none_written", "with": { "slot": "revoked" } }
           ]
         },
         "status": 404,

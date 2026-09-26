@@ -11,45 +11,23 @@
     },
     {
       "id": "toolong",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.display_name" }, ""] }
-              ]
-            },
-            60
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "display_name_too_long",
-          "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography."
-        },
+        "field": "display_name",
+        "max": 60,
+        "error": "display_name_too_long",
+        "detail": "A display name is at most 60 characters. It is what people see beside your handle, not a biography.",
         "name": "Refuse an unusable name"
       }
     },
     {
       "id": "biotoolong",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.bio" }, ""] }
-              ]
-            },
-            160
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "bio_too_long",
-          "detail": "A bio is one line of at most 160 characters."
-        },
+        "field": "bio",
+        "max": 160,
+        "error": "bio_too_long",
+        "detail": "A bio is one line of at most 160 characters.",
         "name": "Refuse a bio too long"
       }
     },
@@ -68,6 +46,14 @@
           ],
           "output": "temp_data.updated"
         }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["ladder"],
+        "when": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] }
       }
     },
     {

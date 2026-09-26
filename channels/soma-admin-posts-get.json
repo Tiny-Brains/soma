@@ -9,6 +9,7 @@
   "route_pattern": "/v1/admin/posts/{id}",
   "workflow_id": "soma-admin-posts-get",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.session_rate" },

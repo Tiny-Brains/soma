@@ -1,0 +1,20 @@
+{
+  "name": "models-create-unknown-game: the why answers the 404, no pre-read",
+  "workflow": "../workflows/soma-user-models-create.json",
+  "input": { "name": "brain" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": { "soma-db": [{ "session_ok": true, "body": { "found": false } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 404,
+    "data.body.error": "unknown_game"
+  },
+  "expect_calls": { "db_read": [{}] },
+  "expect_tasks": ["parse", "insert", "why", "unknown.answer"]
+}

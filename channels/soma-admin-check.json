@@ -9,6 +9,7 @@
   "route_pattern": "/v1/admin-check",
   "workflow_id": "soma-admin-check",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 5000,
     "auth": { "$from": "constants.session_auth" },

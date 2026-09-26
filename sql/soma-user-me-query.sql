@@ -8,7 +8,8 @@ SELECT json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.displ
             JOIN models e ON e.id = v.model_id
             JOIN games g ON g.id = e.game_id
             WHERE e.owner_id = u.id
-            AND v.status IN ('testing', 'verified')), '[]'::json)) AS body
+            AND v.status IN ('testing', 'verified')), '[]'::json)) AS body,
+       s.last_seen_at < now() - interval '5 minutes' AS touch_due
 FROM users u
 JOIN live_sessions s ON s.user_id = u.id
 AND s.sid = ($2)::uuid

@@ -15,6 +15,7 @@
     {
       "id": "identify",
       "name": "Fetch the GitHub identity",
+      "continue_on_error": true,
       "function": {
         "name": "http_call",
         "input": {
@@ -26,6 +27,22 @@
           },
           "output": "temp_data.gh"
         }
+      }
+    },
+    {
+      "id": "unavailable",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.gh.id" } },
+        "status": 302,
+        "body": {},
+        "headers": {
+          "location": {
+            "cat": [{ "var": "metadata.vars.app_url" }, "/signin/callback?error=github_unavailable"]
+          }
+        },
+        "name": "GitHub did not answer",
+        "description": "identify is soft, because a non-2xx from GitHub (a rate limit, an outage) is a task error that would otherwise end the callback in Orion's error envelope, with no page and no cookie. With no profile there is nothing to upsert -- github_id is NOT NULL and UNIQUE -- so this answers the redirect the callback page knows how to draw, with its own error word, before any write runs. It goes to the callback page and not to return_to: the person is not signed in."
       }
     },
     {
@@ -140,8 +157,8 @@
             {
               "path": "data._orion.response",
               "logic": {
+                "$from": "constants.ok",
                 "status": 302,
-                "body_path": "data.body",
                 "headers": {
                   "location": {
                     "if": [

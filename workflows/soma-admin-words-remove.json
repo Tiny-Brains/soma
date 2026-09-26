@@ -28,7 +28,7 @@
     {
       "id": "why",
       "name": "Why nothing changed",
-      "condition": { "!": { ">": [{ "var": "temp_data.removed.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "removed" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -45,7 +45,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.removed.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "removed" } },
             { "!": { "var": "temp_data.why.0.body" } }
           ]
         },

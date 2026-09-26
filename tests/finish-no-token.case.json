@@ -1,0 +1,20 @@
+{
+  "name": "finish-no-token: a body without claim_token is 400 by name, before any statement",
+  "workflow": "../workflows/soma-gate-finish.json",
+  "input": { "result": [] },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": { "id": "m1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db-gate": { "rows_affected": 0 } },
+    "db_read": { "soma-db-gate": [] }
+  },
+  "expect": {
+    "data._orion.response.status": 400,
+    "data.body.error": "claim_token_required"
+  },
+  "expect_calls": { "db_write": [], "db_read": [] },
+  "expect_tasks": ["req.parse", "req.declared"]
+}

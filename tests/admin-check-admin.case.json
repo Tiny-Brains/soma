@@ -1,0 +1,8 @@
+{
+  "name": "admin-check-admin: an admin's live session is 204",
+  "workflow": "../workflows/soma-admin-check.json",
+  "input": {},
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": { "db_read": { "soma-db": [{ "body": { "id": "u1", "role": "admin" } }] } },
+  "expect": { "data._orion.response.status": 204 }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "models-update-unknown: a model that is not yours is 404",
+  "workflow": "../workflows/soma-user-models-update.json",
+  "input": { "name": "x" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "id": "m1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": { "soma-db": [{ "session_ok": true, "body": null }] }
+  },
+  "expect": {
+    "data._orion.response.status": 404,
+    "data.body.error": "unknown_model"
+  },
+  "expect_tasks": ["parse", "edit", "why", "unknown.answer"]
+}

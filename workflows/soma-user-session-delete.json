@@ -28,8 +28,7 @@
             {
               "path": "data._orion.response",
               "logic": {
-                "status": 200,
-                "body_path": "data.body",
+                "$from": "constants.ok",
                 "cookies": [
                   {
                     "name": "soma_session",

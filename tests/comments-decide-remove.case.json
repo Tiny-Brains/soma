@@ -1,0 +1,16 @@
+{
+  "name": "comments-decide-remove: a removal is one write and no notification",
+  "workflow": "../workflows/soma-admin-comments-decide.json",
+  "input": { "action": "remove", "ids": ["c1"], "reason": "spam" },
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": { "soma-db": [{ "body": { "id": "u1", "role": "admin", "decided": ["c1"] } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "calls.db_write[0].task_id": "decide",
+    "calls.cache_invalidate[0].input.namespaces": ["community"]
+  },
+  "expect_calls": { "db_write": [{}] }
+}

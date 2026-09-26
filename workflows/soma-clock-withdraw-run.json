@@ -19,6 +19,23 @@
       }
     },
     {
+      "id": "when_swept",
+      "description": "Versions withdrawn: the ladder and season documents move, and count has verdicts to read (`gen:finished`).",
+      "condition": { ">": [{ "var": "temp_data.swept.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "invalidate",
+          "use": "invalidate",
+          "with": { "namespaces": ["ladder", "season"] }
+        },
+        {
+          "id": "bump_finished",
+          "use": "bump",
+          "with": { "key": "gen:finished" }
+        }
+      ]
+    },
+    {
       "id": "game",
       "name": "Resolve the game",
       "function": {
@@ -54,6 +71,16 @@
       "description": "Only after a close that wrote. Each notifier is its own statement after the decision and may fail without failing the close or the other.",
       "condition": { ">": [{ "var": "temp_data.closed.rows_affected" }, 0] },
       "tasks": [
+        {
+          "id": "invalidate_close",
+          "use": "invalidate",
+          "with": { "namespaces": ["season", "ladder", "matches"] }
+        },
+        {
+          "id": "bump_finished_close",
+          "use": "bump",
+          "with": { "key": "gen:finished" }
+        },
         {
           "id": "notify_closed",
           "name": "Tell everyone who entered that the season closed",
@@ -97,6 +124,14 @@
           "params": [{ "var": "temp_data.game.0.id" }, null],
           "output": "temp_data.snapshot"
         }
+      }
+    },
+    {
+      "id": "invalidate_snapshot",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.snapshot.rows_affected" }, 0] }
       }
     }
   ]

@@ -1,0 +1,12 @@
+{
+  "name": "me-dead-session: no live session is 401 and nothing is touched",
+  "workflow": "../workflows/soma-user-me.json",
+  "input": {},
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": { "db_read": { "soma-db": [] } },
+  "expect": {
+    "data._orion.response.status": 401,
+    "data.body.error": "session_revoked"
+  },
+  "expect_calls": { "db_write": [] }
+}

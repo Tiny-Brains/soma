@@ -33,38 +33,22 @@
     },
     {
       "id": "stated",
-      "use": "refuse",
+      "use": "not-bool",
       "with": {
-        "when": {
-          "and": [
-            { "!==": [{ "var": "data.req.locked" }, true] },
-            { "!==": [{ "var": "data.req.locked" }, false] }
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "locked_required",
-          "detail": "The body carries {\"locked\": true} or {\"locked\": false}."
-        },
+        "field": "locked",
+        "error": "locked_required",
+        "detail": "The body carries {\"locked\": true} or {\"locked\": false}.",
         "name": "A state, stated"
       }
     },
     {
       "id": "reason",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.reason" }, ""] }
-              ]
-            },
-            300
-          ]
-        },
-        "status": 400,
-        "body": { "error": "reason_too_long", "detail": "At most 300 characters." },
+        "field": "reason",
+        "max": 300,
+        "error": "reason_too_long",
+        "detail": "At most 300 characters.",
         "name": "A short reason"
       }
     },
@@ -106,6 +90,14 @@
           ],
           "output": "temp_data.locked"
         }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.locked.rows_affected" }, 0] }
       }
     },
     {

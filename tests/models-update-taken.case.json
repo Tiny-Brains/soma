@@ -1,0 +1,21 @@
+{
+  "name": "models-update-taken: a name already used among your entries is 409",
+  "workflow": "../workflows/soma-user-models-update.json",
+  "input": { "name": "x" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "id": "m1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [{ "session_ok": true, "body": { "model_id": "m1", "name_taken": true } }]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "model_name_taken"
+  },
+  "expect_tasks": ["parse", "edit", "why", "refused.answer"]
+}

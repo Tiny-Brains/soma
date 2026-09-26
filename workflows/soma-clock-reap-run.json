@@ -1,9 +1,43 @@
 {
   "workflow_id": "soma-clock-reap-run",
   "name": "Return lapsed rows to the queue",
-  "description": "A lapsed lease returns its row to the queue; the third lapse fails it as LEASE_LAPSED rather than passing it round the fleet for ever.\n\nIT IS A CLOCK HERE AND WAS THE FIRST TASK OF EVERY CLAIM BEFORE. That cost was invisible in cluster and is not off-site: at N runners polling four lanes it is 0.8N reaps a second, each scanning an index whose size is itself proportional to N -- quadratic work for a statement that normally matches nothing. Once a second in one place is the same guarantee for a constant cost.\n\nRunning it in Soma's Orion is what makes 'one place' true: that node is in CLUSTER mode, so a cron singleton is singular across the whole state database. This is the exact opposite of the rule for a Kalam replica, which must never share cluster state precisely so that its match channels are not singletons.\n\nIt stays a separate statement rather than a CTE inside the claim because a CTE's writes are invisible to the claim in the same snapshot, so a row reaped that way would wait one more poll before anyone could take it.",
+  "description": "A lapsed lease returns its row to the queue; the third lapse fails it as LEASE_LAPSED rather than passing it round the fleet for ever.\n\nIT IS A CLOCK, NOT A STEP OF EVERY CLAIM: at N runners polling four lanes that would be 0.8N reaps a second, each scanning an index whose size is itself proportional to N -- quadratic work for a statement that normally matches nothing. Once a second in one place is the same guarantee for a constant cost.\n\nRunning it in Soma's Orion is what makes 'one place' true: that node is in CLUSTER mode, so a cron singleton is singular across the whole state database. This is the exact opposite of the rule for a Kalam replica, which must never share cluster state precisely so that its match channels are not singletons.\n\nIt stays a separate statement rather than a CTE inside the claim because a CTE's writes are invisible to the claim in the same snapshot, so a row reaped that way would wait one more poll before anyone could take it.",
   "tags": ["soma", "clock", "matches"],
   "tasks": [
+    {
+      "id": "probe",
+      "name": "Read the generation and this poller's marker",
+      "description": "One MGET, soft: `gen:work` moves with every claim, release, requeue and pairing, and `idle:reap` holds the generation under which the last reap found nothing in flight. Equal means no row has been claimed since, so no lease can have lapsed: the tick is skipped with no statement. A Redis that cannot answer runs the reap.",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_read",
+        "input": {
+          "connector": "soma-cache",
+          "keys": ["gen:work", "idle:reap"],
+          "output": "temp_data.gen"
+        }
+      }
+    },
+    {
+      "id": "fresh",
+      "name": "Skip the tick while nothing is in flight",
+      "description": "A skipped tick delays nothing: a lease can only lapse on a row that was claimed, and a claim bumps the generation. The marker's 60 s TTL is the backstop, so the reap runs at least once a minute whatever Redis says.",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": {
+            "!": {
+              "and": [
+                { "!!": { "var": "temp_data.gen.0" } },
+                { "!!": { "var": "temp_data.gen.1" } },
+                { "==": [{ "var": "temp_data.gen.0" }, { "var": "temp_data.gen.1" }] }
+              ]
+            }
+          },
+          "on_reject": "halt"
+        }
+      }
+    },
     {
       "id": "reap",
       "name": "Reap",
@@ -14,6 +48,64 @@
           "query": { "$sql": "../sql/soma-clock-reap-run-reap.sql" },
           "params": [],
           "output": "temp_data.reaped"
+        }
+      }
+    },
+    {
+      "id": "when_reaped",
+      "description": "Rows moved: the match namespace, `gen:work` (a requeued row is new work) and `gen:finished` (a row failed on its third lapse is a verdict to count).",
+      "condition": { ">": [{ "var": "temp_data.reaped.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "invalidate",
+          "use": "invalidate",
+          "with": { "namespaces": ["matches"] }
+        },
+        {
+          "id": "bump_work",
+          "use": "bump",
+          "with": { "key": "gen:work" }
+        },
+        {
+          "id": "bump_finished",
+          "use": "bump",
+          "with": { "key": "gen:finished" }
+        }
+      ]
+    },
+    {
+      "id": "in_flight",
+      "name": "Is anything in flight",
+      "condition": { "$use": "none_written", "with": { "slot": "reaped" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-clock-reap-run-in_flight.sql" },
+          "params": [],
+          "output": "temp_data.in_flight"
+        }
+      }
+    },
+    {
+      "id": "mark",
+      "name": "Remember that nothing was in flight",
+      "description": "Written only when the reap moved nothing, nothing at all is claimed or running, and a generation was read at the top: the next ticks skip until a claim bumps the generation or 60 s pass.",
+      "condition": {
+        "and": [
+          { "$use": "none_written", "with": { "slot": "reaped" } },
+          { "!!": { "var": "temp_data.gen.0" } },
+          { "!": { "var": "temp_data.in_flight.0.any" } }
+        ]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_write",
+        "input": {
+          "connector": "soma-cache",
+          "key": "idle:reap",
+          "value": { "var": "temp_data.gen.0" },
+          "ttl_secs": 60
         }
       }
     }

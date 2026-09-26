@@ -9,9 +9,10 @@
   "route_pattern": "/v1/stories",
   "workflow_id": "soma-pub-stories",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.public_rate" },
-    "cache": { "$from": "constants.hot_cache" }
+    "cache": { "$from": "constants.hot_cache", "namespaces": ["community"] }
   }
 }

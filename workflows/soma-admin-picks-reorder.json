@@ -31,10 +31,18 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "incomplete",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 409,
         "body": {
           "error": "order_incomplete",

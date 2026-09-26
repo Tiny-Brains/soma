@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-admin-posts-create",
   "name": "soma-admin-posts-create",
-  "description": "Creates a draft post. Admin, per-user write rate.",
+  "description": "Creates a draft post. Admin, per-user write rate. Deduplicated on an Idempotency-Key header for five minutes (the fragment's mint makes a retried write inside one run find its own; a client retry is a second run): a request without the header is not checked, so a client adopts it when ready.",
   "tags": ["soma", "admin", "community"],
   "channel_type": "sync",
   "protocol": "rest",
@@ -9,6 +9,8 @@
   "route_pattern": "/v1/admin/posts",
   "workflow_id": "soma-admin-posts-create",
   "config": {
+    "request": { "$from": "constants.payload_body" },
+    "deduplication": { "$from": "constants.dedup" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.session_rate" },

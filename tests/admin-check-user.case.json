@@ -1,0 +1,11 @@
+{
+  "name": "admin-check-user: a competitor is 403",
+  "workflow": "../workflows/soma-admin-check.json",
+  "input": {},
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": { "db_read": { "soma-db": [{ "body": { "id": "u1", "role": "competitor" } }] } },
+  "expect": {
+    "data._orion.response.status": 403,
+    "data.body.error": "admin_only"
+  }
+}

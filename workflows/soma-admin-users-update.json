@@ -53,7 +53,7 @@
     {
       "id": "why",
       "name": "Why nothing changed",
-      "condition": { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "changed" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -74,7 +74,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "changed" } },
             { "!": { "var": "temp_data.why.0.body" } }
           ]
         },
@@ -92,7 +92,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "changed" } },
             { "==": [{ "var": "temp_data.why.0.body.state" }, "self"] }
           ]
         },
@@ -110,7 +110,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "changed" } },
             { "==": [{ "var": "temp_data.why.0.body.state" }, "baseline"] }
           ]
         },
@@ -128,7 +128,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "changed" } },
             { "==": [{ "var": "temp_data.why.0.body.state" }, "same"] }
           ]
         },
@@ -145,7 +145,7 @@
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "changed" } },
         "status": 409,
         "body": { "error": "role_not_changed", "detail": { "var": "temp_data.why.0.body" } },
         "name": "Refused"

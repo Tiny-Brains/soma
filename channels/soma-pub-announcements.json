@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-pub-announcements",
   "name": "soma-pub-announcements",
-  "description": "The live announcements. season_cache: an admin's change reaches every reader within a minute.",
+  "description": "The live announcements. season_cache on the announcements namespace: an admin's change invalidates it at once; an ending is a time, so an ended one lingers at most the TTL.",
   "tags": ["soma", "pub", "platform"],
   "channel_type": "sync",
   "protocol": "rest",
@@ -9,9 +9,10 @@
   "route_pattern": "/v1/announcements",
   "workflow_id": "soma-pub-announcements",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.public_rate" },
-    "cache": { "$from": "constants.season_cache" }
+    "cache": { "$from": "constants.season_cache", "namespaces": ["announcements"] }
   }
 }

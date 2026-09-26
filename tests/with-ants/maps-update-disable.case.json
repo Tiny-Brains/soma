@@ -1,0 +1,33 @@
+{
+  "name": "maps-update-disable: disabling a board never runs the engine, and bumps the season",
+  "workflow": "../../workflows/soma-admin-maps-update.json",
+  "input": { "enabled": false },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1", "map_id": "map1" },
+    "vars": { "engine_digest": "sha256:e1" }
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "id": "u1",
+            "role": "admin",
+            "found": true,
+            "closed": false,
+            "engine_ok": true,
+            "board": {},
+            "players": 2
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "calls.cache_invalidate[0].input.namespaces": ["season"]
+  },
+  "expect_tasks": ["admin.who", "parse", "ctx", "flip", "invalidate.bump", "read", "respond"]
+}

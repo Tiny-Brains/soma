@@ -9,6 +9,7 @@
   "route_pattern": "/v1/admin/events",
   "workflow_id": "soma-admin-events",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.session_rate" },

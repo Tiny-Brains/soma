@@ -42,23 +42,12 @@
     },
     {
       "id": "note_long",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.note" }, ""] }
-              ]
-            },
-            120
-          ]
-        },
-        "status": 400,
-        "body": {
-          "error": "note_too_long",
-          "detail": "A version note is one line of at most 120 characters."
-        },
+        "field": "note",
+        "max": 120,
+        "error": "note_too_long",
+        "detail": "A version note is one line of at most 120 characters.",
         "name": "Refuse a note too long"
       }
     },
@@ -84,9 +73,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing was inserted",
-      "condition": { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "insert" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -99,10 +96,27 @@
             { "var": "data.req.model" },
             { "var": "data.req.manifest_hash" },
             { "var": "metadata.vars.upload_window_s" },
-            { "var": "data.req.note" }
+            { "var": "data.req.note" },
+            { "var": "metadata.auth.claims.sid" }
           ],
           "output": "temp_data.why"
         }
+      }
+    },
+    {
+      "id": "revoked",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "insert" } },
+            { "===": [{ "var": "temp_data.why.0.session_ok" }, false] }
+          ]
+        },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "A live session first",
+        "description": "The write joined live_sessions and wrote nothing, and the why says the session is gone: 401, before any reason the same absence could be mistaken for. `===` false, so a why that returned no row (an unknown game) answers its own refusal instead."
       }
     },
     {
@@ -111,7 +125,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "insert" } },
             { "!!": { "var": "temp_data.why.0.body.note_word" } }
           ]
         },
@@ -131,7 +145,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "insert" } },
             { "!": { "var": "temp_data.why.0.body.model" } },
             { "!!": { "var": "temp_data.why.0.body" } }
           ]
@@ -148,7 +162,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "insert" } },
             { "!!": { "var": "temp_data.why.0.body.model" } },
             {
               "or": [
@@ -234,48 +248,7 @@
     },
     {
       "id": "sign",
-      "name": "Sign both uploads",
-      "description": "Both presigns are asked the same question -- did the INSERT create a version -- so the group carries the condition once and the two steps inside carry none. Neither writes what it reads, so one evaluation is the whole answer.",
-      "condition": { "!!": { "var": "temp_data.rows.0.body.version_id" } },
-      "tasks": [
-        {
-          "id": "sign_weights",
-          "name": "A one-shot PUT for the ONNX graph",
-          "function": {
-            "name": "storage_presign",
-            "input": {
-              "connector": "soma-models",
-              "method": "PUT",
-              "key": {
-                "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
-              },
-              "expires_in": { "var": "temp_data.rows.0.upload_s" },
-              "output": "temp_data.put_weights"
-            }
-          }
-        },
-        {
-          "id": "sign_manifest",
-          "name": "A one-shot PUT for the manifest",
-          "function": {
-            "name": "storage_presign",
-            "input": {
-              "connector": "soma-models",
-              "method": "PUT",
-              "key": {
-                "cat": [
-                  "models/",
-                  { "var": "temp_data.rows.0.body.version_id" },
-                  "/",
-                  "manifest.json"
-                ]
-              },
-              "expires_in": { "var": "temp_data.rows.0.upload_s" },
-              "output": "temp_data.put_manifest"
-            }
-          }
-        }
-      ]
+      "use": "sign-uploads"
     },
     {
       "id": "deny",

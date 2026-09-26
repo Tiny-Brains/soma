@@ -1,0 +1,39 @@
+{
+  "name": "token-mint: a live key is registered, identified, told the engine, and given a ten-minute token",
+  "workflow": "../workflows/soma-gate-token.json",
+  "input": {
+    "key": "k-1",
+    "label": "lab",
+    "arch": "arm64",
+    "engine_digest": "sha256:e1",
+    "orion_version": "1.10.0",
+    "node_version": "dev",
+    "max_in_flight": 4,
+    "ops_budget": 1000000
+  },
+  "metadata": { "auth": { "claims": { "sub": "x", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "runner_id": "r1",
+            "key_id": "k1",
+            "label": "lab",
+            "ops_budget": 1000000,
+            "ops_required": 1000000,
+            "max_in_flight": 4
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.expires_in": 600,
+    "calls.db_write[0].task_id": "register",
+    "calls.db_write[1].task_id": "notify_engine"
+  },
+  "expect_calls": { "db_write": [{}, {}] }
+}

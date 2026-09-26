@@ -1,7 +1,7 @@
 # soma
 
 Soma is TinyBrains' public API, its schema and the life cycle of a model version: sign-in,
-submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.9.1 package
+submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.10.0 package
 (REST channels, cron clocks, workflows, connectors and two Rust/wasm plugins) plus the Postgres
 migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/soma`.
 [Kalam](https://github.com/Tiny-Brains/kalam) runners play the matches Soma queues, and
@@ -98,6 +98,7 @@ channels add a per-principal quota.
 | GET | `/v1/games/{game}/submission` | Session | Whether the caller may submit, and why not; `?model=` |
 | POST | `/v1/submissions` | Session | `{game, model, weights_hash, manifest_hash, note?}`: a `testing` version and two presigned PUTs; the same hashes again re-sign them; 422 `note_word_listed` |
 | GET | `/v1/matches` · `/v1/matches/{id}` | Public | `season`, `model`, `version`, `owner`, `map`, `class`, `ladder`, `outcome`, `players_min/max`, `sort` (newest, closest, upset, longest, discussed, each with its own cursor), `since`, `top=true`, `vs=<model>` beside `model=` (400 `vs_needs_model`, `sort_invalid`), `cursor`, `limit` ≤ 60; `total` counts to 10,000 and `total_capped` says it stopped; each row a card with `margin`, `upset`, `comments`, `frame` · the card with each seat's `rating_change`, and a signed replay URL; a trial only once its candidate is public, else 404 |
+| GET | `/v1/games/{game}/seasons/{slug}/playing` | Public | `{playing}`: matches on a board right now, trials excluded; uncached, because it moves at every claim |
 | GET | `/v1/matches/{id}/frame` | Public | `{id, map, turn, seats, frame}`: the last frame of a public match, else 404; `Cache-Control: immutable` once a frame exists, a minute until then |
 | GET | `/v1/matches/{id}/related` | Public | Twelve cards: these models' latest in turns (winner's model first), three on the board, then the season's latest |
 | POST | `/v1/events` | Public | `{event, match, via}`: 204 always; 400 `event_invalid`, `via_invalid`, `match_invalid`; a private or unknown match writes nothing |
@@ -133,7 +134,7 @@ channels add a per-principal quota.
 | GET · POST | `/v1/admin/notify` | Admin | The sent log with `recipients` and `read` · `{subject, link?, audience}` sends now; 400 `notify_invalid`, 422 `no_recipients`. An audience is a union of `{"everyone": true}`, `{game, season, class?}`, `{models: [...]}`, `{handles: [...]}`; baselines never |
 | GET · POST · PATCH | `/v1/admin/picks` | Admin | Live picks as the public cards with `pick_id`, `position`, `pinned_by`, `pinned_at` · `{match_id}` pins (404 for an unknown id, 422 `match_not_public`, 409 `already_pinned`) · `{ids}` reorders the whole list (409 `order_incomplete`) |
 | DELETE | `/v1/admin/picks/{id}` | Admin | Unpins |
-| POST | `/v1/runner/token` | Public, address-limited | Key → ten-minute token; the runner self-registers on `(key, label)`; 409 when its `ops_budget` disagrees with a live season |
+| POST | `/v1/runner/token` | Public, address-limited | Key → ten-minute token; the runner self-registers on `(key, label)` and reports `max_in_flight`, `ops_budget`, `match_timeout_ms` and `seat_concurrency`; 409 when its `ops_budget` disagrees with a live season |
 | POST | `/v1/runner/claim` | Runner | One match and its execution contract, or `200 {"idle": true}` |
 | POST | `/v1/runner/matches/{id}/start` · `/renew` · `/release` | Runner | claimed → running · extend the lease (`{applied, lease_expires_at}`) · requeue, spending a refusal |
 | POST | `/v1/runner/matches/{id}/replay-url` | Runner | Presigned PUT for `replays/<match>/<claim_token>.json` |
@@ -259,12 +260,15 @@ compose file sets every one of them for the local stack.
 | `SEASON_GAP_DAYS` | `1` | Minimum days from a close to the next season's opening |
 | `SOMA_ADMIN_GITHUB_IDS` | empty | GitHub numeric user ids, comma-separated, made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
-| `ORION_VERSION` | `1.9.1` | Recorded on every verdict and match as `orion_version` |
+| `ORION_VERSION` | `1.10.0` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
+| `SOMA_CRON_CLAIM_LEASE_SECS` | `60` | How long a dead node's clock runs hold their slots, and how long a state-database outage a running clock survives (the lease minus one 15 s heartbeat) |
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
 | `SOMA_ALLOW_PRIVATE_URLS` | `false` | `[vars] allow_private_urls`, which every connector but `soma-cache` reads: compose service names resolve to private addresses |
 | `SOMA_CACHE_URL` | *(required)* | `soma-cache`'s Redis, the response cache for the anonymous reads. An absent `env://` skips the connector |
-| `SOMA_HOT_CACHE_TTL_SECS`, `SOMA_SEASON_CACHE_TTL_SECS` | 10, 60 | How long an anonymous read is served from `soma-cache` |
+| `SOMA_IDLE_MARKER_TTL_SECS` | `30` | How long a runner's idle marker lives: a claim that found nothing answers idle from `soma-cache` until a write bumps `gen:work` or this passes |
+| `SOMA_CACHE_ENTRY_TTL_SECS` | `600` | The ceiling on any other entry a workflow keeps on `soma-cache` |
+| `SOMA_HOT_CACHE_TTL_SECS`, `SOMA_SEASON_CACHE_TTL_SECS` | 600, 600 | The ceiling on how long an anonymous read is served from `soma-cache`; a write invalidates the namespaces it touched before that |
 | `SOMA_RATE_*_RPS`, `SOMA_RATE_*_BURST` | as shipped | One pair per rate-limit family (`public`, `session`, `per_user_read`, `per_user_write`, `per_admin_board`, `runner`, `runner_token`, `per_runner`, `signin`); `docker/soma.toml.tmpl` lists them |
 | `GITHUB_API_BASE` | api.github.com | Load-time connector base |
 | `SOMA_ARTIFACT` | `/var/lib/orion/soma.package.json` | Where `serve` compiles the package to, and what `[packages] apply` reads |
@@ -280,12 +284,13 @@ against `soma`, plus `SOMA_STATE_DB_MAX_CONNECTIONS` against `orion_state` — 2
 transient `psql` or two while `bootstrap` runs. Shrink the pools before the cron workers: five clocks
 are declared and `soma-clock-admit` holds a worker for as long as its 600 s timeout, so fewer workers
 than clocks that can be due together is an idle ladder on a node whose `/readyz` says ok. The
-response-cache TTLs are the lever that takes load off the pools and the node at once.
+response cache takes load off the pools and the node at once: an anonymous read is served from
+`soma-cache` until a write invalidates it, and the TTLs are only the ceiling.
 `scripts/check-names.sh` refuses a `var://` name `[vars]` does not declare — Orion's own rule reads
 workflow logic and not a connector's config, so that one is checked here.
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
-engine digest and component come from it), `ORION_VERSION` (1.9.1), `RUST_VERSION`,
+engine digest and component come from it), `ORION_VERSION` (1.10.0), `RUST_VERSION`,
 `WASM_TOOLS_VERSION`, `CURL_VERSION`, `DEBIAN_VERSION`. **Policy numbers** (pairing, rating,
 admission, runner contract) are `[vars]` in `docker/soma.toml.tmpl`, and most can be overridden per
 season through its `rules` document (`season_rule_spec()` in
@@ -338,8 +343,12 @@ its next sign-in, so removing someone for good means removing their id too.
   clock runs twice (fenced, but not once). Channel rate limits then live on Redis and are fleet-wide.
   `[rate_limit]` limits and `max_concurrent_per_node` stay per node.
 - **Alert** on `/health` `config_propagation = degraded` and `orion_errors_total{reason="config_epoch_bump"}`.
-- **Give the response cache its own Redis** (`SOMA_CACHE_URL`). Sharing one with cluster
-  state means no eviction policy can trim the cache without evicting the clocks' coordination.
+- **Give the response cache its own Redis** (`SOMA_CACHE_URL`), with `maxmemory-policy
+  volatile-lru`. Sharing one with cluster state means no eviction policy can trim the cache without
+  evicting the clocks' coordination, and `allkeys-lru` could evict a namespace counter
+  (`orion:rc:ns:*`, no TTL): an evicted counter reads as version 0 and serves again an entry stored
+  before the namespace was first bumped. Entries carry TTLs; counters do not; `volatile-lru` takes
+  only entries.
 - **TLS**: `SOMA_COOKIE_SECURE=1`, and an https `OAUTH_REDIRECT_URI` (Orion refuses http off
   loopback).
 - **Never expose port 8080 beyond the proxy.** It carries the admin API and `/metrics`.
@@ -466,9 +475,13 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   (`conn` on a connector) and is also the id's second segment; `scripts/check-names.sh` DERIVES it
   from the definition and fails if the two disagree. The domain comes from a closed list
   shared with kalam -- web's `scripts/check/configs.sh` compares them.
-- **Only caller-invariant routes cache.** The cache key has no caller in it. A route that carries
-  the live season (`/v1/games`, `/v1/games/{game}`, the seasons list) takes `season_cache`, 60 s,
-  so an admin's change reaches every reader within a minute and the three never disagree.
+- **Only caller-invariant routes cache, and every cached route names what it is built from.** The
+  cache key has no caller in it, and `cache.namespaces` on the channel is one or more of `season`,
+  `ladder`, `matches`, `community` and `announcements`. Every writer of public data, a clock, a
+  gate route or an admin or user route, follows its write with the `invalidate` fragment, so an
+  entry is served until the data it was built from changes and the TTL is a ceiling, not the
+  freshness. The one write that bumps nothing is sign-in's upsert: `db_write` cannot say whether the
+  handle changed, so a handle renamed at GitHub reaches the ladder and the profiles at the ceiling.
 - **Something private gets its own path** (`/v1/me/matches`), never a parameter on a public route.
 - **The board and the terms of play ride the claim.** A runner fetches no board and holds no copy of
   `turn_ms`.
@@ -514,6 +527,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   instant can both pass; the per-user write rate is the backstop.
 - The admin comment search (`q`) scans: there is no trigram index on `comments.body`.
 - A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
+- The admit and pair clocks still tick against Postgres when idle (`proposal/CACHE.md`): admit
+  cannot tell nothing waiting from waiting but leased without a read, and pair's demand moves
+  with time.
 - An off-site runner must hold a GET key for the models bucket. The fix is an Orion ask, not yet
   filed: a URL-valued artifact reference on the `models` entity.
 

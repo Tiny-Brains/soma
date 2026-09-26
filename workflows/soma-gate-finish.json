@@ -1,13 +1,12 @@
 {
   "workflow_id": "soma-gate-finish",
   "name": "Finish the match",
-  "description": "ONE STATEMENT: the row and all its seats move together or neither does. The seat-count check refuses a result naming fewer seats than the match has -- that row stays running and the reap returns it to the queue, which is recoverable, where a half-written match is not.\n\nIDEMPOTENT UNDER A DUPLICATE DELIVERY, WHICH IS NEW AND NECESSARY. In cluster this call could not be delivered twice; over a WAN it can, and the old statement alone cannot tell 'I already did this' from 'my token is stale' -- both are rows_affected = 0. A runner that finished correctly, lost the response and retried would have reported a fault on a match it had just completed. So the route writes and then READS BACK under the same token: finished-and-mine is a success with applied:false, and anything else is a 409. The two must stay distinguishable in the response or a healthy runner fails mid-match.",
+  "description": "ONE STATEMENT: the row and all its seats move together or neither does. The seat-count check refuses a result naming fewer seats than the match has -- that row stays running and the reap returns it to the queue, which is recoverable, where a half-written match is not.\n\nIDEMPOTENT UNDER A DUPLICATE DELIVERY. Over a WAN a call can arrive twice, and the write alone cannot tell 'I already did this' from 'my token is stale' -- both are rows_affected = 0. A runner that finished correctly, lost the response and retried would have reported a fault on a match it had just completed. So the route writes and then READS BACK under the same token: finished-and-mine is a success with applied:false, and anything else is a 409. The two must stay distinguishable in the response or a healthy runner fails mid-match.",
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
-      "id": "parse",
-      "name": "Parse payload",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+      "id": "req",
+      "use": "require-claim-token"
     },
     {
       "id": "finish",
@@ -36,10 +35,48 @@
       }
     },
     {
+      "id": "when_finished",
+      "description": "The row finished: the match namespace and `gen:finished` (count has a result to fold) move, and this runner's idle marker goes, so the lane it just freed asks the queue on its next poll rather than trusting a marker written while the slot was full.",
+      "condition": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "invalidate",
+          "use": "invalidate",
+          "with": { "namespaces": ["matches"] }
+        },
+        {
+          "id": "bump_finished",
+          "use": "bump",
+          "with": { "key": "gen:finished" }
+        },
+        {
+          "id": "forget",
+          "name": "Drop this runner's idle marker",
+          "continue_on_error": true,
+          "function": {
+            "name": "cache_delete",
+            "input": {
+              "connector": "soma-cache",
+              "keys": [
+                {
+                  "cat": [
+                    "idle:",
+                    { "var": "data.req.engine_digest" },
+                    ":",
+                    { "var": "metadata.auth.claims.sub" }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "state",
       "name": "Diagnose what the row says now",
       "description": "Runs only when the write moved nothing, and asks the one question that separates the two zero-row cases: is this row finished AND still carrying my token.",
-      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "wrote" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -56,7 +93,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             {
               "!": {
                 "and": [

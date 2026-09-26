@@ -35,20 +35,12 @@
     },
     {
       "id": "reason",
-      "use": "refuse",
+      "use": "too-long",
       "with": {
-        "when": {
-          ">": [
-            {
-              "length": [
-                { "or": [{ "var": "data.req.reason" }, ""] }
-              ]
-            },
-            300
-          ]
-        },
-        "status": 400,
-        "body": { "error": "reason_too_long", "detail": "A reason is at most 300 characters." },
+        "field": "reason",
+        "max": 300,
+        "error": "reason_too_long",
+        "detail": "A reason is at most 300 characters.",
         "name": "Refuse a reason too long"
       }
     },
@@ -69,6 +61,14 @@
           ],
           "output": "temp_data.wrote"
         }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
       }
     },
     {
@@ -98,7 +98,7 @@
       "id": "state",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 409,
         "body": { "error": "story_state", "detail": { "var": "temp_data.rows.0.body.stories.0" } },
         "name": "Not in a state for that"

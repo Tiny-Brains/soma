@@ -89,7 +89,7 @@
       "id": "gone",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.created.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "created" } },
         "status": 401,
         "body": { "error": "session_revoked" },
         "name": "The session went away",

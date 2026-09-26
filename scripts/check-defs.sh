@@ -45,6 +45,12 @@ orion-server fmt --check .
 echo "==> names, tags and the sql/ directory"
 ./scripts/check-names.sh
 
+# ---------------------------------------------------------------- the offline cases
+# Every *.case.json under tests/, through `orion-server test` with stubbed connectors and the real
+# plugins: the branch each route and clock takes, the answer it gives, and the calls it makes.
+echo "==> offline test cases"
+./scripts/check-tests.sh
+
 # ---------------------------------------------------------------- the serving config's rules
 # Three clippy rules need the config the node will actually serve with, because what they prove is
 # a definition against a setting: a `[vars]` name nothing declares, a `secret` nothing supplies,

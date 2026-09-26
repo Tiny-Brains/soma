@@ -180,10 +180,18 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.inserted.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "raced",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.inserted.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "inserted" } },
         "status": 409,
         "body": {
           "error": "map_conflict",

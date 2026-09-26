@@ -123,13 +123,21 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "raced",
       "use": "refuse",
       "with": {
         "when": {
           "and": [
             { "!": { "var": "temp_data.ctx.0.body.existing" } },
-            { "!": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] } }
+            { "$use": "none_written", "with": { "slot": "insert" } }
           ]
         },
         "status": 409,
@@ -162,48 +170,7 @@
     },
     {
       "id": "sign",
-      "name": "Sign both uploads",
-      "description": "Both presigns are asked the same question -- is there a testing version to upload to -- so the group carries the condition once.",
-      "condition": { "!!": { "var": "temp_data.rows.0.body.version_id" } },
-      "tasks": [
-        {
-          "id": "sign_weights",
-          "name": "A one-shot PUT for the ONNX graph",
-          "function": {
-            "name": "storage_presign",
-            "input": {
-              "connector": "soma-models",
-              "method": "PUT",
-              "key": {
-                "cat": ["models/", { "var": "temp_data.rows.0.body.version_id" }, "/", "model.onnx"]
-              },
-              "expires_in": { "var": "temp_data.rows.0.upload_s" },
-              "output": "temp_data.put_weights"
-            }
-          }
-        },
-        {
-          "id": "sign_manifest",
-          "name": "A one-shot PUT for the manifest",
-          "function": {
-            "name": "storage_presign",
-            "input": {
-              "connector": "soma-models",
-              "method": "PUT",
-              "key": {
-                "cat": [
-                  "models/",
-                  { "var": "temp_data.rows.0.body.version_id" },
-                  "/",
-                  "manifest.json"
-                ]
-              },
-              "expires_in": { "var": "temp_data.rows.0.upload_s" },
-              "output": "temp_data.put_manifest"
-            }
-          }
-        }
-      ]
+      "use": "sign-uploads"
     },
     {
       "id": "respond",

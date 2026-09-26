@@ -9,9 +9,10 @@
   "route_pattern": "/v1/games/{game}/seasons/{slug}/podium",
   "workflow_id": "soma-pub-podium",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.public_rate" },
-    "cache": { "$from": "constants.season_cache" }
+    "cache": { "$from": "constants.season_cache", "namespaces": ["season", "ladder"] }
   }
 }

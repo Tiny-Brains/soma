@@ -1,0 +1,20 @@
+{
+  "name": "roster-live-idle: a live runner with nothing to register is an empty roster, and is seen",
+  "workflow": "../workflows/soma-gate-roster.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": { "model_prefix": "tb.v" }
+  },
+  "stubs": {
+    "db_read": { "soma-db-gate": [{ "body": { "n": 0, "items": [] } }] },
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.n": 0,
+    "data.body.items": []
+  },
+  "expect_tasks": ["query", "seen", "respond"]
+}

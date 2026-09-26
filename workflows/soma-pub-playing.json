@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-pub-playing",
+  "name": "Matches on a board right now",
+  "description": "The one season number that moves with every claim: counted on its own, uncached, so the season document (games, seasons, podium) can be served until a write that concerns it. 404 for a game or season that does not exist.",
+  "tags": ["soma", "pub", "platform"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Count the matches in play",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-playing-query.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such game or season"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

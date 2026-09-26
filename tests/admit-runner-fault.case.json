@@ -1,0 +1,153 @@
+{
+  "name": "admit-runner-fault: the runner's fault sends the submission back to the queue, no verdict",
+  "workflow": "../workflows/soma-clock-admit-run.json",
+  "input": {},
+  "metadata": {
+    "trigger": {
+      "scheduled_for": "2026-09-26T03:00:00Z",
+      "attempt": 1,
+      "occurrence_id": "01a0-test"
+    },
+    "vars": {
+      "admit_attempts_max": 3,
+      "admit_batch": 4,
+      "admit_timeout_s": 180,
+      "model_prefix": "tb.v",
+      "models_endpoint": "http://minio:9000",
+      "op_allowlist": ["Conv", "Relu"],
+      "opset_max": 19,
+      "opset_min": 13,
+      "orion_version": "1.10.0",
+      "upload_window_s": 1800
+    }
+  },
+  "stubs": {
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "n": 1,
+            "items": [
+              {
+                "model_id": "009205a9-e14d-440b-a288-1a278a14bbd6",
+                "model": "tb.v009205a9-e14d-440b-a288-1a278a14bbd6",
+                "weights_hash": "sha256:981c45e8ab9e3a9f47aaca73a5c6d320559281e462dec373af86414811a32a22",
+                "manifest_hash": "sha256:4085e3b697ca43d90d54ae18510ab88090df8f363dc4e59a5c85edc166aa640b",
+                "artifact_key": "models/009205a9/model.onnx",
+                "manifest_key": "models/009205a9/manifest.json",
+                "uploading": true,
+                "budget_ops": 1000000,
+                "observations_n": 207,
+                "opset_min": 13,
+                "opset_max": 19,
+                "op_allowlist": null,
+                "params_max": null,
+                "infer_us_max": null,
+                "rules_ok": true,
+                "job": {
+                  "admitted": false,
+                  "again": "PROBE_UNREACHABLE",
+                  "refused": null,
+                  "probe": null,
+                  "opset": null,
+                  "parameters": null,
+                  "size": null,
+                  "operators": [],
+                  "round_trip_refused": null,
+                  "probe_dims": {}
+                },
+                "probe_us": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "storage_head": { "soma-models-internal": { "exists": true, "size": 53495 } },
+    "storage_presign": {
+      "soma-models-internal": "http://minio:9000/tinybrains-models/models/009205a9/manifest.json"
+    },
+    "http_call": {
+      "soma-models-http": {
+        "abi": "orion:model@1.0.0",
+        "description": "A TinyBrains Ants entry: seven planes in, a per-cell policy out.",
+        "format": "onnx",
+        "inputs": [
+          {
+            "adapter": {
+              "reshape": [
+                {
+                  "stack": [
+                    [
+                      { "scatter": [{ "var": "mine" }, { "var": "size" }, "i8"] },
+                      {
+                        "scatter": [
+                          {
+                            "map": [
+                              { "var": "foes" },
+                              [{ "var": "0" }, { "var": "1" }]
+                            ]
+                          },
+                          { "var": "size" },
+                          "i8"
+                        ]
+                      },
+                      { "scatter": [{ "var": "food" }, { "var": "size" }, "i8"] },
+                      { "rle_expand": [{ "var": "water.rle" }, { "var": "size" }, "i8"] },
+                      {
+                        "scatter": [
+                          {
+                            "map": [
+                              {
+                                "filter": [
+                                  { "var": "hills" },
+                                  { "==": [{ "var": "2" }, 0] }
+                                ]
+                              },
+                              [{ "var": "0" }, { "var": "1" }]
+                            ]
+                          },
+                          { "var": "size" },
+                          "i8"
+                        ]
+                      },
+                      {
+                        "scatter": [
+                          {
+                            "map": [
+                              {
+                                "filter": [
+                                  { "var": "hills" },
+                                  { "!=": [{ "var": "2" }, 0] }
+                                ]
+                              },
+                              [{ "var": "0" }, { "var": "1" }]
+                            ]
+                          },
+                          { "var": "size" },
+                          "i8"
+                        ]
+                      },
+                      { "rle_expand": [{ "var": "vis.rle" }, { "var": "size" }, "i8"] }
+                    ],
+                    0
+                  ]
+                },
+                { "merge": [[1, 7], { "var": "size" }] }
+              ]
+            },
+            "dtype": "i8",
+            "name": "board",
+            "shape": [1, 7, "H", "W"]
+          }
+        ],
+        "name": "tb.micro-bc",
+        "outputs": [{ "dtype": "f32", "name": "policy", "shape": [1, 5, "H", "W"] }],
+        "probe_dims": { "H": 128, "W": 128 },
+        "version": "1"
+      }
+    }
+  },
+  "expect": { "temp_data.s.reason": null }
+}

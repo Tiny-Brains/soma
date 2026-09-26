@@ -5,9 +5,8 @@
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
-      "id": "parse",
-      "name": "Parse payload",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+      "id": "req",
+      "use": "require-claim-token"
     },
     {
       "id": "release",
@@ -30,10 +29,27 @@
       }
     },
     {
+      "id": "when_released",
+      "description": "The row went back to the queue: new work for every runner (`gen:work`) and, a failed row being a verdict to read, for count (`gen:finished`).",
+      "condition": { ">": [{ "var": "temp_data.released.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "bump_work",
+          "use": "bump",
+          "with": { "key": "gen:work" }
+        },
+        {
+          "id": "bump_finished",
+          "use": "bump",
+          "with": { "key": "gen:finished" }
+        }
+      ]
+    },
+    {
       "id": "lost",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.released.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "released" } },
         "status": 409,
         "body": { "error": "claim_lost" },
         "name": "The claim is gone",

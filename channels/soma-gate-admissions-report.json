@@ -9,6 +9,7 @@
   "route_pattern": "/v1/runner/admissions/{id}/report",
   "workflow_id": "soma-gate-admissions-report",
   "config": {
+    "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.runner_rate" },

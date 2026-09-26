@@ -1,0 +1,30 @@
+{
+  "name": "comments-create-too-fast: one comment every fifteen seconds, with Retry-After",
+  "workflow": "../workflows/soma-user-comments-create.json",
+  "input": { "match": "m1", "body": "hi" },
+  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "session_ok": true,
+          "body": {
+            "body_ok": true,
+            "host_ok": true,
+            "parent_ok": true,
+            "off_until": null,
+            "locked": false,
+            "wait_s": 12,
+            "day_wait_s": null
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 429,
+    "data.body.error": "too_fast",
+    "data._orion.response.headers.Retry-After": "12"
+  }
+}

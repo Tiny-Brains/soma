@@ -1,0 +1,37 @@
+{
+  "name": "token-mismatch: a node whose ops_budget disagrees with a season's is refused 409",
+  "workflow": "../workflows/soma-gate-token.json",
+  "input": {
+    "key": "k-1",
+    "label": "lab",
+    "arch": "arm64",
+    "engine_digest": "sha256:e1",
+    "orion_version": "1.10.0",
+    "node_version": "dev",
+    "max_in_flight": 4,
+    "ops_budget": 1000000
+  },
+  "metadata": { "auth": { "claims": { "sub": "x", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "runner_id": "r1",
+            "key_id": "k1",
+            "label": "lab",
+            "ops_budget": 1000000,
+            "ops_required": 200000,
+            "max_in_flight": 4
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "ops_budget_mismatch"
+  },
+  "expect_calls": { "db_write": [{}] }
+}

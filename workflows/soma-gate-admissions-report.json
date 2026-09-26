@@ -5,9 +5,8 @@
   "tags": ["soma", "gate", "admission"],
   "tasks": [
     {
-      "id": "parse",
-      "name": "Parse payload",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+      "id": "req",
+      "use": "require-claim-token"
     },
     {
       "id": "report",
@@ -32,7 +31,7 @@
     {
       "id": "why",
       "name": "Diagnose what the row says now",
-      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "wrote" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -49,7 +48,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             {
               "!": {
                 "and": [

@@ -26,10 +26,18 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.requested.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.requested.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "requested" } },
         "status": 409,
         "body": {
           "error": "season_not_live",
@@ -59,7 +67,7 @@
         "input": {
           "mappings": [
             { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data._orion.response", "logic": { "status": 202, "body_path": "data.body" } }
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok", "status": 202 } }
           ]
         }
       }

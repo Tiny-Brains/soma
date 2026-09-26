@@ -43,9 +43,17 @@
       }
     },
     {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["community"],
+        "when": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] }
+      }
+    },
+    {
       "id": "why",
       "name": "Why nothing was written",
-      "condition": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+      "condition": { "$use": "none_written", "with": { "slot": "wrote" } },
       "function": {
         "name": "db_read",
         "input": {
@@ -62,7 +70,7 @@
       "with": {
         "when": {
           "and": [
-            { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+            { "$use": "none_written", "with": { "slot": "wrote" } },
             { "!!": { "var": "temp_data.why.0.body.slug_taken" } }
           ]
         },
@@ -75,7 +83,7 @@
       "id": "invalid",
       "use": "refuse",
       "with": {
-        "when": { "!": { ">": [{ "var": "temp_data.wrote.rows_affected" }, 0] } },
+        "when": { "$use": "none_written", "with": { "slot": "wrote" } },
         "status": 400,
         "body": {
           "error": "post_invalid",

@@ -59,7 +59,7 @@ wf_by_id = {d["workflow_id"]: (p, d) for p, d in workflows.items()}
 
 def steps(tasks):
     """Every task, descending into groups. A walk that does not is a walk that silently skips
-    most of a clock's statements, since group_runs() folds consecutive tasks into groups."""
+    most of a clock's statements, since consecutive tasks sharing a condition are one group."""
     for t in tasks:
         if "$each" in t:
             for v in t.values():
@@ -179,10 +179,24 @@ for p, cn in connectors.items():
 # ---------------------------------------------------------------- the sql/ directory
 refs = {}
 for p, wf in workflows.items():
-    for t in steps(wf.get("tasks", [])):
+    for t in steps(wf.get("loop", {}).get("setup", []) + wf.get("tasks", [])):
         q = ((t.get("function") or {}).get("input") or {}).get("query")
         if isinstance(q, dict) and "$sql" in q:
             refs.setdefault(pathlib.PurePosixPath(q["$sql"]).name, []).append((wf["workflow_id"], t["id"]))
+# A fragment in the shared document may ship a statement too (`notify-comments` does): its `$sql` is
+# written relative to shared/ and lands in every workflow that uses the fragment, so it is one
+# reference PER USE SITE here, which is what lets a `shared` statement live in a fragment.
+uses = {}
+for wf in workflows.values():
+    for t in steps(wf.get("loop", {}).get("setup", []) + wf.get("tasks", [])):
+        if "use" in t:
+            uses.setdefault(t["use"], []).append((wf["workflow_id"], t["id"]))
+for name, frag in (json.load(open("shared/soma.json")).get("fragments") or {}).items():
+    for t in steps(frag.get("tasks") or []):
+        q = ((t.get("function") or {}).get("input") or {}).get("query")
+        if isinstance(q, dict) and "$sql" in q:
+            for wf_id, site in uses.get(name, []):
+                refs.setdefault(pathlib.PurePosixPath(q["$sql"]).name, []).append((wf_id, site + "." + t["id"]))
 on_disk = {f.name for f in pathlib.Path("sql").glob("*.sql")}
 for f in sorted(on_disk - set(refs)):
     bad(pathlib.Path("sql") / f, "no task names it")
