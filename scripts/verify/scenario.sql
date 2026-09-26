@@ -76,7 +76,7 @@ SELECT season_map_within('{"players": 2, "rows": 24, "cols": 24}',
                          '{"players": [2, 8], "sides": [24, 124], "cells_max": 14880}') AS too_long;
 
 \echo '--- pair: epoch read; trial insert (expect INSERT 0 2 seats); ranked insert (expect 2); second live trial (expect unique violation)'
-EXECUTE p_epoch;
+SELECT epoch FROM clocks WHERE key = 'roster';
 EXECUTE p_insert (0, 'ants', 42, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
@@ -561,14 +561,14 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
 \echo '--- the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on the season''s first enabled board, `default` (expect n 1, 2 seats, map 70000000-...-001)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 \echo '--- the board decides the seat count. Only one baseline exists here, so with the two-seat boards disabled the four-seat one is left unpaired rather than seated short (expect n 0)'
 BEGIN;
 UPDATE season_maps SET enabled = false WHERE players = 2;
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 \echo '    ... and a season with no board enabled offers nothing at all (expect n 0)'
 UPDATE season_maps SET enabled = false;
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 ROLLBACK;
 \echo '--- a refused trial is not the candidate''s attempt: v4''s trial fails MODEL_UNAVAILABLE (expect failed), yet v4 is offered again on the same first board (expect n 1, map 70000000-...-001), and count reads the refusal as a repair with 0 trials spent, not UNPLAYABLE (expect decision repair, trials 0), rolled back'
 BEGIN;
@@ -579,7 +579,7 @@ SELECT id AS m59 FROM matches WHERE seed = 59 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000d', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m59', 0);
 SELECT seed, status, fault_reason FROM matches WHERE seed = 59;
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 EXECUTE c_batch_doc (10, 3) \gset
 SELECT i ->> 'decision' AS decision, i ->> 'reason' AS reason, i ->> 'trials' AS trials
   FROM json_array_elements((:'body')::json -> 'items') i
@@ -596,7 +596,7 @@ EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
   'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001', NULL);
 \echo '--- a trial played but not yet decided is still live, as matches_one_live_trial_uniq counts it: the trial read does not offer v4 a second one (expect n 0)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 \echo '--- and it is nobody''s but its owner''s yet: a trial finished and not yet decided is no public match, and its verified candidate no public version (expect 60 f, then 0 rows)'
 SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 60;
 EXECUTE v_public ('20000000-0000-0000-0000-000000000004', 2.0);
@@ -662,14 +662,14 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
 \echo '    the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight)'
-EXECUTE p_trials ('00000000-0000-0000-0000-00000000000a', 3);
+EXECUTE p_trials ('ants', 3);
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 
 \echo '--- pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
 SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
 UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE p_demand_doc ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('ants', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e::jsonb ? 'role' AS has_role
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
@@ -678,7 +678,7 @@ UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-
 
 \echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
-EXECUTE p_demand_doc ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('ants', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
 \echo '--- disable a board with one match queued on it and one running: the queued one is cancelled MAP_DISABLED and the running one plays on (expect two INSERT 0 2, the flip INSERT 0 1, then cancelled/MAP_DISABLED and running, and one event with cancelled 1)'
@@ -839,6 +839,8 @@ EXECUTE a_expire (3, 180, '0b000000-0000-0000-0000-00000000000e');
 \echo '--- the runner claims AS runner_gate: oldest first, one attempt spent, the registration, key, digest, budget and the first two observations (expect UPDATE 1, then the claim)'
 SET ROLE runner_gate;
 EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000001', '0c000000-0000-0000-0000-000000000001', 300, 3);
+\echo '--- anything waiting at all, leased or not, is what the idle marker asks (expect t while a row is claimed)'
+EXECUTE g_admit_waiting;
 EXECUTE g_admit_row ('0c000000-0000-0000-0000-000000000001', 'tb.v', 2, 5000);
 \echo '    a second runner takes the other one, and a third finds nothing (expect UPDATE 1, UPDATE 0); a revoked runner claims nothing (expect UPDATE 0)'
 EXECUTE g_admit_claim ('c1000000-0000-0000-0000-000000000002', '0c000000-0000-0000-0000-000000000002', 300, 3);

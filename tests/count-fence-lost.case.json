@@ -25,5 +25,5 @@
     "cache_read": { "soma-cache": [null, null] }
   },
   "expect_calls": { "db_read": [] },
-  "expect_tasks": ["probe", "fresh", "fence", "fenced"]
+  "expect_tasks": ["probe", "generation.zero", "fresh", "fence", "fenced"]
 }

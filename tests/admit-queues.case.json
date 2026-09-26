@@ -136,7 +136,8 @@
         "probe_dims": { "H": 128, "W": 128 },
         "version": "1"
       }
-    }
+    },
+    "cache_incr": { "soma-cache": 8 }
   },
   "expect": {
     "calls.db_write[3].task_id": "queue",
@@ -159,6 +160,7 @@
     "shape",
     "sift",
     "queue",
+    "bump_admissions_queue.bump",
     "invalidate.bump",
     "release"
   ]

@@ -19,6 +19,10 @@
       }
     },
     {
+      "id": "generation",
+      "use": "generation"
+    },
+    {
       "id": "fresh",
       "name": "Skip the tick while nothing is in flight",
       "description": "A skipped tick delays nothing: a lease can only lapse on a row that was claimed, and a claim bumps the generation. The marker's 60 s TTL is the backstop, so the reap runs at least once a minute whatever Redis says.",
@@ -28,9 +32,8 @@
           "condition": {
             "!": {
               "and": [
-                { "!!": { "var": "temp_data.gen.0" } },
-                { "!!": { "var": "temp_data.gen.1" } },
-                { "==": [{ "var": "temp_data.gen.0" }, { "var": "temp_data.gen.1" }] }
+                { "!==": [{ "var": "temp_data.gen.1" }, null] },
+                { "==": [{ "var": "temp_data.generation" }, { "var": "temp_data.gen.1" }] }
               ]
             }
           },
@@ -90,11 +93,10 @@
     {
       "id": "mark",
       "name": "Remember that nothing was in flight",
-      "description": "Written only when the reap moved nothing, nothing at all is claimed or running, and a generation was read at the top: the next ticks skip until a claim bumps the generation or 60 s pass.",
+      "description": "Written only when the reap moved nothing and nothing at all is claimed or running, under the generation read at the top (zero when none exists yet): the next ticks skip until a claim bumps the generation or 60 s pass.",
       "condition": {
         "and": [
           { "$use": "none_written", "with": { "slot": "reaped" } },
-          { "!!": { "var": "temp_data.gen.0" } },
           { "!": { "var": "temp_data.in_flight.0.any" } }
         ]
       },
@@ -104,7 +106,7 @@
         "input": {
           "connector": "soma-cache",
           "key": "idle:reap",
-          "value": { "var": "temp_data.gen.0" },
+          "value": { "var": "temp_data.generation" },
           "ttl_secs": 60
         }
       }

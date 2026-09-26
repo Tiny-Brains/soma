@@ -62,7 +62,8 @@ channels add a per-principal quota.
 | Method | Path | Auth | What |
 |---|---|---|---|
 | GET | `/v1/auth/github` | Public | Redirect to GitHub (state, PKCE, `?next=`); the same channel serves `/callback` and sets the cookie |
-| GET · PATCH | `/v1/me` | Session | Current user, any version in flight, bio and commenting switch · `display_name`, `bio` (422 `bio_word_listed`) |
+| GET · PATCH | `/v1/me` | Session | Current user, bio and commenting switch, served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
+| GET | `/v1/me/candidates` | Session | The caller's versions still being admitted or on trial; uncached, polled with the bell |
 | GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included, as cards with `mine` on each seat |
 | GET | `/v1/me/matches/{id}` | Session | One match the caller has a seat in, any status, with a signed replay URL: a trial in progress or a rejected candidate's |
 | GET | `/v1/me/comments` | Session | `match` or `model`: your held comments on that host |
@@ -268,6 +269,7 @@ compose file sets every one of them for the local stack.
 | `SOMA_CACHE_URL` | *(required)* | `soma-cache`'s Redis, the response cache for the anonymous reads. An absent `env://` skips the connector |
 | `SOMA_IDLE_MARKER_TTL_SECS` | `30` | How long a runner's idle marker lives: a claim that found nothing answers idle from `soma-cache` until a write bumps `gen:work` or this passes |
 | `SOMA_CACHE_ENTRY_TTL_SECS` | `600` | The ceiling on any other entry a workflow keeps on `soma-cache` |
+| `SOMA_SESSION_CACHE_TTL_SECS` | `300` | How long `/v1/me`'s session entry lives on `soma-cache`; sign-out deletes it and every revocation invalidates it before that |
 | `SOMA_HOT_CACHE_TTL_SECS`, `SOMA_SEASON_CACHE_TTL_SECS` | 600, 600 | The ceiling on how long an anonymous read is served from `soma-cache`; a write invalidates the namespaces it touched before that |
 | `SOMA_RATE_*_RPS`, `SOMA_RATE_*_BURST` | as shipped | One pair per rate-limit family (`public`, `session`, `per_user_read`, `per_user_write`, `per_admin_board`, `runner`, `runner_token`, `per_runner`, `signin`); `docker/soma.toml.tmpl` lists them |
 | `GITHUB_API_BASE` | api.github.com | Load-time connector base |

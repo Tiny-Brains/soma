@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-me-candidates",
+  "name": "soma-user-me-candidates",
+  "description": "The signed-in competitor's versions still in flight, which GET /v1/me used to carry. Uncached and per-session: the admit clock moves them and cannot name the user, which is why they left /v1/me, which is now served from its session entry.",
+  "tags": ["soma", "user", "profile"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/me/candidates",
+  "workflow_id": "soma-user-me-candidates",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

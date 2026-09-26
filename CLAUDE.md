@@ -55,8 +55,17 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   route. Orion refuses one over 2048 characters, and `check-sql.sh` fails first.
 - **SQL builds the response and the workflow moves it**: queries end `json_build_object(...) AS
   body`. Shaping a response in JSONLogic is the exception.
-- **The session guard is a JOIN on `live_sessions` inside the query**, never a guard task. Admin
-  routes read `role` off that live row, never off a cookie claim, so a demotion takes effect at once.
+- **The session guard is a JOIN on `live_sessions` inside the query**, never a guard task, and the
+  JOIN stays inside every signed-in statement as the fence. **`/v1/me` alone is served from the
+  session entry in Redis**: `sess:<sid>` on `soma-cache` holds what the route answers, kept five
+  minutes (`session_cache_ttl_secs`) under `gen:sess:<user>`, and a hit is an entry carrying the
+  current generation whose session has not expired; its miss path is the JOIN, and only a miss
+  stamps `last_seen_at` and rewrites the entry (zero when none exists yet). Sign-out deletes the
+  entry; sign-out-everywhere, a role change, the commenting switch and a profile edit bump the
+  generation with `bump` in its hard form (`soft: false`): a revocation Redis did not record fails
+  the request. `candidates` are their own route, because the admit clock moves them and cannot name
+  the user. Admin routes read `role` off the live row, never off a cookie claim, so a demotion
+  takes effect at once.
   Where `json_agg` without `GROUP BY` would return a row regardless (`soma-user-models-list`, the
   preflight), `live_sessions` is the outer `FROM`.
 - **Write, then diagnose.** `db_write` answers only `rows_affected`, so a refusal is one statement
@@ -126,16 +135,27 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `clocks.epoch` where `key = 'roster'`.
 - **Reap and count skip a tick from the cache, never a decision.** Each starts with one soft
   `cache_read` of its generation and its own marker on `soma-cache` (`gen:work` and `idle:reap`;
-  `gen:finished` and `idle:count`) and halts, before any fence, when the two are present and
-  equal; a Redis that cannot answer runs the clock. The marker is written only when the tick found
-  nothing (reap: nothing claimed or running, by the `in_flight` read; count: an empty batch) and
-  only with a generation read at the top, with a 60 s TTL, so every clock still runs once a minute
-  whatever Redis says. **Generations move in the run that made the work, after its write and only
-  when rows moved, through the `bump` fragment:** `gen:work` on pair's insert, the gate's claim and
-  release, and the reap; `gen:finished` on the gate's finish and release, the reap, and withdraw's
-  sweep and close. A generation carries no TTL (the cache Redis runs volatile-lru); a marker never
-  outlives one. Admit and pair keep their ticks: admit cannot tell "nothing waiting" from "waiting
-  but leased" without a read, and pair's demand moves with time.
+  `gen:finished` and `idle:count`) and halts, before any fence, when the marker is present and equal
+  to the generation; a Redis that cannot answer runs the clock. The marker is written only when the
+  tick found nothing (reap: nothing claimed or running, by the `in_flight` read; count: an empty
+  batch), under the generation read at the top, with a 60 s TTL, so every clock still runs once a
+  minute whatever Redis says. **A generation that does not exist yet is zero**: the `generation`
+  fragment follows every probe and reads a missing key as 0, and the first bump (an INCR on a
+  missing key) makes it 1, so a marker or entry written under zero is stale the moment anything
+  happens. Without that rule a fresh or flushed Redis switches every idle path off until the first
+  event, and a fresh node polls Postgres on every claim and every count tick. **Generations move in
+  the run that made the work, after its write and only when rows moved, through the `bump`
+  fragment:** `gen:work` on pair's insert, the gate's claim and release, and the reap;
+  `gen:finished` on the gate's finish and release, the reap, and withdraw's sweep and close;
+  `gen:admissions` on admit's queue and requeue. A generation carries no TTL (the cache Redis runs
+  volatile-lru); a marker never outlives one. Admit and pair keep their ticks: admit cannot tell
+  "nothing waiting" from "waiting but leased" without a read, and pair's demand moves with time.
+- **Three Orion features are left unused on purpose.** Channel `dedup` on the gate's `finish` and
+  the admission report: a replayed key would answer 409, the opposite of the `applied: false`
+  read-back those routes give a duplicate. The `validation` function for refusals: it cannot
+  choose 404, 409 or 422, and every refusal here is the `refuse` fragment with its own status.
+  Response caching of a signed-in route through `key_logic`: a hit would skip the session JOIN
+  that is the fence, so `/v1/me` is served from its own session entry instead (above).
 - **Only count writes a ladder**, and no clock deletes (`soma-db` sets `operations.delete = false`).
   That a clock never reads `sessions` or rewrites an entry is enforced by review, not by a grant.
 - `tb.pairing` decides quality, never correctness. It must stay pure and seeded by the occurrence
@@ -239,11 +259,15 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   A row no runner can hold stays pending and visible; a runner that reported neither is unbounded.
 - **The idle claim is answered from the cache, per runner.** `claim` reads `gen:work` and
   `idle:<engine digest>:<runner>` in one `MGET` before the statement and answers `{"idle": true}`
-  when they are present and equal; a claim that moved no row stores the generation it read under
-  that marker (`idle_marker_ttl_secs`), never without one. The marker is the runner's own, because
-  an empty answer may be its own (at its in-flight ceiling, or refused a row by the fit), and its
-  `finish` deletes it so a freed slot re-checks at once. A claim that took a row bumps `gen:work`,
-  since an in-flight row is one the reap must see.
+  when the marker is present and equal to the generation; a claim that moved no row stores the
+  generation it read under that marker (`idle_marker_ttl_secs`), zero when none exists yet. The
+  marker is the runner's own, because an empty answer may be its own (at its in-flight ceiling, or
+  refused a row by the fit), and its `finish` deletes it so a freed slot re-checks at once. A claim
+  that took a row bumps `gen:work`, since an in-flight row is one the reap must see. The admission
+  claim is the same shape under `gen:admissions` and `idle:admissions:<runner>`, with one
+  difference: a lapsed lease makes a row claimable again with no write, so its marker is written
+  only when no admission waits at all, leased or not, which one `EXISTS` read (`waiting`) decides
+  after a claim that moved nothing.
 - `finish` writes, then reads back under the same token: `200 {applied: false}` is a duplicate
   delivery, and `409` is a lost claim. Never conflate them.
 - **`auth.source.scheme` is a scheme NAME, parsed as RFC 9110 defines it.** `"Bearer"` and

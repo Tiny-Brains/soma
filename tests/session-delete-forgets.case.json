@@ -1,0 +1,17 @@
+{
+  "name": "session-delete-forgets: sign-out revokes the row and deletes the session entry, hard",
+  "workflow": "../workflows/soma-user-session-delete.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "cache_delete": { "soma-cache": { "deleted": 1 } }
+  },
+  "expect": { "data._orion.response.status": 200 },
+  "expect_calls": { "cache_delete": [{ "keys": ["sess:s1"] }] },
+  "expect_tasks": ["revoke", "forget", "respond"]
+}

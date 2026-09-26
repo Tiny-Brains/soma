@@ -416,12 +416,21 @@
       }
     },
     {
-      "id": "invalidate",
-      "use": "invalidate",
-      "with": {
-        "namespaces": ["season"],
-        "when": { ">": [{ "var": "temp_data.s.queued.rows_affected" }, 0] }
-      }
+      "id": "when_queued",
+      "description": "Only after a queue that wrote: the admissions generation (the gate's idle answer) and the season namespace move together.",
+      "condition": { ">": [{ "var": "temp_data.s.queued.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "bump_admissions_queue",
+          "use": "bump",
+          "with": { "key": "gen:admissions" }
+        },
+        {
+          "id": "invalidate",
+          "use": "invalidate",
+          "with": { "namespaces": ["season"] }
+        }
+      ]
     },
     {
       "id": "sort",
@@ -685,6 +694,14 @@
           ],
           "output": "temp_data.s.requeued"
         }
+      }
+    },
+    {
+      "id": "bump_admissions_requeue",
+      "use": "bump",
+      "with": {
+        "key": "gen:admissions",
+        "when": { ">": [{ "var": "temp_data.s.requeued.rows_affected" }, 0] }
       }
     },
     {

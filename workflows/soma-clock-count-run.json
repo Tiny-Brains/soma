@@ -26,6 +26,10 @@
         }
       },
       {
+        "id": "generation",
+        "use": "generation"
+      },
+      {
         "id": "fresh",
         "name": "Skip the tick while nothing has finished",
         "description": "A skipped tick delays nothing and decides nothing: every result to count arrives through a write that bumps the generation, and the marker's 60 s TTL is the backstop.",
@@ -35,9 +39,8 @@
             "condition": {
               "!": {
                 "and": [
-                  { "!!": { "var": "temp_data.gen.0" } },
-                  { "!!": { "var": "temp_data.gen.1" } },
-                  { "==": [{ "var": "temp_data.gen.0" }, { "var": "temp_data.gen.1" }] }
+                  { "!==": [{ "var": "temp_data.gen.1" }, null] },
+                  { "==": [{ "var": "temp_data.generation" }, { "var": "temp_data.gen.1" }] }
                 ]
               }
             },
@@ -91,20 +94,15 @@
       {
         "id": "mark",
         "name": "Remember that the batch was empty",
-        "description": "Written only when the batch had nothing and a generation was read at the top: the next ticks skip until something finishes or 60 s pass. A run that folded writes nothing, so a verdict a fold makes ready is read on the next tick.",
-        "condition": {
-          "and": [
-            { "==": [{ "var": "temp_data.rows.0.body.n" }, 0] },
-            { "!!": { "var": "temp_data.gen.0" } }
-          ]
-        },
+        "description": "Written only when the batch had nothing, under the generation read at the top (zero when none exists yet): the next ticks skip until something finishes or 60 s pass. A run that folded writes nothing, so a verdict a fold makes ready is read on the next tick.",
+        "condition": { "==": [{ "var": "temp_data.rows.0.body.n" }, 0] },
         "continue_on_error": true,
         "function": {
           "name": "cache_write",
           "input": {
             "connector": "soma-cache",
             "key": "idle:count",
-            "value": { "var": "temp_data.gen.0" },
+            "value": { "var": "temp_data.generation" },
             "ttl_secs": 60
           }
         }

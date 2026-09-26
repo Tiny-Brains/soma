@@ -1,0 +1,34 @@
+{
+  "name": "me-candidates: the versions in flight, on their own route, from the live session",
+  "workflow": "../workflows/soma-user-me-candidates.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
+  "stubs": {
+    "db_read": {
+      "soma-db": [
+        {
+          "session_ok": true,
+          "body": [
+            {
+              "version_id": "v1",
+              "model_id": "m1",
+              "model": "brain",
+              "game": "ants",
+              "version": 1,
+              "phase": "queued"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body[0].version_id": "v1"
+  },
+  "expect_tasks": ["query", "respond"]
+}

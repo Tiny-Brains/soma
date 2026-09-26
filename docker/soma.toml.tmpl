@@ -165,6 +165,13 @@ season_cache_ttl_secs        = ${SOMA_SEASON_CACHE_TTL_SECS:-600}
 cache_entry_ttl_secs         = ${SOMA_CACHE_ENTRY_TTL_SECS:-600}
 idle_marker_ttl_secs         = ${SOMA_IDLE_MARKER_TTL_SECS:-30}
 
+# THE SESSION ENTRY, `sess:<sid>` on soma-cache: what GET /v1/me answers, kept this long, so a page
+# load costs one MGET and no statement. It is validated against `gen:sess:<user>`, which sign-out
+# everywhere, a role change, the commenting switch and a profile edit bump (hard: a revocation that
+# cannot be recorded fails the request), and sign-out deletes it outright. Five minutes, the same
+# bucket as the session's last_seen_at stamp, so the stamp runs on a miss and nothing is lost.
+session_cache_ttl_secs       = ${SOMA_SESSION_CACHE_TTL_SECS:-300}
+
 # ------------------------------------------------------------------------------- CLOCKS
 # Every number below is PROVISIONAL: policy guesses only a running ladder can tune. They live here
 # rather than in the definitions because a definition is versioned and content-hashed, and changing

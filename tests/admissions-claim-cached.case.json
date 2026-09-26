@@ -1,0 +1,25 @@
+{
+  "name": "admissions-claim-cached: a marker equal to the generation answers idle with no statement",
+  "workflow": "../workflows/soma-gate-admissions-claim.json",
+  "input": { "orion_version": "1.10.0" },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "vars": {
+      "orion_version": "1.10.0",
+      "idle_marker_ttl_secs": 30,
+      "admit_lease_s": 300,
+      "admit_observations": 64,
+      "admit_infer_ms": 5000
+    }
+  },
+  "stubs": {
+    "cache_read": { "soma-cache": [7, 7] },
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } }
+  },
+  "expect": {
+    "data.body.idle": true,
+    "data._orion.response.status": 200
+  },
+  "expect_calls": { "db_write": [], "db_read": [], "cache_write": [] },
+  "expect_tasks": ["parse", "mint", "probe", "generation.zero", "cached"]
+}

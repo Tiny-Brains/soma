@@ -45,6 +45,47 @@
       }
     },
     {
+      "id": "probe",
+      "name": "Read the generation and this poller's marker",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_read",
+        "input": {
+          "connector": "soma-cache",
+          "keys": [
+            "gen:admissions",
+            { "cat": ["idle:admissions:", { "var": "metadata.auth.claims.sub" }] }
+          ],
+          "output": "temp_data.gen"
+        }
+      }
+    },
+    {
+      "id": "generation",
+      "use": "generation"
+    },
+    {
+      "id": "cached",
+      "name": "Idle, from the cache",
+      "description": "The marker equals the generation (zero when none exists yet): nothing was waiting when this runner last asked, and neither queue nor requeue has run since. 200 {idle: true} with no statement, the answer the database gives ten times a minute per admitting runner otherwise.",
+      "condition": {
+        "and": [
+          { "!==": [{ "var": "temp_data.gen.1" }, null] },
+          { "==": [{ "var": "temp_data.generation" }, { "var": "temp_data.gen.1" }] }
+        ]
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "idle": true } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    },
+    {
       "id": "claim",
       "name": "Claim one submission",
       "function": {
@@ -78,6 +119,42 @@
             { "var": "metadata.vars.admit_infer_ms" }
           ],
           "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "name": "Is anything waiting at all",
+      "condition": { "$use": "none_written", "with": { "slot": "claimed" } },
+      "continue_on_error": true,
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db-gate",
+          "query": { "$sql": "../sql/soma-gate-admissions-claim-waiting.sql" },
+          "params": [],
+          "output": "temp_data.waiting"
+        }
+      }
+    },
+    {
+      "id": "mark",
+      "name": "Remember that nothing was waiting",
+      "description": "Nothing claimed and nothing waiting, leased or not: store the generation read BEFORE the claim (zero when none exists yet) under this runner's marker, so its next polls answer idle from the cache until queue or requeue bumps the generation or the marker's TTL passes. A flushed Redis loses the markers with the generations, and a bump that finds no generation makes it one.",
+      "condition": {
+        "and": [
+          { "$use": "none_written", "with": { "slot": "claimed" } },
+          { "===": [{ "var": "temp_data.waiting.0.waiting" }, false] }
+        ]
+      },
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_write",
+        "input": {
+          "connector": "soma-cache",
+          "key": { "cat": ["idle:admissions:", { "var": "metadata.auth.claims.sub" }] },
+          "value": { "var": "temp_data.generation" },
+          "ttl_secs": { "var": "metadata.vars.idle_marker_ttl_secs" }
         }
       }
     },

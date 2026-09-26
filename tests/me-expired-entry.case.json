@@ -1,0 +1,26 @@
+{
+  "name": "me-expired-entry: an entry whose session has expired is not served, and the query decides",
+  "workflow": "../workflows/soma-user-me.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
+  "stubs": {
+    "cache_read": {
+      "soma-cache": [
+        3,
+        {
+          "gen": 3,
+          "expires_at": "2020-01-01T00:00:00.000Z",
+          "body": { "id": "u1", "handle": "ana", "role": "competitor" }
+        }
+      ]
+    },
+    "db_read": { "soma-db": [] }
+  },
+  "expect": { "data._orion.response.status": 401 },
+  "expect_calls": { "cache_write": [] },
+  "expect_tasks": ["probe", "generation.zero", "query", "deny.revoked"]
+}

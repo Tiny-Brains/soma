@@ -1,0 +1,31 @@
+{
+  "name": "admissions-claim-marks: nothing claimed and nothing waiting writes the marker under the generation read before the claim",
+  "workflow": "../workflows/soma-gate-admissions-claim.json",
+  "input": { "orion_version": "1.10.0" },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "vars": {
+      "orion_version": "1.10.0",
+      "idle_marker_ttl_secs": 30,
+      "admit_lease_s": 300,
+      "admit_observations": 64,
+      "admit_infer_ms": 5000
+    }
+  },
+  "stubs": {
+    "cache_read": { "soma-cache": [7, null] },
+    "db_write": { "soma-db-gate": { "rows_affected": 0 } },
+    "db_read": { "soma-db-gate": [{ "waiting": false }] },
+    "cache_write": { "soma-cache": {} }
+  },
+  "expect": {
+    "data.body.idle": true,
+    "temp_data.waiting[0].waiting": false
+  },
+  "expect_calls": {
+    "db_write": [{}],
+    "db_read": [{}],
+    "cache_write": [{ "key": "idle:admissions:r1", "value": 7, "ttl_secs": 30 }]
+  },
+  "expect_tasks": ["parse", "mint", "probe", "generation.zero", "claim", "waiting", "mark", "idle"]
+}

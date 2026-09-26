@@ -30,5 +30,5 @@
     "cache_incr": [],
     "cache_write": [{ "key": "idle:sha256:e1:r1", "value": 7, "ttl_secs": 30 }]
   },
-  "expect_tasks": ["parse", "mint", "probe", "claim", "mark", "idle"]
+  "expect_tasks": ["parse", "mint", "probe", "generation.zero", "claim", "mark", "idle"]
 }

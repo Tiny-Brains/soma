@@ -53,6 +53,7 @@
   "expect_calls": { "db_write": [{}, {}, {}, {}] },
   "expect_tasks": [
     "probe",
+    "generation.zero",
     "fresh",
     "fence",
     "fenced",

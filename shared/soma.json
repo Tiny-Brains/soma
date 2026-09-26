@@ -337,6 +337,27 @@
       "params": { "slot": {} },
       "value": { "!": { ">": [{ "var": "temp_data.{{slot}}.rows_affected" }, 0] } }
     },
+    "generation": {
+      "params": { "path": { "default": "temp_data.gen.0" } },
+      "tasks": [
+        {
+          "id": "zero",
+          "name": "A missing generation is zero",
+          "description": "The MGET before this may have read a generation that does not exist yet: nothing has bumped it since the cache Redis was empty (a fresh stack, a restart, a flush). That is generation zero, not \"do not cache\": the first bump makes it one, so a marker or entry written under zero is stale the moment anything happens, and until then the idle answer is as safe as under any other value. Left out, a fresh node polls Postgres on every claim and every count tick until the first admission or finish, which is how the before-and-after measurement found it. Materialised here because cache_write folds only a plain var in its value.",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.generation",
+                  "logic": { "??": [{ "var": { "$param": "path" } }, 0] }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
     "too-long": {
       "params": {
         "field": {},
@@ -393,14 +414,14 @@
       ]
     },
     "bump": {
-      "params": { "key": {}, "when": { "default": true } },
+      "params": { "key": {}, "when": { "default": true }, "soft": { "default": true } },
       "tasks": [
         {
           "id": "bump",
           "name": "Move a generation",
-          "description": "One INCRBY on soma-cache under a generation key, AFTER the write that made new work and only when it moved rows: every idle marker that embeds the old value stops matching. continue_on_error, because the write has committed and a Redis that cannot be reached must not fail it; the markers' TTLs are then the ceiling. No output: nothing reads the number back.",
+          "description": "One INCRBY on soma-cache under a generation key, AFTER the write that made new work and only when it moved rows: every idle marker that embeds the old value stops matching. continue_on_error, because the write has committed and a Redis that cannot be reached must not fail it; the markers' TTLs are then the ceiling. No output: nothing reads the number back. `soft: false` is the revocation form (gen:sess:<user>): a bump that cannot reach Redis then fails the request, because a revocation that silently did not hold is worse than a retry.",
           "condition": { "$param": "when" },
-          "continue_on_error": true,
+          "continue_on_error": { "$param": "soft" },
           "function": {
             "name": "cache_incr",
             "input": { "connector": "soma-cache", "key": { "$param": "key" } }

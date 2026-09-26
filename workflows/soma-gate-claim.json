@@ -56,14 +56,17 @@
       }
     },
     {
+      "id": "generation",
+      "use": "generation"
+    },
+    {
       "id": "cached",
       "name": "Idle, from the cache",
-      "description": "Both values present and equal: no match row was made or freed since this runner last found none, so the queue is still empty for it. 200 {\"idle\": true}, the same answer the statement gives, without the statement. An idle runner polls every five seconds per lane, and this is what makes that poll free.",
+      "description": "The marker is present and equal to the generation (zero when none exists yet): no match row was made or freed since this runner last found none, so the queue is still empty for it. 200 {\"idle\": true}, the same answer the statement gives, without the statement. An idle runner polls every five seconds per lane, and this is what makes that poll free.",
       "condition": {
         "and": [
-          { "!!": { "var": "temp_data.gen.0" } },
-          { "!!": { "var": "temp_data.gen.1" } },
-          { "==": [{ "var": "temp_data.gen.0" }, { "var": "temp_data.gen.1" }] }
+          { "!==": [{ "var": "temp_data.gen.1" }, null] },
+          { "==": [{ "var": "temp_data.generation" }, { "var": "temp_data.gen.1" }] }
         ]
       },
       "terminal": true,
@@ -137,13 +140,8 @@
     {
       "id": "mark",
       "name": "Remember that nothing was here",
-      "description": "The claim moved no row and a generation was read BEFORE it: store that generation under this runner's marker, so its next polls answer idle from the cache until something bumps the generation or the marker's TTL passes. Never written without a generation, so a flushed Redis cannot resurrect a marker. Per runner, because a runner at its in-flight ceiling or refused the row for its own reasons (the fit) saw an empty answer that is only its own; its finish deletes the marker, so a freed slot re-checks at once.",
-      "condition": {
-        "and": [
-          { "$use": "none_written", "with": { "slot": "claimed" } },
-          { "!!": { "var": "temp_data.gen.0" } }
-        ]
-      },
+      "description": "The claim moved no row: store the generation read BEFORE it (zero when none exists yet) under this runner's marker, so its next polls answer idle from the cache until something bumps the generation or the marker's TTL passes. A flushed Redis loses the markers with the generations, and a bump that finds no generation makes it one, so a marker written under zero cannot outlive the first event. Per runner, because a runner at its in-flight ceiling or refused the row for its own reasons (the fit) saw an empty answer that is only its own; its finish deletes the marker, so a freed slot re-checks at once.",
+      "condition": { "$use": "none_written", "with": { "slot": "claimed" } },
       "continue_on_error": true,
       "function": {
         "name": "cache_write",
@@ -157,7 +155,7 @@
               { "var": "metadata.auth.claims.sub" }
             ]
           },
-          "value": { "var": "temp_data.gen.0" },
+          "value": { "var": "temp_data.generation" },
           "ttl_secs": { "var": "metadata.vars.idle_marker_ttl_secs" }
         }
       }

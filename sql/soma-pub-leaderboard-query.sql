@@ -46,5 +46,6 @@ SELECT json_build_object( 'season', (SELECT slug
         FROM lim) THEN (($4)::int + (SELECT n
             FROM lim))::text
     ELSE NULL
-    END) AS body
+    END) AS body,
+       EXISTS (SELECT 1 FROM games WHERE slug = ($1)::text) AS found
 FROM page

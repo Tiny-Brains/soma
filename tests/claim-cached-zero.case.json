@@ -1,5 +1,5 @@
 {
-  "name": "claim-idle: nothing pending and no marker is 200 idle, with no read, no bump and no marker (no generation to embed)",
+  "name": "claim-cached-zero: a marker under zero while no generation exists yet is idle from the cache, with no statement",
   "workflow": "../workflows/soma-gate-claim.json",
   "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
   "metadata": {
@@ -16,14 +16,11 @@
       "idle_marker_ttl_secs": 30
     }
   },
-  "stubs": {
-    "db_write": { "soma-db-gate": { "rows_affected": 0 } },
-    "cache_read": { "soma-cache": [null, null] }
-  },
+  "stubs": { "cache_read": { "soma-cache": [null, 0] } },
   "expect": {
     "data._orion.response.status": 200,
     "data.body.idle": true
   },
-  "expect_calls": { "db_read": [], "cache_invalidate": [], "cache_write": [] },
-  "expect_tasks": ["parse", "mint", "probe", "claim", "idle"]
+  "expect_calls": { "db_read": [], "db_write": [], "cache_write": [], "cache_incr": [] },
+  "expect_tasks": ["parse", "mint", "probe", "generation.zero", "cached"]
 }

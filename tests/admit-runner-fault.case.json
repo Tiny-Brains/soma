@@ -147,7 +147,8 @@
         "probe_dims": { "H": 128, "W": 128 },
         "version": "1"
       }
-    }
+    },
+    "cache_incr": { "soma-cache": 8 }
   },
   "expect": { "temp_data.s.reason": null }
 }

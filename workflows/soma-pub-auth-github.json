@@ -92,6 +92,14 @@
       }
     },
     {
+      "id": "bump_sess",
+      "use": "bump",
+      "with": {
+        "key": { "cat": ["gen:sess:", { "var": "temp_data.rows.0.id" }] },
+        "when": { "!!": { "var": "temp_data.rows.0.id" } }
+      }
+    },
+    {
       "id": "record_session",
       "name": "Record the session",
       "function": {

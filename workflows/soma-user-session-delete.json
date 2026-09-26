@@ -18,6 +18,18 @@
       }
     },
     {
+      "id": "forget",
+      "name": "Drop the session entry",
+      "description": "Sign-out's tombstone is a delete: the entry that answered /v1/me for this session goes with the row. Not continue_on_error -- a sign-out the cache did not record would keep answering for five minutes, so the request fails and the person signs out again.",
+      "function": {
+        "name": "cache_delete",
+        "input": {
+          "connector": "soma-cache",
+          "keys": [{ "cat": ["sess:", { "var": "metadata.auth.claims.sid" }] }]
+        }
+      }
+    },
+    {
       "id": "respond",
       "name": "Respond",
       "function": {

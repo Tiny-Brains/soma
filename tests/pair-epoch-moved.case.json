@@ -48,16 +48,5 @@
   },
   "expect": { "calls.db_write[0].input.params[0]": 3 },
   "expect_calls": { "db_write": [{}] },
-  "expect_tasks": [
-    "game",
-    "epoch",
-    "demand",
-    "boards",
-    "trials",
-    "pair",
-    "plan",
-    "pairing",
-    "insert",
-    "held"
-  ]
+  "expect_tasks": ["demand", "boards", "trials", "pair", "plan", "pairing", "insert", "held"]
 }

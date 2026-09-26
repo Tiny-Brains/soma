@@ -1,0 +1,17 @@
+{
+  "name": "sessions-revoke-bumps: signing out everywhere bumps the user's session generation, hard",
+  "workflow": "../workflows/soma-user-sessions-revoke.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "sid": "others" },
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
+  "stubs": {
+    "db_read": { "soma-db": [{ "session_ok": true }] },
+    "db_write": { "soma-db": { "rows_affected": 2 } },
+    "cache_incr": { "soma-cache": 4 }
+  },
+  "expect": { "data._orion.response.status": 200 },
+  "expect_calls": { "cache_incr": [{ "key": "gen:sess:u1" }] }
+}

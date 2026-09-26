@@ -42,7 +42,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-clock-shared-game.sql" },
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-game.sql" },
           "params": [{ "var": "metadata.vars.game" }],
           "output": "temp_data.game"
         }

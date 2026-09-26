@@ -1,0 +1,39 @@
+{
+  "workflow_id": "soma-user-me-candidates",
+  "name": "The signed-in competitor's versions in flight",
+  "description": "Every version of the caller's still being admitted or on trial, in the shape GET /v1/me's `candidates` field had: web's bell pins them above the feed and polls this with it. live_sessions is the read's outer FROM, so a dead session is no row and a 401, and a live one with nothing in flight is [].",
+  "tags": ["soma", "user", "profile"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-me-candidates-query.sql" },
+          "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "deny",
+      "use": "deny-revoked",
+      "with": { "row": "temp_data.rows.0.session_ok" }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -70,6 +70,7 @@
   },
   "expect_tasks": [
     "probe",
+    "generation.zero",
     "fresh",
     "fence",
     "fenced",

@@ -32,6 +32,15 @@
       }
     },
     {
+      "id": "bump_sess",
+      "use": "bump",
+      "with": {
+        "key": { "cat": ["gen:sess:", { "var": "metadata.params.id" }] },
+        "when": { ">": [{ "var": "temp_data.changed.rows_affected" }, 0] },
+        "soft": false
+      }
+    },
+    {
       "id": "read",
       "name": "Read it back",
       "function": {

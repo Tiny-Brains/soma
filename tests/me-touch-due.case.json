@@ -1,20 +1,31 @@
 {
-  "name": "me-touch-due: past the bucket the session is stamped once",
+  "name": "me-touch-due: on a miss past the bucket the session is stamped once, then the entry is kept",
   "workflow": "../workflows/soma-user-me.json",
   "input": {},
-  "metadata": { "auth": { "claims": { "sub": "u1", "sid": "s1" } }, "params": {}, "vars": {} },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
   "stubs": {
+    "cache_read": { "soma-cache": [3, null] },
     "db_read": {
       "soma-db": [
         {
-          "body": { "id": "u1", "handle": "ana", "role": "competitor", "candidates": [] },
-          "touch_due": true
+          "body": { "id": "u1", "handle": "ana", "role": "competitor" },
+          "touch_due": true,
+          "expires_at": "2099-01-01T00:00:00.000Z"
         }
       ]
     },
-    "db_write": { "soma-db": { "rows_affected": 1 } }
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "cache_write": { "soma-cache": {} }
   },
   "expect": { "data._orion.response.status": 200 },
-  "expect_calls": { "db_write": [{}] },
-  "expect_tasks": ["query", "touch", "respond"]
+  "expect_calls": {
+    "db_write": [{}],
+    "cache_incr": [],
+    "cache_write": [{ "key": "sess:s1", "ttl_secs": 300 }]
+  },
+  "expect_tasks": ["probe", "generation.zero", "query", "touch", "entry", "keep", "respond"]
 }

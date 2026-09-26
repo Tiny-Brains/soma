@@ -40,6 +40,15 @@
       }
     },
     {
+      "id": "bump_sess",
+      "use": "bump",
+      "with": {
+        "key": { "cat": ["gen:sess:", { "var": "metadata.auth.claims.sub" }] },
+        "when": { ">": [{ "var": "temp_data.revoked.rows_affected" }, 0] },
+        "soft": false
+      }
+    },
+    {
       "id": "nothing",
       "use": "refuse",
       "with": {

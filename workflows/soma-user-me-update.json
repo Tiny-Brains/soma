@@ -49,12 +49,24 @@
       }
     },
     {
-      "id": "invalidate",
-      "use": "invalidate",
-      "with": {
-        "namespaces": ["ladder"],
-        "when": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] }
-      }
+      "id": "when_updated",
+      "description": "The profile edit moved the row: the session entry's generation (hard) and the ladder namespace (soft) both move.",
+      "condition": { ">": [{ "var": "temp_data.updated.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "bump_sess",
+          "use": "bump",
+          "with": {
+            "key": { "cat": ["gen:sess:", { "var": "metadata.auth.claims.sub" }] },
+            "soft": false
+          }
+        },
+        {
+          "id": "invalidate",
+          "use": "invalidate",
+          "with": { "namespaces": ["ladder"] }
+        }
+      ]
     },
     {
       "id": "read",

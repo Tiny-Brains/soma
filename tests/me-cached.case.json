@@ -1,0 +1,28 @@
+{
+  "name": "me-cached: an entry under the current generation, not expired, answers with no statement",
+  "workflow": "../workflows/soma-user-me.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": {},
+    "vars": { "session_cache_ttl_secs": 300 }
+  },
+  "stubs": {
+    "cache_read": {
+      "soma-cache": [
+        3,
+        {
+          "gen": 3,
+          "expires_at": "2099-01-01T00:00:00.000Z",
+          "body": { "id": "u1", "handle": "ana", "role": "competitor" }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.handle": "ana"
+  },
+  "expect_calls": { "db_read": [], "db_write": [], "cache_write": [], "cache_incr": [] },
+  "expect_tasks": ["probe", "generation.zero", "hit"]
+}

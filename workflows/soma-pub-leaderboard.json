@@ -49,6 +49,17 @@
       }
     },
     {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.found" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game",
+        "description": "One answer for an unknown game on every public read: 404, as the podium, the series and the maps answer, rather than a 200 with an empty body that an unknown game and a game with nothing in it would share."
+      }
+    },
+    {
       "id": "respond",
       "name": "Respond",
       "function": {

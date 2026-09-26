@@ -23,5 +23,5 @@
     "db_read": { "soma-db": [{ "id": "g1", "epoch": 3, "body": { "limits": { "maps": [] } } }] }
   },
   "expect_calls": { "db_write": [] },
-  "expect_tasks": ["game", "epoch", "demand", "boards"]
+  "expect_tasks": ["demand", "boards"]
 }

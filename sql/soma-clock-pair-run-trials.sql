@@ -7,7 +7,7 @@ WITH cand AS (
       FROM model_versions c
       JOIN models e  ON e.id = c.model_id
       JOIN seasons s ON s.id = c.season_id
-     WHERE c.game_id = ($1)::uuid AND c.status = 'verified'
+     WHERE c.game_id = (SELECT id FROM games WHERE slug = ($1)::text) AND c.status = 'verified'
        AND NOT EXISTS (SELECT 1 FROM matches l WHERE l.trial_version_id = c.id
                           AND l.status IN ('pending', 'claimed', 'running', 'finished'))
 ), pick AS (

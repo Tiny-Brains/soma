@@ -1,5 +1,5 @@
 {
-  "name": "reap-marks: a reap that moved nothing while nothing is in flight leaves the marker behind",
+  "name": "reap-no-generation: with no generation yet a reap that moved nothing while nothing is in flight writes the marker under zero",
   "workflow": "../workflows/soma-clock-reap-run.json",
   "input": {},
   "metadata": {
@@ -21,7 +21,7 @@
     }
   },
   "stubs": {
-    "cache_read": { "soma-cache": [3, null] },
+    "cache_read": { "soma-cache": [null, null] },
     "db_write": { "soma-db-gate": { "rows_affected": 0 } },
     "db_read": { "soma-db-gate": [{ "any": false }] },
     "cache_write": { "soma-cache": {} }
@@ -29,7 +29,7 @@
   "expect_calls": {
     "cache_incr": [],
     "cache_invalidate": [],
-    "cache_write": [{ "key": "idle:reap", "value": 3, "ttl_secs": 60 }]
+    "cache_write": [{ "key": "idle:reap", "value": 0, "ttl_secs": 60 }]
   },
   "expect_tasks": ["probe", "generation.zero", "fresh", "reap", "in_flight", "mark"]
 }

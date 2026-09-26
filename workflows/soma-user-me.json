@@ -1,9 +1,52 @@
 {
   "workflow_id": "soma-user-me",
   "name": "The signed-in competitor",
-  "description": "The join on live_sessions IS the revocation check -- a join rather than a guard task, so it costs no extra round trip and cannot be omitted by mistake. It yields no row for a signed-out session or a deleted user, and `deny` answers that 401 because the shell maps 401 to anonymous and every other status to an error panel. `touch` runs after `deny`, so a revoked session cannot mark itself alive on the way out; it is bucketed to five minutes, so the ordinary request writes no row at all.",
+  "description": "SERVED FROM THE SESSION ENTRY: one MGET of gen:sess:<user> and sess:<sid> answers a page load with no statement when the entry carries the current generation and has not expired. A missing generation means do not serve from cache. The miss path is the query, whose JOIN on live_sessions IS the revocation check -- it yields no row for a signed-out session or a deleted user, and `deny` answers that 401 because the shell maps 401 to anonymous and every other status to an error panel -- then `touch`, bucketed to five minutes like the entry itself, then the entry is written under the generation (created here when no write has made one yet). Sign-out deletes the entry; every revocation bumps the generation, hard. `candidates` left for /v1/me/candidates, which the admit clock moves and cannot name a user for.",
   "tags": ["soma", "user", "profile"],
   "tasks": [
+    {
+      "id": "probe",
+      "name": "The generation and this session's entry",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_read",
+        "input": {
+          "connector": "soma-cache",
+          "keys": [
+            { "cat": ["gen:sess:", { "var": "metadata.auth.claims.sub" }] },
+            { "cat": ["sess:", { "var": "metadata.auth.claims.sid" }] }
+          ],
+          "output": "temp_data.sess"
+        }
+      }
+    },
+    {
+      "id": "generation",
+      "use": "generation",
+      "with": { "path": "temp_data.sess.0" }
+    },
+    {
+      "id": "hit",
+      "name": "Answer from the session entry",
+      "description": "An entry present, kept under the current generation (zero when none exists yet), and its expiry after now (both rendered as UTC text in the same shape, so the comparison is exact). Nothing is touched: the stamp is bucketed to the entry's own life.",
+      "condition": {
+        "and": [
+          { "!!": { "var": "temp_data.sess.1.body" } },
+          { "==": [{ "var": "temp_data.generation" }, { "var": "temp_data.sess.1.gen" }] },
+          { ">": [{ "var": "temp_data.sess.1.expires_at" }, { "now": [] }] }
+        ]
+      },
+      "terminal": true,
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.sess.1.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    },
     {
       "id": "query",
       "name": "Query",
@@ -34,6 +77,40 @@
           "query": "UPDATE sessions SET last_seen_at = now() WHERE sid = ($1)::uuid AND last_seen_at < now() - interval '5 minutes'",
           "params": [{ "var": "metadata.auth.claims.sid" }],
           "output": "temp_data.touched"
+        }
+      }
+    },
+    {
+      "id": "entry",
+      "name": "Shape the session entry",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.entry",
+              "logic": {
+                "gen": { "var": "temp_data.generation" },
+                "expires_at": { "var": "temp_data.rows.0.expires_at" },
+                "body": { "var": "temp_data.rows.0.body" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "keep",
+      "name": "Keep the answer as the session entry",
+      "description": "Written under the generation read before the query, zero when none exists yet: a flushed Redis loses the entries with the generations, and the first bump makes zero one, so an entry under an old value never matches again. The entry is shaped in a map first: cache_write folds only plain var nodes in its value. continue_on_error on the write: the answer is already in hand.",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_write",
+        "input": {
+          "connector": "soma-cache",
+          "key": { "cat": ["sess:", { "var": "metadata.auth.claims.sid" }] },
+          "value": { "var": "temp_data.entry" },
+          "ttl_secs": { "var": "metadata.vars.session_cache_ttl_secs" }
         }
       }
     },

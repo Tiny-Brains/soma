@@ -12,32 +12,6 @@
     "scratch": "s",
     "setup": [
       {
-        "id": "game",
-        "name": "Resolve the game",
-        "function": {
-          "name": "db_read",
-          "input": {
-            "connector": "soma-db",
-            "query": { "$sql": "../sql/soma-clock-shared-game.sql" },
-            "params": [{ "var": "metadata.vars.game" }],
-            "output": "temp_data.game"
-          }
-        }
-      },
-      {
-        "id": "epoch",
-        "name": "Read the roster epoch",
-        "function": {
-          "name": "db_read",
-          "input": {
-            "connector": "soma-db",
-            "query": { "$sql": "../sql/soma-clock-pair-run-epoch.sql" },
-            "params": [],
-            "output": "temp_data.roster"
-          }
-        }
-      },
-      {
         "id": "demand",
         "name": "Read demand, the pool and the room",
         "function": {
@@ -46,7 +20,7 @@
             "connector": "soma-db",
             "query": { "$sql": "../sql/soma-clock-pair-run-demand.sql" },
             "params": [
-              { "var": "temp_data.game.0.id" },
+              { "var": "metadata.vars.game" },
               { "var": "metadata.vars.burst" },
               { "var": "metadata.vars.steady_cap" },
               { "var": "metadata.vars.settled_sigma" },
@@ -76,7 +50,7 @@
           "input": {
             "connector": "soma-db",
             "query": { "$sql": "../sql/soma-clock-pair-run-trials.sql" },
-            "params": [{ "var": "temp_data.game.0.id" }, { "var": "metadata.vars.repair_cap" }],
+            "params": [{ "var": "metadata.vars.game" }, { "var": "metadata.vars.repair_cap" }],
             "output": "temp_data.trials"
           }
         }
@@ -136,7 +110,7 @@
           "connector": "soma-db",
           "query": { "$sql": "../sql/soma-clock-pair-run-insert.sql" },
           "params": [
-            { "var": "temp_data.roster.0.epoch" },
+            { "var": "temp_data.demand.0.epoch" },
             { "var": "metadata.vars.game" },
             { "var": "temp_data.it.seed" },
             { "var": "temp_data.it.map" },

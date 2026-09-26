@@ -1,0 +1,11 @@
+{
+  "name": "seasons-list-unknown-game: an unknown game is 404 like every other public read",
+  "workflow": "../workflows/soma-pub-seasons-list.json",
+  "input": {},
+  "metadata": { "params": { "game": "nope" }, "vars": {} },
+  "stubs": { "db_read": { "soma-db": [{ "found": false, "body": [] }] } },
+  "expect": {
+    "data._orion.response.status": 404,
+    "data.body.error": "unknown_game"
+  }
+}

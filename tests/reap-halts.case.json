@@ -22,5 +22,5 @@
   },
   "stubs": { "cache_read": { "soma-cache": [3, 3] } },
   "expect_calls": { "db_write": [], "db_read": [] },
-  "expect_tasks": ["probe", "fresh"]
+  "expect_tasks": ["probe", "generation.zero", "fresh"]
 }

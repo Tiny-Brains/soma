@@ -11,10 +11,21 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(season_json(s) ORDER BY s.number DESC), '[]'::json) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text",
+          "query": "SELECT EXISTS (SELECT 1 FROM games WHERE slug = ($1)::text) AS found, coalesce((SELECT json_agg(season_json(s) ORDER BY s.number DESC) FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text), '[]'::json) AS body",
           "params": [{ "var": "metadata.params.game" }],
           "output": "temp_data.rows"
         }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.found" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game",
+        "description": "One answer for an unknown game on every public read: 404, as the podium, the series and the maps answer, rather than a 200 with an empty body that an unknown game and a game with nothing in it would share."
       }
     },
     {
