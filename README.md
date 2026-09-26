@@ -529,9 +529,8 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   instant can both pass; the per-user write rate is the backstop.
 - The admin comment search (`q`) scans: there is no trigram index on `comments.body`.
 - A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
-- The admit and pair clocks still tick against Postgres when idle (`proposal/CACHE.md`): admit
-  cannot tell nothing waiting from waiting but leased without a read, and pair's demand moves
-  with time.
+- The admit and pair clocks still tick against Postgres when idle: admit cannot tell nothing
+  waiting from waiting but leased without a read, and pair's demand moves with time.
 - An off-site runner must hold a GET key for the models bucket. The fix is an Orion ask, not yet
   filed: a URL-valued artifact reference on the `models` entity.
 
