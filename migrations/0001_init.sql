@@ -2030,6 +2030,12 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
         'submissions_close_at', s.submissions_close_at,
         'closed_at',            s.closed_at,
         'close_requested_at',   s.close_requested_at,
+        -- Who may see it and who may enter (N30): `public`/`private` and `open`/`restricted`. Safe to
+        -- return -- the route that carries this object already gates who receives it at all (a private
+        -- season answers as nonexistent to a stranger) -- and web draws a cohort badge from them. The
+        -- fleet policy and providers are admin-facing and are not here; the fleet route returns fleet.
+        'visibility',           s.visibility,
+        'entry',                s.entry,
         'engine_digest',        s.engine_digest,
         'rules',                season_rules_public(s.rules),
         -- The caps this season is played under: they are per season, and a standing cannot be read
