@@ -1229,3 +1229,36 @@ UPDATE season_participants SET removed_at = now()
  WHERE season_id = '50000000-0000-0000-0000-0000000000f1' AND lower(login) = 'alice';
 SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS removed_participant
   FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+
+-- N30 the PUBLIC READS gate their per-season rows on visibility (V3/V5), the anonymous half of
+-- season_visible: a private season's match, version and medal are hidden exactly as the private
+-- season is. `fencer` (alice's) has an active version, a listed rated match and a podium medal in
+-- BOTH the public season (0001) and the private cohort (0f1); each gate keeps only the public one.
+INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
+  ('5a000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', 'fence', 2, 24, 24, 'sha256:fence', '{"id":"fence"}', true, '00000000-0000-0000-0000-0000000000ad'),
+  ('5a000000-0000-0000-0000-0000000000f1', '50000000-0000-0000-0000-0000000000f1', 'fence', 2, 24, 24, 'sha256:fence', '{"id":"fence"}', true, '00000000-0000-0000-0000-0000000000ad');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'fencer');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, size_bytes, weights_hash, manifest_hash, orion_version) VALUES
+  ('20000000-0000-0000-0000-0000000000f8', 'e0000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 500, 'sha256:wf8', 'sha256:mf8', '1.8.1'),
+  ('20000000-0000-0000-0000-0000000000f9', 'e0000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000f1', 2, 'active', 'nano', 500, 'sha256:wf9', 'sha256:mf9', '1.8.1');
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, listed, played_at, rated_at, rated_seq) VALUES
+  ('11111111-1111-1111-1111-1111111111f8', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 'sha256:e1', 1, '5a000000-0000-0000-0000-000000000001', 2, ARRAY['nano','open']::ladder[], 'rated', true, now(), now(), 1),
+  ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000f1', 'sha256:e1', 2, '5a000000-0000-0000-0000-0000000000f1', 2, ARRAY['nano','open']::ladder[], 'rated', true, now(), now(), 2);
+INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating) VALUES
+  ('50000000-0000-0000-0000-000000000001', 'nano', 3, '20000000-0000-0000-0000-0000000000f8', '00000000-0000-0000-0000-0000000000a1', 22),
+  ('50000000-0000-0000-0000-0000000000f1', 'open', 1, '20000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-0000000000a1', 22);
+
+\echo '--- match_public: a public season''s listed match shows (t), a private season''s does not (f)'
+SELECT match_public(m) AS public_match FROM matches m WHERE m.id = '11111111-1111-1111-1111-1111111111f8';
+SELECT match_public(m) AS private_match FROM matches m WHERE m.id = '11111111-1111-1111-1111-1111111111f9';
+\echo '--- the public model read shows only the public season''s version (expect public t, private f)'
+SELECT s.visibility,
+       version_public(mv.status) AND EXISTS (SELECT 1 FROM seasons x WHERE x.id = mv.season_id AND x.visibility = 'public') AS shows
+  FROM model_versions mv JOIN seasons s ON s.id = mv.season_id
+ WHERE mv.model_id = 'e0000000-0000-0000-0000-0000000000f9' ORDER BY s.visibility;
+\echo '--- the public profile shows only the public season''s medal (expect public 1, all 2)'
+SELECT count(*) FILTER (WHERE ms.visibility = 'public') AS public_medals, count(*) AS all_medals
+  FROM season_podium p JOIN seasons ms ON ms.id = p.season_id
+ WHERE p.owner_id = '00000000-0000-0000-0000-0000000000a1'
+   AND p.version_id IN ('20000000-0000-0000-0000-0000000000f8', '20000000-0000-0000-0000-0000000000f9');

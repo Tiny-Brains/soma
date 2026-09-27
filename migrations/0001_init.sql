@@ -1283,10 +1283,12 @@ CREATE TABLE matches (
     margin               int,
     upset                float8,
 
-    -- WHETHER ANYONE MAY SEE IT, as a column, so match_public() is `m.listed` and every public
-    -- read is an index scan. Set by the statement that makes it so: finish, for a match with no
-    -- trial, and a trial's `pass`, whose candidate goes public in the same statement. A trial in
-    -- progress or a rejected candidate's never is. Nothing unsets it.
+    -- WHETHER ANYONE MAY SEE IT, as a column: match_public() is `m.listed` AND the match's season is
+    -- PUBLIC (N30/V5), so the partial index on `listed` still proves the anonymous listing's own
+    -- predicate and the season gate filters a private season's rows out of a by-id fetch too. Set by
+    -- the statement that makes it so: finish, for a match with no trial, and a trial's `pass`, whose
+    -- candidate goes public in the same statement. A trial in progress or a rejected candidate's
+    -- never is. Nothing unsets it.
     listed               boolean      NOT NULL DEFAULT false,
 
     CONSTRAINT matches_seat_count         CHECK (seat_count >= 2),
@@ -2082,8 +2084,9 @@ $$;
 -- counter and a pick ask this. GET /v1/matches/{id} asks it of a trial only: a cancelled or failed
 -- ordinary match is readable there by id. One column and no subquery, so the planner inlines it
 -- and a query that asks it can use the partial indexes built on `listed`.
-CREATE FUNCTION match_public(m matches) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-    SELECT m.listed;
+CREATE FUNCTION match_public(m matches) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT m.listed AND EXISTS (SELECT 1 FROM seasons s
+                                 WHERE s.id = m.season_id AND s.visibility = 'public');
 $$;
 
 -- WHETHER A USER OWNS A VERSION SEATED IN A MATCH: what lets them read a private match.

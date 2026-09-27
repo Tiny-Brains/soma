@@ -1,3 +1,8 @@
+-- A competitor's public profile. The medals and the per-season models are gated to PUBLIC seasons
+-- (N30/V3/Q7): a private season's medals and versions show only to that season's viewers, which the
+-- anonymous public read is not, so to a stranger a participant's profile carries no trace of a private
+-- season. A viewer seeing their OWN private-season standings is the auth-aware Phase 4b read; here the
+-- viewer is anonymous, so season_visible reduces to visibility = 'public'.
 SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'bio', u.bio, 'role', u.role,
         'baseline', u.role = 'baseline', 'created_at', u.created_at, 'medals', coalesce((SELECT json_agg(json_build_object(
                         'game', mg.slug, 'season', ms.slug, 'season_name', ms.name, 'ladder', p.ladder, 'place',
@@ -8,7 +13,7 @@ SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'b
             JOIN games mg ON mg.id = ms.game_id
             JOIN model_versions mv ON mv.id = p.version_id
             JOIN models me ON me.id = mv.model_id
-            WHERE p.owner_id = u.id), '[]'::json), 'games', coalesce((SELECT json_agg(x.section
+            WHERE p.owner_id = u.id AND ms.visibility = 'public'), '[]'::json), 'games', coalesce((SELECT json_agg(x.section
                 ORDER BY x.game, x.season_number DESC)
             FROM (
                 SELECT g.slug AS game, se.number AS season_number, json_build_object( 'game', g.slug,
@@ -38,7 +43,7 @@ SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'b
                     WHERE v.model_id = e.id
                     AND version_public(v.status)
                     GROUP BY v.season_id, e.name, e.id ) y ON true
-                JOIN seasons se ON se.id = y.season_id
+                JOIN seasons se ON se.id = y.season_id AND se.visibility = 'public'
                 WHERE e.owner_id = u.id
                 GROUP BY g.slug, g.name, se.id) x), '[]'::json) ) AS body
 FROM users u
