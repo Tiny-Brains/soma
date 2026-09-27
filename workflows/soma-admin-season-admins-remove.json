@@ -58,6 +58,35 @@
       }
     },
     {
+      "id": "refresh",
+      "name": "Refresh the removed account's session",
+      "description": "Only when a live membership was removed. /v1/me carries admin_of and is served from the session entry, so the removed account's generation is bumped, hard, and its entry re-read on the next load -- and R3 ends any runner key it held for this season at the next call. The season-scoped routes re-check the membership live regardless.",
+      "condition": { ">": [{ "var": "temp_data.removed.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "resolve",
+          "name": "The removed account",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT u.id AS user_id FROM users u WHERE lower(u.handle) = lower(($1)::text)",
+              "params": [{ "var": "data.req.handle" }],
+              "output": "temp_data.removed_user"
+            }
+          }
+        },
+        {
+          "id": "bump_sess",
+          "use": "bump",
+          "with": {
+            "key": { "cat": ["gen:sess:", { "var": "temp_data.removed_user.0.user_id" }] },
+            "soft": false
+          }
+        }
+      ]
+    },
+    {
       "id": "read",
       "name": "Read the admins back",
       "function": {

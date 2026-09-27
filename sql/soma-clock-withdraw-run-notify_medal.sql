@@ -1,11 +1,14 @@
--- One medal per placed owner per ladder, read off the frozen podium of the season that just
--- closed. Keyed `medal:<season>:<ladder>`, so a rerun inserts nothing. Category `season`.
+-- One medal per placed owner per ladder, read off the frozen podium of EACH season that just closed
+-- (N30: seasons overlap, so a tick may close more than one). `closed` is every season of the game
+-- closed in the last few minutes -- every season this tick's close wrote, since it stamps closed_at =
+-- now() -- and season_podium is joined per season, so two seasons settling in one tick each award
+-- their medals. Keyed `medal:<season>:<ladder>`, so a rerun -- or an old season still inside the
+-- window -- inserts nothing. Category `season`.
 WITH closed AS (
     SELECT s.id, s.slug AS season, s.name AS season_name, g.slug
       FROM seasons s JOIN games g ON g.id = s.game_id
      WHERE s.game_id = ($1)::uuid AND s.closed_at IS NOT NULL
-     ORDER BY s.closed_at DESC
-     LIMIT 1
+       AND s.closed_at >= now() - interval '5 minutes'
 )
 INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
                            game, season, model_id, version_id, data, dedupe_key)

@@ -112,6 +112,35 @@
       }
     },
     {
+      "id": "refresh",
+      "name": "Refresh the assigned account's session",
+      "description": "Only when a membership was actually created (an already-admin writes nothing). /v1/me carries admin_of and is served from the session entry, so the assigned account's generation is bumped, hard, and its entry re-read on the next load; the season-scoped routes re-check the membership live regardless, so this is UI freshness, not the fence.",
+      "condition": { ">": [{ "var": "temp_data.add.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "resolve",
+          "name": "The assigned account",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT u.id AS user_id FROM users u WHERE lower(u.handle) = lower(($1)::text)",
+              "params": [{ "var": "data.req.handle" }],
+              "output": "temp_data.assigned"
+            }
+          }
+        },
+        {
+          "id": "bump_sess",
+          "use": "bump",
+          "with": {
+            "key": { "cat": ["gen:sess:", { "var": "temp_data.assigned.0.user_id" }] },
+            "soft": false
+          }
+        }
+      ]
+    },
+    {
       "id": "read",
       "name": "Read the admins back",
       "function": {

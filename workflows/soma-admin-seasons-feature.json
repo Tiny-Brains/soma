@@ -1,0 +1,105 @@
+{
+  "workflow_id": "soma-admin-seasons-feature",
+  "name": "Feature a season",
+  "description": "Platform admin only: names which of a game's seasons is FEATURED -- the one current_season() and web's 'no season' read resolve to (S4). Featured is a game attribute (games.featured_season_id), set to the season the slug names, so a game shows the season an admin chose rather than only the newest. A private season is never featured (S4), so the write gates on visibility = 'public' and a private season writes nothing: `why` then reads the season's existence and visibility back so 404 (no such game or season) and 422 (it exists but is private) are told apart, and a stranger cannot map a private season by the status code. Write, then diagnose. Setting it moves what every 'no season' public read resolves to, so the write invalidates season + ladder.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "set",
+      "name": "Set the featured season",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-feature-set.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.set"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.set.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why not",
+      "condition": { "$use": "none_written", "with": { "slot": "set" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('found', s.id IS NOT NULL, 'visibility', s.visibility) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.slug = ($2)::text WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such game or season"
+      }
+    },
+    {
+      "id": "private",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "set" } },
+        "status": 422,
+        "body": {
+          "error": "season_not_public",
+          "detail": "A private season is never featured: a featured season is what a game shows to everyone."
+        },
+        "name": "A private season cannot be featured"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the season back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}
