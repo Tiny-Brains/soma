@@ -6,5 +6,5 @@ SELECT json_build_object(
         'ladder', coalesce(($2)::ladder, 'open'),
         'series', rating_series(s.id, coalesce(($2)::ladder, 'open'), coalesce(($3)::timestamptz, s.submissions_open_at),
                                 coalesce(($4)::int, 60))) AS body
-  FROM games g, current_season(g.id, ($5)::text) s
+  FROM games g, public_season(g.id, ($5)::text) s
  WHERE g.slug = ($1)::text

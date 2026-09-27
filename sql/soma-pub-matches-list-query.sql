@@ -1,6 +1,6 @@
 WITH season AS (
     SELECT s.id, s.slug
-    FROM games g, current_season(g.id, ($2)::text) s
+    FROM games g, public_season(g.id, ($2)::text) s
     WHERE ($1)::text IS NOT NULL
     AND g.slug = ($1)::text ),
 lim AS (

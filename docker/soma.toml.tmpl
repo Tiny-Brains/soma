@@ -82,8 +82,6 @@ console_return_url = "${CONSOLE_URL:-http://localhost:8081}"
 # Must substitute to a bare TOML boolean; entrypoint.sh normalises SOMA_COOKIE_SECURE. Browsers
 # will not store a Secure cookie from an http:// origin, so a plain-http stack sets false.
 cookie_secure      = ${SOMA_COOKIE_SECURE:-true}
-# How soon after a season closes the next may open.
-season_gap_days    = ${SEASON_GAP_DAYS:-1}
 # WHO IS AN ADMIN BY DEPLOYMENT: GitHub numeric user ids, comma-separated, from the environment's
 # SOMA_ADMIN_GITHUB_IDS, and never committed. A listed account is made an admin at every sign-in;
 # empty lists nobody. An id and never a login, because GitHub frees a renamed login for anyone to

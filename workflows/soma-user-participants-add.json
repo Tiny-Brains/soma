@@ -1,0 +1,74 @@
+{
+  "workflow_id": "soma-user-participants-add",
+  "name": "Add participants",
+  "description": "Add logins to a season's roster in bulk -- a textarea, one per line or comma-separated, or a JSON array in `logins`. Each becomes a season_participants row, pinned to an account if that identity already exists and kept as a login until its first sign-in otherwise, so a cohort written before the term admits its members the moment they sign in. `provider` defaults to github (the only one today; §I adds more). A login already live in the season is left as it is; one previously removed is re-added. The response is the season's participants list, each row saying whether it has resolved or is still waiting. The season-admin-only fragment gates it and hands down the season id.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.logins" } },
+        "status": 400,
+        "body": {
+          "error": "logins_required",
+          "detail": "Give one or more logins in `logins`, as a JSON array or a comma- or newline-separated string."
+        },
+        "name": "Some logins, declared"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Insert the participants",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-participants-add-insert.sql" },
+          "params": [
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "data.req.provider" },
+            { "var": "data.req.logins" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.added"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the participants back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-participants.sql" },
+          "params": [{ "var": "temp_data.who.0.body.season_id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

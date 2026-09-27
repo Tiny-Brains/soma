@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-season-runner-keys-create",
+  "name": "soma-user-season-runner-keys-create",
+  "description": "Mint a runner key bound to this season. Season admins and platform admins.",
+  "tags": ["soma", "user", "runners"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/runner-keys",
+  "workflow_id": "soma-user-season-runner-keys-create",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-user-participants-list",
+  "name": "A season's participants",
+  "description": "The season's live participants, for its season admins and platform admins alone (P5) -- the one place a season admin reads a handle they did not type. Each row is a provider's login, whether it has resolved to an account yet (a listed member who has not signed in is `waiting`), and the resolved account's platform handle. The season-admin-only fragment resolves {game}/{slug}, 401s a dead session, 404s an unknown season and 403s anyone who is neither a platform admin nor a live member, and hands the season id down in temp_data.who.0.body.season_id.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Read the participants",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-participants.sql" },
+          "params": [{ "var": "temp_data.who.0.body.season_id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

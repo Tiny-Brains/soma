@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-admin-seasons-create",
   "name": "Create a season",
-  "description": "Admin only. ONE STATEMENT creates the season -- its NAME and the slug season_slug() derives from it, both fixed for ever, number last+1 as an internal ordinal, the engine pinned from games.active_engine_digest, the window and the whole rules document. Refusals, told apart by `why`: a name that gives no usable slug, a slug another season holds, a season still live, an opening inside season_gap_days of the previous close, or no engine declared. The season opens with NO MAPS AND NO BASELINES: both are uploaded to it afterwards, land out of play, and are put in play by hand -- and until a baseline is enabled no trial can be seated, so every candidate waits. A season's baselines are its own uploads, never carried forward from the previous season, and a name used again is the same baseline account with a new version. PARTICIPANT HANDLES ARE STORED AS GIVEN and resolved at each submission, not here: a cohort is a list of GitHub logins written before the term starts and most of its members have never signed in, so resolving once and keeping only the ids would refuse exactly those people for the whole season. The ids that DO resolve are stored beside them as the fast path, and the handles that do not come back in the response as information. The list accepts an array or one comma-separated string. WEIGHT CLASSES ARE THE SEASON'S: absent from the body it inherits the previous season's table rather than a constant.",
+  "description": "Admin only. ONE STATEMENT creates the season -- its NAME and the slug season_slug() derives from it, both fixed for ever, number last+1 as an internal ordinal, the engine pinned from games.active_engine_digest, the window, the whole rules document, and four settings that are not rules: `visibility` (public|private), `entry` (open|restricted; private forces restricted), `fleet` (which runners play it) and `providers` (which identity providers may enter). SEASONS OVERLAP (N30): a game may run any number of live seasons at once, so there is no 'a season is still live' or 'inside season_gap_days' refusal any more. Refusals, told apart by `why`: a name that gives no usable slug, a slug another season holds, or no engine declared. The season opens with NO MAPS AND NO BASELINES: both are uploaded to it afterwards, land out of play, and are put in play by hand -- and until a baseline is enabled no trial can be seated, so every candidate waits. A season's baselines are its own uploads, never carried forward from the previous season, and a name used again is the same baseline account with a new version. PARTICIPANTS ARE NOT SET HERE (N30): a cohort is season_participants + `entry = 'restricted'`, added on the season admin page after creation, so a class can add a late student once the season is open (rules freeze at open). WEIGHT CLASSES ARE THE SEASON'S: absent from the body it inherits the previous season's table rather than a constant.",
   "tags": ["soma", "admin", "seasons"],
   "tasks": [
     {
@@ -45,6 +45,93 @@
       }
     },
     {
+      "id": "visibility",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "data.req.visibility" } },
+            {
+              "!": {
+                "or": [
+                  { "===": [{ "var": "data.req.visibility" }, "public"] },
+                  { "===": [{ "var": "data.req.visibility" }, "private"] }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "visibility_invalid",
+          "detail": "visibility is \"public\" or \"private\". A private season is watchable only by its participants, its season admins and platform admins."
+        },
+        "name": "Visibility is public or private"
+      }
+    },
+    {
+      "id": "entry",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "data.req.entry" } },
+            {
+              "!": {
+                "or": [
+                  { "===": [{ "var": "data.req.entry" }, "open"] },
+                  { "===": [{ "var": "data.req.entry" }, "restricted"] }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "entry_invalid",
+          "detail": "entry is \"open\" or \"restricted\". A private season is always restricted."
+        },
+        "name": "Entry is open or restricted"
+      }
+    },
+    {
+      "id": "fleet",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "data.req.fleet" } },
+            {
+              "!": {
+                "and": [
+                  {
+                    "or": [
+                      { "===": [{ "var": "data.req.fleet.matches" }, "own"] },
+                      { "===": [{ "var": "data.req.fleet.matches" }, "platform"] },
+                      { "===": [{ "var": "data.req.fleet.matches" }, "both"] }
+                    ]
+                  },
+                  {
+                    "or": [
+                      { "===": [{ "var": "data.req.fleet.admissions" }, "own"] },
+                      { "===": [{ "var": "data.req.fleet.admissions" }, "platform"] },
+                      { "===": [{ "var": "data.req.fleet.admissions" }, "both"] }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "fleet_invalid",
+          "detail": "fleet has matches and admissions, each \"own\", \"platform\" or \"both\"."
+        },
+        "name": "Fleet policy is well formed"
+      }
+    },
+    {
       "id": "rules",
       "name": "Take the rules as given",
       "function": {
@@ -53,45 +140,6 @@
           "mappings": [{ "path": "temp_data.rules", "logic": { "var": "data.req.rules" } }]
         }
       }
-    },
-    {
-      "id": "participants",
-      "name": "Resolve participant handles to ids",
-      "condition": { "!!": { "var": "data.req.rules.participants.handles" } },
-      "tasks": [
-        {
-          "id": "resolve",
-          "name": "Look the handles up",
-          "function": {
-            "name": "db_read",
-            "input": {
-              "connector": "soma-db",
-              "query": { "$sql": "../sql/soma-admin-seasons-create-resolve.sql" },
-              "params": [{ "var": "data.req.rules.participants.handles" }],
-              "output": "temp_data.resolved"
-            }
-          }
-        },
-        {
-          "id": "listed",
-          "name": "Put the handles and the ids the rule",
-          "function": {
-            "name": "map",
-            "input": {
-              "mappings": [
-                {
-                  "path": "temp_data.rules.participants.handles",
-                  "logic": { "var": "temp_data.resolved.0.handles" }
-                },
-                {
-                  "path": "temp_data.rules.participants.user_ids",
-                  "logic": { "var": "temp_data.resolved.0.ids" }
-                }
-              ]
-            }
-          }
-        }
-      ]
     },
     {
       "id": "create",
@@ -105,11 +153,14 @@
             { "var": "metadata.params.game" },
             { "var": "data.req.submissions_open_at" },
             { "var": "data.req.submissions_close_at" },
-            { "var": "metadata.vars.season_gap_days" },
             { "var": "temp_data.rules" },
             { "var": "data.req.weight_classes" },
             { "var": "data.req.name" },
-            { "var": "metadata.auth.claims.sub" }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.visibility" },
+            { "var": "data.req.entry" },
+            { "var": "data.req.fleet" },
+            { "var": "data.req.providers" }
           ],
           "output": "temp_data.created"
         }
@@ -132,11 +183,7 @@
         "input": {
           "connector": "soma-db",
           "query": { "$sql": "../sql/soma-admin-seasons-create-why.sql" },
-          "params": [
-            { "var": "metadata.params.game" },
-            { "var": "metadata.vars.season_gap_days" },
-            { "var": "data.req.name" }
-          ],
+          "params": [{ "var": "metadata.params.game" }, { "var": "data.req.name" }],
           "output": "temp_data.why"
         }
       }
@@ -186,11 +233,7 @@
             "if": [
               { "!!": { "var": "temp_data.why.0.body.taken_by" } },
               "season_slug_taken",
-              { "!!": { "var": "temp_data.why.0.body.live" } },
-              "season_live",
-              { "!": { "var": "temp_data.why.0.body.engine" } },
-              "no_engine",
-              "inside_gap"
+              "no_engine"
             ]
           },
           "detail": { "var": "temp_data.why.0.body" }
@@ -205,8 +248,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT season_json(s) AS body FROM games g, current_season(g.id) s WHERE g.slug = ($1)::text",
-          "params": [{ "var": "metadata.params.game" }],
+          "query": "SELECT season_json(s) AS body FROM games g, current_season(g.id, season_slug(btrim(($2)::text))) s WHERE g.slug = ($1)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "data.req.name" }],
           "output": "temp_data.rows"
         }
       }

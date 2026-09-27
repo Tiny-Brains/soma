@@ -4,7 +4,7 @@
 WITH se AS (
     SELECT s.id, s.slug, s.name, s.closed_at
       FROM seasons s JOIN games g ON g.id = s.game_id
-     WHERE g.slug = ($1)::text AND s.slug = ($2)::text
+     WHERE g.slug = ($1)::text AND s.slug = ($2)::text AND s.visibility = 'public'
 )
 SELECT json_build_object(
         'season', se.slug,

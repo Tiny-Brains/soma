@@ -10,4 +10,5 @@ JOIN seasons se ON se.id = sm.season_id
 JOIN games g ON g.id = se.game_id
 WHERE g.slug = ($1)::text
 AND se.slug = ($2)::text
+AND se.visibility = 'public'
 AND sm.map_id = ($3)::text

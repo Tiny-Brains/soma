@@ -12,8 +12,10 @@ FROM model_versions v
 CROSS JOIN LATERAL (SELECT greatest(1, ($6)::int - floor(extract(epoch FROM now() - v.created_at))::int) AS s) w
 JOIN models e ON e.id = v.model_id
 JOIN games g ON g.id = e.game_id
-JOIN seasons se ON se.id = v.season_id
-AND se.closed_at IS NULL
+-- The version's season must be the one the submission named (or the featured public one). The same
+-- weights may now be testing in two seasons (C3), so keying on (owner, game, model, weights) alone
+-- is ambiguous; current_season(g.id, <slug>) pins which one the re-mint answers for.
+JOIN current_season(g.id, nullif(($7)::text, '')) se ON se.id = v.season_id
 JOIN live_sessions s ON s.sid = ($4)::uuid
 AND s.user_id = e.owner_id
 WHERE e.owner_id = ($1)::uuid

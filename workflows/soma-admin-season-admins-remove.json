@@ -1,0 +1,87 @@
+{
+  "workflow_id": "soma-admin-season-admins-remove",
+  "name": "Remove a season admin",
+  "description": "A PLATFORM admin (admin-only) removes a season admin by platform handle. A soft remove: the membership can be re-added, and R3 ends any runner key the removed admin holds for this season at its next call. 404 when no live membership matches. The response is the season's admins after the removal.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.handle" } },
+        "status": 400,
+        "body": {
+          "error": "handle_required",
+          "detail": "Give the platform handle to remove in `handle`."
+        },
+        "name": "A handle, declared"
+      }
+    },
+    {
+      "id": "remove",
+      "name": "Remove the season admin",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-season-admins-remove-remove.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.handle" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.removed"
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "removed" } },
+        "status": 404,
+        "body": {
+          "error": "unknown_season_admin",
+          "detail": "No live season admin with that handle in this season."
+        },
+        "name": "No such season admin"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the admins back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-season-admins.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+{
+  "workflow_id": "soma-admin-season-admins-add",
+  "name": "Assign a season admin",
+  "description": "A PLATFORM admin (admin-only) assigns a season admin by platform handle -- assigning admins is platform-scoped and off limits to a season admin (A4). A season admin is a membership, not a role: user_role is untouched and the person stays a competitor everywhere else. A baseline account cannot be one. Idempotent: assigning someone who is already an admin answers 200 with the list unchanged. Write then diagnose: the insert only writes when the season and a non-baseline handle both resolve, then `why` tells an unknown season from an unknown handle from a baseline from an already-admin.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.handle" } },
+        "status": 400,
+        "body": {
+          "error": "handle_required",
+          "detail": "Give the platform handle to assign in `handle`."
+        },
+        "name": "A handle, declared"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Assign the season admin",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-season-admins-add-insert.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.handle" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.add"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was assigned",
+      "condition": { "$use": "none_written", "with": { "slot": "add" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-season-admins-add-why.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.handle" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown_season",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "add" } },
+            { "!": { "var": "temp_data.why.0.body.season" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "unknown_handle",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "add" } },
+            { "!!": { "var": "temp_data.why.0.body.season" } },
+            { "!": { "var": "temp_data.why.0.body.user" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_handle", "detail": { "var": "data.req.handle" } },
+        "name": "No such handle"
+      }
+    },
+    {
+      "id": "baseline",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "add" } },
+            { "===": [{ "var": "temp_data.why.0.body.user.baseline" }, true] }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "baseline_cannot_admin",
+          "detail": "A baseline account cannot be a season admin."
+        },
+        "name": "Not a baseline"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the admins back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-season-admins.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "if": [
+                  { ">": [{ "var": "temp_data.add.rows_affected" }, 0] },
+                  { "$from": "constants.created" },
+                  { "$from": "constants.ok" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

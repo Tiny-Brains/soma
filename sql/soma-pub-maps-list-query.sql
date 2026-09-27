@@ -13,3 +13,4 @@ FROM seasons se
 JOIN games g ON g.id = se.game_id
 WHERE g.slug = ($1)::text
 AND se.slug = ($2)::text
+AND se.visibility = 'public'

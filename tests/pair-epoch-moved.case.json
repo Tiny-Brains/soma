@@ -41,12 +41,24 @@
               { "seats": ["a", "b"], "map": "map1", "seed": 1, "trial": "a" },
               { "seats": ["c", "d"], "map": "map1", "seed": 2, "trial": null }
             ]
-          }
+          },
+          "season_id": "s1"
         }
       ]
     }
   },
   "expect": { "calls.db_write[0].input.params[0]": 3 },
   "expect_calls": { "db_write": [{}] },
-  "expect_tasks": ["demand", "boards", "trials", "pair", "plan", "pairing", "insert", "held"]
+  "expect_tasks": [
+    "pick",
+    "picked",
+    "demand",
+    "boards",
+    "trials",
+    "pair",
+    "plan",
+    "pairing",
+    "insert",
+    "held"
+  ]
 }

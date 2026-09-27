@@ -15,6 +15,15 @@ SELECT (SELECT json_build_object('n', count(*), 'items', coalesce(json_agg(json_
 AND v.manifest IS NOT NULL
 AND v.artifact_key IS NOT NULL
 AND v.weights_hash IS NOT NULL
+-- ONLY THE SEASONS THIS KEY CAN BE ASKED TO PLAY (N30). A season key's roster is its own season's
+-- versions (and only while that season lets its own fleet play); a platform key's is every season
+-- the platform may play. A season runner's memory then holds its season's models alone.
+AND EXISTS (SELECT 1 FROM seasons se
+    WHERE se.id = v.season_id
+    AND CASE WHEN lr.season_id IS NOT NULL
+             THEN se.id = lr.season_id AND (se.fleet ->> 'matches') IN ('own', 'both')
+             ELSE (se.fleet ->> 'matches') IN ('platform', 'both')
+        END)
 AND EXISTS (SELECT 1
     FROM match_seats s
     WHERE s.version_id = v.id)) AS body

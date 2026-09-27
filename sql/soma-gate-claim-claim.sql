@@ -6,10 +6,19 @@
 WITH pick AS MATERIALIZED (SELECT m.id
     FROM matches m
     JOIN live_runners lr ON lr.id = ($5)::uuid
+    JOIN seasons se ON se.id = m.season_id
     CROSS JOIN LATERAL match_execution(m, ($6)::int, ($7)::int, ($8)::int) e
     WHERE m.status = 'pending'
     AND m.engine_digest = ($1)::text
     AND m.seat_count <= ($4)::int
+    -- THE FLEET POLICY (N30). A SEASON runner (lr.season_id set) claims only its own season's rows,
+    -- and only while that season lets its own fleet play (fleet.matches in 'own'|'both'). A PLATFORM
+    -- runner (lr.season_id null) claims any season whose policy admits the platform ('platform'|'both').
+    -- A season runner never reaches another season, whatever that season's policy says.
+    AND CASE WHEN lr.season_id IS NOT NULL
+             THEN m.season_id = lr.season_id AND (se.fleet ->> 'matches') IN ('own', 'both')
+             ELSE (se.fleet ->> 'matches') IN ('platform', 'both')
+        END
     AND (SELECT count(*)
         FROM matches h
         WHERE h.played_by = lr.id

@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-admin-season-admins-remove",
+  "name": "soma-admin-season-admins-remove",
+  "description": "Remove a season admin by handle. Platform admins only.",
+  "tags": ["soma", "admin", "seasons"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["DELETE"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/admins",
+  "workflow_id": "soma-admin-season-admins-remove",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

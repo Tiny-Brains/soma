@@ -1,12 +1,12 @@
 {
-  "workflow_id": "soma-admin-baselines-update",
+  "workflow_id": "soma-user-baselines-update",
   "name": "Enable or disable a season baseline",
   "description": "Admin only: `{\"enabled\": true}` puts an admitted baseline in play and `false` takes it out, at any time before the close. There is no delete: a baseline's matches and ratings name its version. ENABLING moves it `disabled` -> `active`: from the next pair run it is paired, rated, on the ladder and seated opposite trials, and the first enable seeds its two ratings at the season's prior with their seq-0 events, so it starts in placement like any promoted version; enabling it again keeps the ratings it had. DISABLING moves it back, which takes it off the ladder and out of pairing, and cancels in the same statement the matches seating it that nobody has claimed (BASELINE_DISABLED); a claimed or running one finishes and is counted. A cancelled trial is re-paired against the baselines still in play. Both bump the roster epoch and write a baseline_events row. A baseline still being admitted, or one admission refused, cannot be enabled. Asking for the state it is already in changes nothing and answers 200 with it.",
-  "tags": ["soma", "admin", "baselines"],
+  "tags": ["soma", "user", "baselines"],
   "tasks": [
     {
       "id": "admin",
-      "use": "admin-only"
+      "use": "season-admin-only"
     },
     {
       "id": "parse",
@@ -30,7 +30,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-admin-baselines-update-ctx.sql" },
+          "query": { "$sql": "../sql/soma-user-baselines-update-ctx.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.params.slug" },
@@ -96,7 +96,7 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-admin-baselines-update-flip.sql" },
+          "query": { "$sql": "../sql/soma-user-baselines-update-flip.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.params.slug" },
@@ -125,7 +125,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-admin-baselines-update-read.sql" },
+          "query": { "$sql": "../sql/soma-user-baselines-update-read.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.params.slug" },

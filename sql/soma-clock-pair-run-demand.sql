@@ -1,12 +1,10 @@
-WITH g AS (
-    -- The game by slug, so the clock reads one statement fewer, and the roster epoch is read in
-    -- THIS snapshot: the fence the insert carries is the epoch the demand was read under.
-    SELECT id FROM games WHERE slug = ($1)::text
-), live AS (
-    -- Only the live season's versions want anything or may be seated. No live season,
-    -- no demand, nothing paired -- the paused state. The season's rules come with it: every cap
-    -- below is coalesce(rule, var), so a season that declares nothing paces exactly as the deploy.
-    SELECT id, rules FROM seasons WHERE game_id = (SELECT id FROM g) AND closed_at IS NULL
+WITH live AS (
+    -- THE ONE SEASON THIS TICK IS PAIRING (N30). Seasons overlap, so "the live season" is no longer a
+    -- single row; the pick statement chose one live season of the game (the emptiest queue) and passes
+    -- its id here, and each season is paired round-robin over the ticks. Its rules come with it: every
+    -- cap below is coalesce(rule, var), so a season that declares nothing paces exactly as the deploy.
+    -- The roster epoch below is per game and is the fence the insert carries.
+    SELECT id, rules FROM seasons WHERE id = ($1)::uuid AND closed_at IS NULL
 ), lim AS (
     SELECT coalesce((live.rules -> 'pairing' ->> 'burst')::int,             ($2)::int)    AS burst,
            coalesce((live.rules -> 'pairing' ->> 'steady_cap')::int,        ($3)::int)    AS steady_cap,
@@ -53,7 +51,7 @@ WITH g AS (
     SELECT s.version_id AS model_id, count(*) AS in_flight
       FROM match_seats s
       JOIN matches m ON m.id = s.match_id
-     WHERE m.game_id = (SELECT id FROM g)
+     WHERE m.season_id = (SELECT id FROM live)
        AND m.status IN ('pending', 'claimed', 'running', 'finished')
      GROUP BY s.version_id
 ), w AS (
@@ -77,7 +75,7 @@ WITH g AS (
       JOIN matches m       ON m.id = st.match_id
       JOIN model_versions o ON o.id = st.version_id
       JOIN models e         ON e.id = o.model_id
-     WHERE m.game_id = (SELECT id FROM g) AND m.trial_version_id IS NULL
+     WHERE m.season_id = (SELECT id FROM live) AND m.trial_version_id IS NULL
        AND m.status IN ('pending', 'claimed', 'running', 'finished')
      GROUP BY e.owner_id
 ), wants AS (
@@ -108,10 +106,10 @@ WITH g AS (
 ), played AS (
     SELECT s.version_id AS model_id, m.season_map_id AS map, count(*) AS n
       FROM match_seats s JOIN matches m ON m.id = s.match_id
-     WHERE m.game_id = (SELECT id FROM g) AND m.status IN ('finished', 'rated')
+     WHERE m.season_id = (SELECT id FROM live) AND m.status IN ('finished', 'rated')
      GROUP BY s.version_id, m.season_map_id
 ), depth AS (
-    SELECT count(*) AS pending FROM matches WHERE game_id = (SELECT id FROM g) AND status = 'pending'
+    SELECT count(*) AS pending FROM matches WHERE season_id = (SELECT id FROM live) AND status = 'pending'
 )
 SELECT json_build_object(
          'demand', (SELECT coalesce(sum(want), 0) FROM wants),

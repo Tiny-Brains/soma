@@ -1,13 +1,13 @@
 {
-  "channel_id": "soma-admin-baselines-update",
-  "name": "soma-admin-baselines-update",
+  "channel_id": "soma-user-baselines-update",
+  "name": "soma-user-baselines-update",
   "description": "Enables or disables a baseline. Disabled is off the ladder with its rating kept.",
-  "tags": ["soma", "admin", "baselines"],
+  "tags": ["soma", "user", "baselines"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["PATCH"],
   "route_pattern": "/v1/games/{game}/seasons/{slug}/baselines/{baseline}",
-  "workflow_id": "soma-admin-baselines-update",
+  "workflow_id": "soma-user-baselines-update",
   "config": {
     "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },

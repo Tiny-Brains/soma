@@ -6,12 +6,12 @@ SELECT json_build_object( 'id', g.slug, 'name', g.name, 'about', g.manifest -> '
                 WHEN (cs.rules -> 'execution' ->> 'enabled')::boolean THEN (cs.rules -> 'execution'
                         ->> 'max_turns')::int
                 END, (g.manifest -> 'limits' ->> 'max_turns')::int))
-        FROM current_season(g.id) cs), 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class',
+        FROM public_season(g.id) cs), 'strike_limit', ($2)::int, 'weight_classes', (SELECT json_agg(json_build_object('class',
                     e ->> 'class', 'max_bytes', (e ->> 'max_bytes')::bigint, 'memory_flat_bytes', (e ->>
                     'memory_flat_bytes')::bigint, 'memory_cell_bytes', (e ->> 'memory_cell_bytes')::bigint)
             ORDER BY (e ->> 'max_bytes')::bigint)
-        FROM current_season(g.id) cs, jsonb_array_elements(weight_classes_public(cs.weight_classes)) AS e), 'season', (SELECT
+        FROM public_season(g.id) cs, jsonb_array_elements(weight_classes_public(cs.weight_classes)) AS e), 'season', (SELECT
             season_json(s)
-        FROM current_season(g.id) s)) AS body
+        FROM public_season(g.id) s)) AS body
 FROM games g
 WHERE g.slug = ($1)::text

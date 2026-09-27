@@ -258,7 +258,6 @@ compose file sets every one of them for the local stack.
 | `CONSOLE_URL` | `http://localhost:8081` | The Orion console, the second allowed `?next=` origin |
 | `SOMA_COOKIE_SECURE` | `1` | `0` only for a plain-http stack |
 | `SOMA_TRUSTED_PROXIES` | the RFC1918 ranges | TOML array of proxies whose `X-Forwarded-For` is believed |
-| `SEASON_GAP_DAYS` | `1` | Minimum days from a close to the next season's opening |
 | `SOMA_ADMIN_GITHUB_IDS` | empty | GitHub numeric user ids, comma-separated, made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
 | `ORION_VERSION` | `1.10.0` | Recorded on every verdict and match as `orion_version` |
@@ -301,8 +300,10 @@ season through its `rules` document (`season_rule_spec()` in
 ## Operating a season
 
 1. **Create it** (`POST /v1/games/{game}/seasons` or the admin page). The name gives the slug, and
-   neither ever changes. It is refused while another season of the game is live or inside
-   `SEASON_GAP_DAYS` of the last close, and it pins `games.active_engine_digest`. Window, rules and
+   neither ever changes. **Seasons overlap** (N30): a game may run any number of live seasons at
+   once, so a create is never refused for another season being live. It sets `visibility`
+   (public|private), `entry` (open|restricted; private forces restricted), the `fleet` policy and
+   the `providers` a season allows, and it pins `games.active_engine_digest`. Window, rules and
    classes stay editable only until it opens.
 2. **Check its boards** with `tinybrains maps check <board.json>...`, which runs the same envelope
    and `worldgen` checks as the upload.

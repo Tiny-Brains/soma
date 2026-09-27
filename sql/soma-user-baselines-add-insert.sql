@@ -54,7 +54,7 @@ made AS (
         WHERE x.model_id = entry.id
         AND x.season_id = se.id
         AND x.status <> 'rejected')
-    ON CONFLICT (model_id)
+    ON CONFLICT (model_id, season_id)
     WHERE status IN ('testing', 'verified') DO NOTHING
     RETURNING id ),
 audit AS (

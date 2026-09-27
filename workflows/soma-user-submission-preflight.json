@@ -16,7 +16,8 @@
             { "var": "metadata.params.game" },
             { "var": "metadata.auth.claims.sub" },
             { "var": "metadata.query.model" },
-            { "var": "metadata.auth.claims.sid" }
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "metadata.query.season" }
           ],
           "output": "temp_data.rows"
         }

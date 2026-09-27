@@ -83,8 +83,8 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("e_pick_c", "soma-admin-picks-create", "write"),
          ("v_public", "soma-pub-versions-get", "query"),
          ("u_match", "soma-user-matches-get", "query"),
-         ("m_insert", "soma-admin-maps-add", "insert"),
-         ("m_flip", "soma-admin-maps-update", "flip"),
+         ("m_insert", "soma-user-maps-add", "insert"),
+         ("m_flip", "soma-user-maps-update", "flip"),
          ("a_verify", "soma-clock-admit-run", "verify"),
          ("a_classify", "soma-clock-admit-run", "classify"),
          ("a_expire", "soma-clock-admit-run", "expire"), ("a_claim", "soma-clock-admit-run", "claim"),
@@ -95,10 +95,10 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("g_admit_waiting", "soma-gate-admissions-claim", "waiting"),
          ("g_admit_report", "soma-gate-admissions-report", "report"),
          ("g_admit_why", "soma-gate-admissions-report", "why"),
-         ("b_insert", "soma-admin-baselines-add", "insert"),
-         ("b_ctx", "soma-admin-baselines-add", "ctx"), ("b_fetch", "soma-admin-baselines-add", "fetch"),
+         ("b_insert", "soma-user-baselines-add", "insert"),
+         ("b_ctx", "soma-user-baselines-add", "ctx"), ("b_fetch", "soma-user-baselines-add", "fetch"),
          ("s_why", "soma-user-submissions-create", "why"),
-         ("b_flip", "soma-admin-baselines-update", "flip")]
+         ("b_flip", "soma-user-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
 FRAGMENTS = (json.load(open("../../shared/soma.json")).get("fragments") or {})
 def tasks(ts, prefix=""):

@@ -1,6 +1,6 @@
 WITH season AS (
     SELECT s.id, s.slug, s.name, (s.closed_at IS NOT NULL) AS closed
-    FROM games g, current_season(g.id, ($6)::text) s
+    FROM games g, public_season(g.id, ($6)::text) s
     WHERE g.slug = ($1)::text ),
 lim AS (
     SELECT least(greatest(($3)::int, 1), 200) AS n ),

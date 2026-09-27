@@ -73,6 +73,17 @@
       "params": [{ "var": "metadata.auth.claims.sub" }, { "var": "metadata.auth.claims.sid" }],
       "output": "temp_data.who"
     },
+    "season_admin_identity": {
+      "connector": "soma-db",
+      "query": "SELECT json_build_object('id', u.id, 'role', u.role, 'season_id', se.id, 'scope', CASE WHEN u.role = 'admin' THEN 'platform' WHEN sa.user_id IS NOT NULL THEN 'season' END) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid LEFT JOIN games g ON g.slug = ($3)::text LEFT JOIN seasons se ON se.game_id = g.id AND se.slug = ($4)::text LEFT JOIN season_admins sa ON sa.season_id = se.id AND sa.user_id = u.id AND sa.removed_at IS NULL WHERE u.id = ($1)::uuid",
+      "params": [
+        { "var": "metadata.auth.claims.sub" },
+        { "var": "metadata.auth.claims.sid" },
+        { "var": "metadata.params.game" },
+        { "var": "metadata.params.slug" }
+      ],
+      "output": "temp_data.who"
+    },
     "clock_tracing": { "errors_only": true, "task_details": true },
     "loop_clock_tracing": { "errors_only": true, "task_details": false },
     "gate_tracing": { "errors_only": true, "task_details": false },
@@ -176,6 +187,78 @@
             "input": {
               "mappings": [
                 { "path": "data.body", "logic": { "error": "admin_only" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 403, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "season-admin-only": {
+      "tasks": [
+        {
+          "id": "who",
+          "name": "Who is asking, and for which season",
+          "description": "season_admin_identity reads the live session AND resolves the season from the route's {game}/{slug}, and records the caller's scope: 'platform' for a platform admin (who may touch any season), 'season' for a live member of season_admins of THIS season, or null for anyone else. Membership is read off the row on every request, like admin-only's role, so removing a season admin takes effect at the next call. A route whose answer differs by scope reads temp_data.who.0.body.scope.",
+          "function": { "name": "db_read", "input": { "$from": "constants.season_admin_identity" } }
+        },
+        {
+          "id": "revoked",
+          "name": "Reject a revoked session",
+          "description": "No row is a revoked or missing session (the JOIN on live_sessions), answered 401 before anything about the season is revealed.",
+          "condition": { "!": { "var": "temp_data.who.0.body" } },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "session_revoked" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 401, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "unknown_season",
+          "name": "Reject an unknown game or season",
+          "description": "A live session but no such {game}/{slug}: 404, told apart from a 403 so a stranger cannot map which seasons exist by the status code, since a private season a non-member names answers 404 here too (Phase 4 keeps that true across the public reads).",
+          "condition": {
+            "and": [
+              { "!!": { "var": "temp_data.who.0.body" } },
+              { "!": { "var": "temp_data.who.0.body.season_id" } }
+            ]
+          },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "unknown_season" } },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 404, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "forbid",
+          "name": "This season's admins only",
+          "description": "The season exists but the caller is neither a platform admin nor a live member of it: 403. scope is read off the live row, so a removed season admin is refused on the next call.",
+          "condition": { "!": { "var": "temp_data.who.0.body.scope" } },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "error": "season_admin_only" } },
                 {
                   "path": "data._orion.response",
                   "logic": { "status": 403, "body_path": "data.body" }

@@ -11,7 +11,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT coalesce(json_agg(json_build_object('id', g.slug, 'name', g.name, 'season', (SELECT season_json(s) FROM current_season(g.id) s)) ORDER BY g.name), '[]'::json) AS body FROM games g",
+          "query": "SELECT coalesce(json_agg(json_build_object('id', g.slug, 'name', g.name, 'season', (SELECT season_json(s) FROM public_season(g.id) s)) ORDER BY g.name), '[]'::json) AS body FROM games g WHERE EXISTS (SELECT 1 FROM seasons s WHERE s.game_id = g.id AND s.visibility = 'public')",
           "params": [],
           "output": "temp_data.rows"
         }

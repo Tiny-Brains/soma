@@ -1,6 +1,6 @@
 {
   "name": "maps-update-disable: disabling a board never runs the engine, and bumps the season",
-  "workflow": "../../workflows/soma-admin-maps-update.json",
+  "workflow": "../../workflows/soma-user-maps-update.json",
   "input": { "enabled": false },
   "metadata": {
     "auth": { "claims": { "sub": "u1", "sid": "s1" } },
@@ -15,6 +15,8 @@
           "body": {
             "id": "u1",
             "role": "admin",
+            "season_id": "se1",
+            "scope": "platform",
             "found": true,
             "closed": false,
             "engine_ok": true,

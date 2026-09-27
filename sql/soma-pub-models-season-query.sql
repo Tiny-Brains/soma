@@ -7,7 +7,7 @@
 WITH e AS (
     SELECT e.id, e.name, e.game_id FROM models e WHERE e.id = ($1)::uuid
 ), se AS (
-    SELECT s.id, s.slug FROM e, current_season(e.game_id) s
+    SELECT s.id, s.slug FROM e, public_season(e.game_id) s
 ), vs AS (
     SELECT v.id FROM e, se, model_versions v WHERE v.model_id = e.id AND v.season_id = se.id
 ), moved AS (

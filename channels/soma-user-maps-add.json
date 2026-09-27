@@ -1,13 +1,13 @@
 {
-  "channel_id": "soma-admin-maps-add",
-  "name": "soma-admin-maps-add",
+  "channel_id": "soma-user-maps-add",
+  "name": "soma-user-maps-add",
   "description": "Uploads a board into a season. 20s rather than 10: this runs the engine's own worldgen on the file and checks it against the cartridge's limits before storing it, disabled.",
-  "tags": ["soma", "admin", "maps"],
+  "tags": ["soma", "user", "maps"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["POST"],
   "route_pattern": "/v1/games/{game}/seasons/{slug}/maps",
-  "workflow_id": "soma-admin-maps-add",
+  "workflow_id": "soma-user-maps-add",
   "config": {
     "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },

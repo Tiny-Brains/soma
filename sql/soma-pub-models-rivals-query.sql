@@ -6,7 +6,7 @@
 WITH e AS (
     SELECT e.id, e.game_id FROM models e WHERE e.id = ($1)::uuid
 ), se AS (
-    SELECT s.id, s.slug FROM e, current_season(e.game_id) s
+    SELECT s.id, s.slug FROM e, public_season(e.game_id) s
 ), lim AS (
     SELECT least(greatest(coalesce(($2)::int, 20), 1), 100) AS n
 ), mine AS (

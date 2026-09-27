@@ -1,10 +1,10 @@
 WITH season AS (
-    -- The live season supplies the digest and is what every seat must belong to. No live
-    -- season, or a seat from another season, and nothing is inserted -- pair halts and re-reads.
+    -- THE SEASON THIS TICK PAIRED (N30), by id -- the one the pick chose and demand/trials/pair ran
+    -- for. It supplies the digest and is what every seat must belong to; a seat from another season,
+    -- or a season no longer live, and nothing is inserted.
     SELECT s.id, s.game_id, s.engine_digest, s.rules
       FROM seasons s
-      JOIN games g ON g.id = s.game_id AND g.slug = ($2)::text
-     WHERE s.closed_at IS NULL
+     WHERE s.id = ($2)::uuid AND s.closed_at IS NULL
 ), board AS (
     -- THE BOARD DECIDES THE SEAT COUNT, and the statement reads it rather than trusting the plan:
     -- an enabled map of THIS season, or nothing is inserted. A board disabled between pair's

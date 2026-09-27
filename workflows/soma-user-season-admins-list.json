@@ -1,0 +1,38 @@
+{
+  "workflow_id": "soma-user-season-admins-list",
+  "name": "A season's admins",
+  "description": "The season's live admins, by platform handle, readable by the season's own admins and platform admins (the season-admin-only fragment gates it). A season admin is a membership, not a role: the same person is a competitor everywhere else.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Read the season's admins",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-season-admins.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

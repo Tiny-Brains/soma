@@ -1,0 +1,83 @@
+{
+  "workflow_id": "soma-user-participants-remove",
+  "name": "Remove a participant",
+  "description": "Remove one participant, by its row id in `id`. A soft remove (removed_at set), never a delete: the row records that they were a participant and the same login may be added again later. Removal stops further submissions at once and, for a private season, the view; a version already on the ladder stays (Q3). The response is the season's participants list after the removal. The season-admin-only fragment gates it.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.id" } },
+        "status": 400,
+        "body": { "error": "id_required", "detail": "Give the participant row's `id` to remove." },
+        "name": "A participant id, declared"
+      }
+    },
+    {
+      "id": "remove",
+      "name": "Remove the participant",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-participants-remove-remove.sql" },
+          "params": [
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "data.req.id" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.removed"
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "removed" } },
+        "status": 404,
+        "body": {
+          "error": "unknown_participant",
+          "detail": "No live participant with that id in this season."
+        },
+        "name": "No such participant"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the participants back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-participants.sql" },
+          "params": [{ "var": "temp_data.who.0.body.season_id" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

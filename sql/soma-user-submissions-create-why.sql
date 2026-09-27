@@ -1,5 +1,8 @@
 -- WHY NOTHING WAS INSERTED. `session_ok` first: the insert joins live_sessions, so a dead session
--- writes nothing and would otherwise read as a season, model or note refusal.
+-- writes nothing and would otherwise read as a season, model or note refusal. The season is the one
+-- the submission named, or the game's featured public season when it named none (N30) --
+-- current_season(g.id, <slug>), LEFT JOIN LATERAL so a row comes back even when it resolves nothing
+-- (an unknown game or slug), which the revoked/unknown_model refusals ride.
 WITH me AS (
     SELECT true AS live FROM live_sessions ls
      WHERE ls.sid = ($8)::uuid AND ls.user_id = ($2)::uuid
@@ -28,6 +31,7 @@ SELECT coalesce(me.live, false) AS session_ok, json_build_object( 'season', s.sl
         WHERE fe.game_id = g.id
         AND fe.owner_id = ($2)::uuid
         AND fe.id = ($4)::uuid
+        AND f.season_id = s.id
         AND f.status = 'testing'
         AND f.weights_hash = ($3)::text
         AND f.manifest_hash = ($5)::text
@@ -37,6 +41,7 @@ SELECT coalesce(me.live, false) AS session_ok, json_build_object( 'season', s.sl
         WHERE fe.game_id = g.id
         AND fe.owner_id = ($2)::uuid
         AND fe.id = ($4)::uuid
+        AND f.season_id = s.id
         AND f.status IN ('testing', 'verified')), 'in_flight_ok', s.id IS NULL
     OR season_admits_in_flight(s, ($2)::uuid), 'versions_ok', s.id IS NULL
     OR (SELECT season_admits_version(s, ($2)::uuid, e.id)
@@ -56,6 +61,5 @@ SELECT coalesce(me.live, false) AS session_ok, json_build_object( 'season', s.sl
         AND e.id = ($4)::uuid)) AS body
 FROM games g
 LEFT JOIN me ON true
-LEFT JOIN seasons s ON s.game_id = g.id
-AND s.closed_at IS NULL
+LEFT JOIN current_season(g.id, nullif(($9)::text, '')) s ON true
 WHERE g.slug = ($1)::text

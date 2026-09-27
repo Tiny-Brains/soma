@@ -20,8 +20,13 @@
     }
   },
   "stubs": {
-    "db_read": { "soma-db": [{ "id": "g1", "epoch": 3, "body": { "limits": { "maps": [] } } }] }
+    "db_read": {
+      "soma-db": [
+        { "season_id": "s1" },
+        { "id": "g1", "epoch": 3, "body": { "limits": { "maps": [] } } }
+      ]
+    }
   },
   "expect_calls": { "db_write": [] },
-  "expect_tasks": ["demand", "boards"]
+  "expect_tasks": ["pick", "picked", "demand", "boards"]
 }

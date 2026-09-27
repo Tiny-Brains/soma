@@ -61,6 +61,12 @@ CREATE TABLE games (
     manifest             jsonb,
     reference_observations jsonb,
 
+    -- THE SEASON A GAME SHOWS WHEN NONE IS NAMED (N30): the default for every link and for a read
+    -- with `?season=` left out. Set by the platform admin. NULL falls back, in current_season(), to
+    -- the newest live public season, else the newest public season; a private season is never
+    -- featured. The FK is added by ALTER after `seasons` exists (the two tables reference each other).
+    featured_season_id   uuid,
+
     created_at           timestamptz NOT NULL DEFAULT now()
 );
 
@@ -281,12 +287,9 @@ LANGUAGE sql IMMUTABLE AS $$
     -- ---- unique_weights: no two entries stand on one set of weights, within the scope.
       ('unique_weights', 'enabled', 'bool', NULL, NULL, NULL),
       ('unique_weights', 'scope',   'enum', NULL, NULL, ARRAY['game', 'season', 'user']),
-    -- ---- participants: a cohort season. Either list admits, and `handles` is resolved AT THE TIME
-    --      OF ASKING -- a cohort is a list of GitHub logins written before the term starts, and
-    --      resolving it once would silently refuse every member who signed in afterwards.
-      ('participants', 'enabled',  'bool',  NULL, NULL, NULL),
-      ('participants', 'handles',  'strs',  NULL, NULL, NULL),
-      ('participants', 'user_ids', 'uuids', NULL, NULL, NULL),
+    -- ---- participants LEFT THE RULES DOCUMENT (N30): a cohort is season_participants + `entry =
+    --      'restricted'` now, so a class can add a late student after the season opens (rules freeze
+    --      at open). season_admits reads the table; `entry` says what the rule's `enabled` said.
     -- ---- classes: which of the season's weight classes may be entered. NARROWS weight_classes and
     --      never redefines it: that column stays the only definition of the class table, because
     --      its ascending CHECK is what makes admission's `ORDER BY max_bytes LIMIT 1` correct.
@@ -382,8 +385,8 @@ $$;
 
 -- Refuses an unknown key AT BOTH LEVELS, and every value that is not of its declared kind inside
 -- its declared range. Both halves are the point: the CHECK this replaces enumerated two block names
--- and looked no further, so `{"participants": {"enabld": true}}` stored cleanly and then admitted
--- the world -- the rule read as off through the coalesce every predicate uses, silently.
+-- and looked no further, so `{"unique_weights": {"enabld": true}}` stored cleanly and then read as
+-- off through the coalesce every predicate uses, silently -- the typo disabling the rule.
 --
 -- A block present without `enabled` is refused for the same reason: it is the one shape whose
 -- failure is invisible at every later read.
@@ -450,10 +453,36 @@ CREATE FUNCTION season_slug(p_name text) RETURNS text LANGUAGE sql IMMUTABLE AS 
     SELECT btrim(regexp_replace(lower(p_name), '[^a-z0-9]+', '-', 'g'), '-');
 $$;
 
--- A competition window for one game, created by an admin. A version belongs to exactly one season;
--- seasons of a game never overlap (the partial unique index below IS that rule) and the next opens
--- at least season_gap_days after the previous closed; a season closes when its scores have settled
--- or when an admin asks. Its standings -- its `active` versions and their ratings -- are kept for ever.
+-- THE FLEET POLICY'S SHAPE, and the reason it is a column and not a rule (see seasons.fleet below).
+-- Two keys, `matches` and `admissions`, each `own | platform | both`: which runners may claim the
+-- season's matches and admit its submissions. A column so a platform admin can change it WHILE THE
+-- SEASON IS LIVE -- a university's runner dies mid-term and the platform steps in -- which a rule,
+-- frozen at open, could not do. The default '{"matches":"platform","admissions":"platform"}' is
+-- today's season: the platform fleet plays everything.
+CREATE FUNCTION season_fleet_ok(f jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_typeof(f) = 'object'
+       AND (f -> 'matches')    IS NOT NULL AND (f ->> 'matches')    IN ('own', 'platform', 'both')
+       AND (f -> 'admissions') IS NOT NULL AND (f ->> 'admissions') IN ('own', 'platform', 'both')
+       AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(f) AS k
+                        WHERE k NOT IN ('matches', 'admissions'));
+$$;
+
+-- seasons.providers is null (any provider) or a JSON array of non-empty slug strings. A CHECK cannot
+-- hold a subquery, so the array walk lives here (as season_fleet_ok's does).
+CREATE FUNCTION season_providers_ok(p jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT p IS NULL
+        OR (jsonb_typeof(p) = 'array'
+            AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p) AS e
+                             WHERE jsonb_typeof(e) <> 'string' OR (e #>> '{}') = ''));
+$$;
+
+-- A competition window for one game, created by an admin. A version belongs to exactly one season.
+-- SEASONS OF A GAME OVERLAP (N30): a game may run any number of live seasons at once, public and
+-- private, each with its own boards, baselines, participants, runners, podium and medals -- so
+-- there is no non-overlap index and no gap between seasons. A season closes when its scores have
+-- settled or when an admin asks. Its standings -- its `active` versions and their ratings -- are
+-- kept for ever. `visibility` and `entry` decide who may see and who may enter it; `fleet` which
+-- runners play it; `providers` which identity providers may enter it.
 CREATE TABLE seasons (
     id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     game_id              uuid        NOT NULL REFERENCES games (id),
@@ -509,6 +538,25 @@ CREATE TABLE seasons (
     -- `stats.parameters` instead, which Orion 1.8.1 made honest enough to gate on.
     weight_classes       jsonb       NOT NULL DEFAULT default_weight_classes(),
 
+    -- WHO MAY SEE, AND WHO MAY ENTER. `public` is watchable by the whole world; `private` is its
+    -- participants', its season admins' and platform admins' alone -- to anyone else every route
+    -- naming it answers as for a season that does not exist. `open` lets anyone who may see it
+    -- enter; `restricted` lets only its participants (season_participants) enter. A CHECK holds
+    -- `private` to `restricted`: a season no stranger can see is one no stranger can enter.
+    visibility           text        NOT NULL DEFAULT 'public',
+    entry                text        NOT NULL DEFAULT 'open',
+
+    -- WHICH RUNNERS PLAY IT. Two keys, each own|platform|both; season_fleet_ok() above is the shape.
+    -- A column, not a rule, because a platform admin changes it while the season is live.
+    fleet                jsonb       NOT NULL DEFAULT '{"matches":"platform","admissions":"platform"}'::jsonb,
+
+    -- WHICH IDENTITY PROVIDERS MAY ENTER. NULL means any enabled provider (today's season). A JSON
+    -- array of provider slugs restricts entry to identities from them: a university season lists its
+    -- own provider so a GitHub identity cannot enter even if a login is listed. jsonb, not text[], so
+    -- the request's JSON array binds without an array-literal round trip (an enum/array does not bind
+    -- as a parameter). season_admits reads it with jsonb_array_elements_text.
+    providers            jsonb,
+
     created_at           timestamptz NOT NULL DEFAULT now(),
 
     UNIQUE (game_id, number),
@@ -527,11 +575,26 @@ CREATE TABLE seasons (
                                               AND slug NOT IN ('current', 'live', 'latest', 'new')),
     CONSTRAINT seasons_window          CHECK (submissions_close_at > submissions_open_at),
     CONSTRAINT seasons_rules_shape     CHECK (season_rules_ok(rules)),
-    CONSTRAINT seasons_weight_classes_shape CHECK (weight_classes_ok(weight_classes))
+    CONSTRAINT seasons_weight_classes_shape CHECK (weight_classes_ok(weight_classes)),
+    CONSTRAINT seasons_visibility_shape CHECK (visibility IN ('public', 'private')),
+    CONSTRAINT seasons_entry_shape      CHECK (entry IN ('open', 'restricted')),
+    -- A private season is watchable only by its participants, so it can only be entered by them.
+    CONSTRAINT seasons_private_restricted CHECK (visibility <> 'private' OR entry = 'restricted'),
+    CONSTRAINT seasons_fleet_shape      CHECK (season_fleet_ok(fleet)),
+    CONSTRAINT seasons_providers_shape  CHECK (season_providers_ok(providers))
 );
 
--- At most one live season per game. This IS the non-overlap rule, as an index.
-CREATE UNIQUE INDEX seasons_one_live_uniq ON seasons (game_id) WHERE closed_at IS NULL;
+-- SEASONS OVERLAP (N30). There was a partial unique index here -- seasons_one_live_uniq, one live
+-- season a game -- and it is gone: a game may run any number of live seasons at once. What was the
+-- non-overlap rule is now the create accepting a season whatever else is live.
+
+-- games.featured_season_id points into seasons, and seasons.game_id points into games: a cycle, so
+-- one side is a plain column filled by ALTER once both tables exist. ON DELETE SET NULL because a
+-- season is never deleted anyway (standings are kept for ever), but a featured pointer must not be
+-- what would stop that if it ever were.
+ALTER TABLE games
+    ADD CONSTRAINT games_featured_season_fk
+        FOREIGN KEY (featured_season_id) REFERENCES seasons (id) ON DELETE SET NULL;
 
 -- ---------------------------------------------------------------------- users
 
@@ -609,6 +672,57 @@ CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 -- may be nowhere near the deployment, and these two tables are the whole of its identity: a
 -- credential an admin holds, and a process that presented it.
 
+-- ------------------------------------------------------ season admins & participants
+
+-- SEASON ADMINS (N30). A MEMBERSHIP, NOT A ROLE: `user_role` stays competitor|admin|baseline, and a
+-- season admin is a competitor everywhere else and may administer several seasons. A platform admin
+-- assigns and removes them (by handle, at creation or later); a baseline account cannot be one.
+-- live_runner_keys/live_runners will read this to let a season admin's runner keys work (Phase 3),
+-- and the season-admin-only route fragment reads it on every request, so a removal takes effect at
+-- the next call -- the same shape as an admin demotion.
+CREATE TABLE season_admins (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    user_id     uuid        NOT NULL REFERENCES users (id),
+    added_by    uuid        NOT NULL REFERENCES users (id),
+    added_at    timestamptz NOT NULL DEFAULT now(),
+    removed_at  timestamptz
+);
+-- One live membership per (season, user); a removed one may be re-added.
+CREATE UNIQUE INDEX season_admins_one_live_uniq
+    ON season_admins (season_id, user_id) WHERE removed_at IS NULL;
+CREATE INDEX season_admins_user_idx ON season_admins (user_id) WHERE removed_at IS NULL;
+
+-- SEASON PARTICIPANTS (N30). Moved OUT of the `participants` rule and into a table, because rules
+-- freeze when a season opens (count reads its rating constants off them) and a class must be able to
+-- add a late student after the term starts. `entry = 'restricted'` plus rows here is what the rule
+-- meant; `entry = 'open'` ignores the table. A row is a PROVIDER'S LOGIN, resolved to a user when
+-- that identity exists -- pinned at add time, or at the identity's next sign-in -- and kept as a
+-- login until then, since most of a class has never signed in when the roster is written. A NULL
+-- login is a WILDCARD: every identity of the provider is a participant (I7/Q14), one row instead of a
+-- roster. §I (the identity rebuild) is DEFERRED, so `provider` is 'github' today and resolution is
+-- lower(login) against users.handle -- exactly what the old rule did; when §I lands this keys on the
+-- identities table with no shape change here.
+CREATE TABLE season_participants (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    provider    text        NOT NULL DEFAULT 'github',
+    login       text,                                    -- NULL is the provider-wide wildcard
+    user_id     uuid        REFERENCES users (id),       -- pinned when the identity exists
+    added_by    uuid        NOT NULL REFERENCES users (id),
+    added_at    timestamptz NOT NULL DEFAULT now(),
+    removed_at  timestamptz,
+    CONSTRAINT season_participants_login_shape    CHECK (login IS NULL OR btrim(login) <> ''),
+    CONSTRAINT season_participants_provider_shape CHECK (provider ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+);
+-- One live row per (season, provider, login), case-insensitive; a removed row may be re-added. NULLs
+-- are distinct in a unique index, so the wildcard (null login) needs its own one-live index.
+CREATE UNIQUE INDEX season_participants_one_live_uniq
+    ON season_participants (season_id, provider, lower(login)) WHERE removed_at IS NULL;
+CREATE UNIQUE INDEX season_participants_one_wildcard_uniq
+    ON season_participants (season_id, provider) WHERE removed_at IS NULL AND login IS NULL;
+CREATE INDEX season_participants_user_idx ON season_participants (user_id) WHERE removed_at IS NULL;
+
 -- An admin's runner credential. A TABLE rather than a column on users, so an admin can hold two
 -- keys and retire one without a gap -- rotation with no window in which nothing works.
 --
@@ -621,6 +735,14 @@ CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
 CREATE TABLE runner_keys (
     id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+
+    -- WHICH SEASON THIS KEY (AND EVERY RUNNER STARTED FROM IT) SERVES (N30). NULL is the PLATFORM
+    -- FLEET: it plays any season whose fleet policy allows the platform (fleet.matches/admissions in
+    -- 'platform'|'both'). A value binds the key to ONE season for ever -- a season runner never serves
+    -- another, whatever the other's policy says (R1) -- and it is minted on that season's admin page by
+    -- its season admins. This is what makes delegating a runner to a stranger safe: a compromised
+    -- season key can at worst play its own ladder. live_runner_keys/live_runners read it.
+    season_id    uuid        REFERENCES seasons (id),
 
     -- The admin's own words: which key this is, so retiring the right one is possible.
     label        text        NOT NULL,
@@ -687,11 +809,19 @@ CREATE TABLE runners (
 -- live row instead of off a cookie claim. A JSONLogic guard would fail OPEN if it were ever wrong;
 -- a JOIN cannot be forgotten.
 CREATE VIEW live_runners AS
-    SELECT r.id, r.key_id, r.label, r.max_in_flight, r.match_timeout_ms, r.seat_concurrency, k.user_id
+    SELECT r.id, r.key_id, r.label, r.max_in_flight, r.match_timeout_ms, r.seat_concurrency, k.user_id,
+           k.season_id
       FROM runners r
       JOIN runner_keys k ON k.id = r.key_id AND k.revoked_at IS NULL
-      JOIN users u       ON u.id = k.user_id AND u.role = 'admin'
-     WHERE r.revoked_at IS NULL;
+      JOIN users u       ON u.id = k.user_id
+     WHERE r.revoked_at IS NULL
+       -- A PLATFORM key needs a live platform admin; a SEASON key needs a live season admin of ITS
+       -- season (N30). Membership is read here, so a demoted admin's or a removed season admin's
+       -- runner ends at its next call, the same fence a platform admin already had.
+       AND ((k.season_id IS NULL AND u.role = 'admin')
+         OR (k.season_id IS NOT NULL AND (u.role = 'admin' OR EXISTS (
+                SELECT 1 FROM season_admins sa
+                 WHERE sa.season_id = k.season_id AND sa.user_id = k.user_id AND sa.removed_at IS NULL))));
 
 -- The key half of the same predicate, and it exists for the same reason `live_runners` does: the
 -- token exchange has to know that a key belongs to a LIVE ADMIN, and the role that runs the
@@ -702,10 +832,16 @@ CREATE VIEW live_runners AS
 -- is what carries the second, and it is stricter on purpose: a token already minted is bounded by
 -- its ten minutes, but a statement is fenced now.
 CREATE VIEW live_runner_keys AS
-    SELECT k.id, k.user_id, k.key_hash, k.key_prefix
+    SELECT k.id, k.user_id, k.key_hash, k.key_prefix, k.season_id
       FROM runner_keys k
-      JOIN users u ON u.id = k.user_id AND u.role = 'admin'
-     WHERE k.revoked_at IS NULL;
+      JOIN users u ON u.id = k.user_id
+     WHERE k.revoked_at IS NULL
+       -- Same reach as live_runners: a platform key of a live platform admin, or a season key of a
+       -- live season admin of its season. Demotion takes effect at the next token exchange (N30).
+       AND ((k.season_id IS NULL AND u.role = 'admin')
+         OR (k.season_id IS NOT NULL AND (u.role = 'admin' OR EXISTS (
+                SELECT 1 FROM season_admins sa
+                 WHERE sa.season_id = k.season_id AND sa.user_id = k.user_id AND sa.removed_at IS NULL))));
 
 -- --------------------------------------------------------------------- models
 
@@ -966,6 +1102,7 @@ CREATE TABLE ratings (
 
     PRIMARY KEY (version_id, ladder)
 );
+
 
 -- ---------------------------------------------------------------- season maps
 
@@ -1692,12 +1829,14 @@ INSERT INTO clocks (key) VALUES ('count'), ('pair'), ('withdraw'), ('roster');
 CREATE UNIQUE INDEX model_versions_model_version_uniq
     ON model_versions (model_id, version);
 
--- At most one submission in flight PER ENTRY, spanning both pre-active states: an entry with a
--- verified version waiting for its trial may not take another release. The per-USER ceiling ACROSS
--- entries is entries.in_flight_max and is deliberately not here -- an index that says "one" and a
--- count that says "one" are two rules that will one day say different numbers.
+-- At most one submission in flight PER ENTRY PER SEASON (N30), spanning both pre-active states: an
+-- entry with a verified version waiting for its trial may not take another release IN THE SAME
+-- SEASON -- but a student may have a version in admission in class and another in public at once,
+-- which is why season_id is in the key. The per-USER ceiling ACROSS entries is entries.in_flight_max
+-- and is deliberately not here -- an index that says "one" and a count that says "one" are two rules
+-- that will one day say different numbers.
 CREATE UNIQUE INDEX model_versions_one_in_flight_uniq
-    ON model_versions (model_id) WHERE status IN ('testing', 'verified');
+    ON model_versions (model_id, season_id) WHERE status IN ('testing', 'verified');
 
 -- The admission claim: testing rows, oldest first. Deliberately WITHOUT admit_started_at -- a
 -- claim rewrites that column on every row it takes, and keeping it out leaves those updates
@@ -1825,28 +1964,53 @@ CREATE FUNCTION season_state(s seasons) RETURNS text LANGUAGE sql STABLE AS $$
                 ELSE                                     'settling' END;
 $$;
 
--- The season a game is currently read through: the live one, else the latest closed. Six routes
--- resolve a season this way and a seventh does with `?season=<slug>` (p_slug), which is the same
--- selection with the slug pinned.
+-- THE SEASON A GAME IS READ THROUGH WHEN NONE IS NAMED -- the FEATURED season (N30). With `?season=`
+-- (p_slug) it is that slug, whatever its state or visibility (the caller named it; a visibility gate
+-- is the reader's, not this function's). Without one it is games.featured_season_id if the admin has
+-- set a PUBLIC one, else the newest live public season, else the newest public season -- a private
+-- season is never the featured fallback, so a game with only private seasons resolves to nothing and
+-- is unlisted (G2). The signature is unchanged, so the six routes that resolve a season this way and
+-- the seventh that pins the slug are untouched.
 CREATE FUNCTION current_season(p_game uuid, p_slug text DEFAULT NULL)
 RETURNS SETOF seasons LANGUAGE sql STABLE AS $$
-    SELECT * FROM seasons s
-     WHERE s.game_id = p_game AND (p_slug IS NULL OR s.slug = p_slug)
-     ORDER BY (s.closed_at IS NULL) DESC, s.number DESC
+    SELECT s.* FROM seasons s
+     JOIN games g ON g.id = s.game_id
+     WHERE s.game_id = p_game
+       AND ((p_slug IS NOT NULL AND s.slug = p_slug)
+         OR (p_slug IS NULL AND s.visibility = 'public'))
+     -- With a slug there is one match and the ordering is moot. Without one, the featured public
+     -- season wins; failing that, the newest live public, then the newest public.
+     ORDER BY (g.featured_season_id = s.id) DESC,
+              (s.closed_at IS NULL) DESC,
+              s.number DESC
      LIMIT 1;
 $$;
 
--- WHAT OF THE RULES A SEASON MAY SHOW THE WORLD. season_json() is returned by six public routes,
--- and it used to return `rules` verbatim -- which published `participants.user_ids`, the roster of
--- a private cohort, to anyone who asked for the game. Everything else in the document is the
--- contest a competitor is entering and belongs on the page; the participant list is the one part
--- that names people, so it is reduced to whether it is on.
+-- THE SAME RESOLUTION, BUT PUBLIC ONLY (N30). The anonymous, path-cached public reads resolve a
+-- season through this: a private season named by `?season=<slug>` returns NOTHING here, so every
+-- public read answers as for a season that does not exist (V2) -- the security half of visibility,
+-- and it stays cacheable because the answer does not depend on a viewer. A member seeing their own
+-- private season's standings is the viewer-aware half (Phase 4b, the CACHE.md decision), which is not
+-- this. current_season() (visibility-blind on a named slug) stays what the submission path and the
+-- season-scoped user routes resolve through, because a member DOES name their private season there.
+CREATE FUNCTION public_season(p_game uuid, p_slug text DEFAULT NULL)
+RETURNS SETOF seasons LANGUAGE sql STABLE AS $$
+    SELECT s.* FROM seasons s
+     JOIN games g ON g.id = s.game_id
+     WHERE s.game_id = p_game AND s.visibility = 'public'
+       AND (p_slug IS NULL OR s.slug = p_slug)
+     ORDER BY (g.featured_season_id = s.id) DESC,
+              (s.closed_at IS NULL) DESC,
+              s.number DESC
+     LIMIT 1;
+$$;
+
+-- WHAT OF THE RULES A SEASON MAY SHOW THE WORLD. season_json() is returned by six public routes.
+-- Since N30 the participant list lives in season_participants, not in `rules`, so there is nothing in
+-- the document left to hide: the rules a season declares are the contest a competitor is entering,
+-- and this returns them whole.
 CREATE FUNCTION season_rules_public(r jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE WHEN r ? 'participants'
-                THEN jsonb_set(r, '{participants}',
-                               jsonb_build_object('enabled',
-                                   coalesce(r -> 'participants' -> 'enabled', 'false'::jsonb)))
-                ELSE r END;
+    SELECT r;
 $$;
 
 -- The season object every route returns. The counts are the ones the site prints, and they are
@@ -2043,21 +2207,40 @@ $$;
 -- Each counts WITHIN THE SEASON WHOSE RULE IT IS. A document reaching back into a previous season's
 -- rows would make a competitor's allowance depend on a competition that is over.
 
--- The participants rule. EITHER list admits, and `handles` is resolved at the time of asking rather
--- than at the season create: a cohort is a list of GitHub logins written before the term starts, and
--- resolving it once would silently refuse every member who signed in for the first time afterwards
--- -- which is most of them. users.handle IS the GitHub login, rewritten on every sign-in, so the
--- match is on lower(handle) and needs no second table.
+-- WHO MAY ENTER (N30). `entry = 'open'` admits anyone who may see the season. `entry = 'restricted'`
+-- admits a PARTICIPANT: a season_participants row pinned to this user, a wildcard row (null login) of
+-- a provider the user has an identity with, or an unpinned row whose (provider, login) matches one of
+-- the user's identities. Resolved at the time of asking, not at add, because a cohort is written
+-- before most of its members have signed in -- so a member listed by login is admitted at their first
+-- sign-in without an edit. §I (the identity rebuild) is DEFERRED, so "identity" here is the GitHub
+-- one: provider 'github', login = users.handle (case-insensitive), a real user is one with a
+-- github_id. When §I lands this keys on the identities table instead, with no caller change.
 CREATE FUNCTION season_admits(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT NOT coalesce((s.rules -> 'participants' ->> 'enabled')::bool, false)
-        OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(
-                            coalesce(s.rules -> 'participants' -> 'user_ids', '[]'::jsonb)) AS uid
-                    WHERE uid = (p_user)::text)
-        OR EXISTS (SELECT 1 FROM users u
-                    WHERE u.id = p_user
-                      AND lower(u.handle) IN (
-                          SELECT lower(h) FROM jsonb_array_elements_text(
-                              coalesce(s.rules -> 'participants' -> 'handles', '[]'::jsonb)) AS h));
+    SELECT s.entry = 'open'
+        OR EXISTS (
+            SELECT 1 FROM season_participants sp
+             WHERE sp.season_id = s.id AND sp.removed_at IS NULL
+               AND (sp.user_id = p_user
+                 OR (sp.provider = 'github' AND sp.login IS NULL
+                     AND EXISTS (SELECT 1 FROM users u
+                                  WHERE u.id = p_user AND u.github_id IS NOT NULL))
+                 OR (sp.provider = 'github' AND sp.login IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM users u
+                                  WHERE u.id = p_user AND lower(u.handle) = lower(sp.login)))));
+$$;
+
+-- WHO MAY SEE A SEASON (N30). `public` is everyone's. `private` is its participants' (season_admits),
+-- its season admins' and platform admins' alone -- to anyone else every route naming it must answer
+-- as for a season that does not exist (Phase 4 wires this into every public read; defined here beside
+-- season_admits, which it reuses). A NULL viewer is the anonymous public: they see public seasons only.
+CREATE FUNCTION season_visible(s seasons, p_viewer uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT s.visibility = 'public'
+        OR (p_viewer IS NOT NULL AND (
+               season_admits(s, p_viewer)
+            OR EXISTS (SELECT 1 FROM season_admins sa
+                        WHERE sa.season_id = s.id AND sa.user_id = p_viewer AND sa.removed_at IS NULL)
+            OR EXISTS (SELECT 1 FROM users u
+                        WHERE u.id = p_viewer AND u.role = 'admin')));
 $$;
 
 -- No one else already holds these weights, within the rule's scope.
@@ -2906,11 +3089,11 @@ END $$;
 GRANT USAGE ON SCHEMA public TO runner_gate;
 GRANT SELECT ON matches, match_seats TO runner_gate;
 GRANT SELECT (id, map_id, board) ON season_maps TO runner_gate;
-GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at)
+GRANT SELECT (id, status, manifest, artifact_key, weights_hash, created_at, season_id)
     ON model_versions TO runner_gate;
 -- The claim reads the row's own season and game to build the execution contract (N18). SELECT
 -- only, and on the two columns that carry it: a runner's terms are read here, never decided here.
-GRANT SELECT (id, game_id, rules, engine_digest, closed_at) ON seasons TO runner_gate;
+GRANT SELECT (id, game_id, rules, engine_digest, closed_at, fleet) ON seasons TO runner_gate;
 GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
 -- The match player's columns, plus `played_by`, which the claim writes, and `listed`, which finish
 -- writes. The runner decides no part of `listed`: finish sets it to `trial_version_id IS NULL`,

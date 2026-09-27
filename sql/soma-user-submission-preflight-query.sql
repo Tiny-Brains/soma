@@ -38,8 +38,10 @@ WITH ctx AS (
         AND e.game_id = g.id
         AND e.retired_at IS NULL) AS entries_used
     FROM games g
-    LEFT JOIN seasons s ON s.game_id = g.id
-    AND s.closed_at IS NULL
+    -- The season the caller named (?season=<slug>), or the game's featured public season when none
+    -- (N30): current_season resolves at most one, so the scalar (SELECT ... FROM ctx) below is
+    -- single-row again now that seasons overlap. LEFT JOIN LATERAL keeps a row when it resolves none.
+    LEFT JOIN current_season(g.id, nullif(($5)::text, '')) s ON true
     WHERE g.slug = ($1)::text )
 SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'season', CASE
         WHEN ctx.season_id IS NULL THEN NULL

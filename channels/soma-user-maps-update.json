@@ -1,13 +1,13 @@
 {
-  "channel_id": "soma-admin-maps-update",
-  "name": "soma-admin-maps-update",
+  "channel_id": "soma-user-maps-update",
+  "name": "soma-user-maps-update",
   "description": "Enables or disables a board. 20s, because a board being enabled is re-checked the way it was on upload.",
-  "tags": ["soma", "admin", "maps"],
+  "tags": ["soma", "user", "maps"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["PATCH"],
   "route_pattern": "/v1/games/{game}/seasons/{slug}/maps/{map_id}",
-  "workflow_id": "soma-admin-maps-update",
+  "workflow_id": "soma-user-maps-update",
   "config": {
     "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },

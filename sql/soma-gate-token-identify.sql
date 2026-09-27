@@ -4,7 +4,10 @@ SELECT json_build_object('runner_id', lr.id, 'key_id', lr.key_id, 'label', lr.la
         FROM seasons s
         WHERE s.closed_at IS NULL
         AND coalesce((s.rules -> 'graph' ->> 'enabled')::bool, false)
-        AND s.rules -> 'graph' ->> 'adapter_ops_max' IS NOT NULL)) AS body
+        AND s.rules -> 'graph' ->> 'adapter_ops_max' IS NOT NULL
+        -- Only the seasons THIS key reaches (N30): a season key is bounded by its own season, a
+        -- platform key by every live season, so ops_required is the ceiling this runner must honour.
+        AND (lr.season_id IS NULL OR s.id = lr.season_id))) AS body
 FROM live_runners lr
 JOIN runners r ON r.id = lr.id
 JOIN runner_keys k ON k.id = lr.key_id

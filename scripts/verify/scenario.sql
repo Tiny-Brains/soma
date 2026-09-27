@@ -77,20 +77,20 @@ SELECT season_map_within('{"players": 2, "rows": 24, "cols": 24}',
 
 \echo '--- pair: epoch read; trial insert (expect INSERT 0 2 seats); ranked insert (expect 2); second live trial (expect unique violation)'
 SELECT epoch FROM clocks WHERE key = 'roster';
-EXECUTE p_insert (0, 'ants', 42, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 42, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 43, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 43, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 44, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 44, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000002', gen_random_uuid(), 5);
 \echo '--- pair: stale epoch (expect 0); a row on another board (expect 2)'
-EXECUTE p_insert (99, 'ants', 45, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (99, '50000000-0000-0000-0000-000000000001', 45, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (0, 'ants', 46, '70000000-0000-0000-0000-000000000002',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 46, '70000000-0000-0000-0000-000000000002',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}',
   NULL, gen_random_uuid(), 5);
 SELECT seed, (SELECT map_id FROM season_maps sm WHERE sm.id = matches.season_map_id) AS map,
@@ -98,10 +98,10 @@ SELECT seed, (SELECT map_id FROM season_maps sm WHERE sm.id = matches.season_map
 \echo '--- pair: a board an admin has disabled takes no new match (expect 0); two seats on a four-seat board take none either -- the insert reads the count off the board (expect 0)'
 BEGIN;
 UPDATE season_maps SET enabled = false WHERE id = '70000000-0000-0000-0000-000000000002';
-EXECUTE p_insert (0, 'ants', 70, '70000000-0000-0000-0000-000000000002',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 70, '70000000-0000-0000-0000-000000000002',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 ROLLBACK;
-EXECUTE p_insert (0, 'ants', 71, '70000000-0000-0000-0000-000000000003',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 71, '70000000-0000-0000-0000-000000000003',
   '{20000000-0000-0000-0000-000000000001,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT m.seed, s.seat, s.version_id, s.weights_hash, s.paired_ratings FROM match_seats s JOIN matches m ON m.id = s.match_id ORDER BY m.seed, s.seat;
 SELECT id AS m42 FROM matches WHERE seed = 42 \gset
@@ -276,9 +276,9 @@ EXECUTE v_public ('20000000-0000-0000-0000-000000000001', 2.0);
 EXECUTE c_withdraw_pred ('20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
 SELECT seed, status, withdrawn_reason, successor_version_id FROM matches WHERE seed = 46;
 \echo '--- pair with the epoch read before promotion (expect 0: fenced out); with the new epoch (expect 2)'
-EXECUTE p_insert (0, 'ants', 47, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (0, '50000000-0000-0000-0000-000000000001', 47, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (1, 'ants', 47, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (1, '50000000-0000-0000-0000-000000000001', 47, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 \echo '--- withdraw sweep: retire the engine on the live season (expect 1: seed 47 ENGINE_RETIRED); a closed season refuses inserts (expect 0) and the sweep finds nothing queued (expect 0)'
 UPDATE games SET active_engine_digest = 'sha256:e2';
@@ -286,7 +286,7 @@ UPDATE seasons SET engine_digest = 'sha256:e2';
 EXECUTE w_sweep;
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 47;
 UPDATE seasons SET closed_at = now();
-EXECUTE p_insert (1, 'ants', 48, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (1, '50000000-0000-0000-0000-000000000001', 48, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 EXECUTE w_sweep;
 UPDATE seasons SET closed_at = NULL;
@@ -297,7 +297,7 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
   ('20000000-0000-0000-0000-000000000003', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 3, 'verified', 'nano',
    'sha256:wa3', 'sha256:ma3', '1.8.1');
-EXECUTE p_insert (1, 'ants', 50, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (1, '50000000-0000-0000-0000-000000000001', 50, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000003,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000003', gen_random_uuid(), 5);
 SELECT id AS m50 FROM matches WHERE seed = 50 \gset
@@ -461,7 +461,7 @@ SELECT json_array_length(r -> 'edges') AS edges, x ->> 'model' AS model, x ->> '
 ROLLBACK;
 
 \echo '--- refusal: a ranked row claimed then released (expect 1; pending, refusals 1, lapses 0)'
-EXECUTE p_insert (2, 'ants', 51, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 51, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
@@ -488,7 +488,7 @@ SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 EXECUTE s_history ('20000000-0000-0000-0000-000000000001', 10);
 
 \echo '--- the runner_gate role: withdraw (expect denied); fake cancelled (expect check violation); fake rated (expect denied); reseat (expect denied); rank without score (expect check violation); read both tables (ok); count model_versions (ok: its roster columns are granted); read or write events (expect denied)'
-EXECUTE p_insert (2, 'ants', 52, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 52, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m52 FROM matches WHERE seed = 52 \gset
 SET ROLE runner_gate;
@@ -561,32 +561,32 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
 UPDATE model_versions SET manifest = '{"in": ["scatter"] }' WHERE version = 4;
 
 \echo '--- the trial read pairs v4 (verified, no live trial, 0 trials) with the nano baseline on the season''s first enabled board, `default` (expect n 1, 2 seats, map 70000000-...-001)'
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 \echo '--- the board decides the seat count. Only one baseline exists here, so with the two-seat boards disabled the four-seat one is left unpaired rather than seated short (expect n 0)'
 BEGIN;
 UPDATE season_maps SET enabled = false WHERE players = 2;
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 \echo '    ... and a season with no board enabled offers nothing at all (expect n 0)'
 UPDATE season_maps SET enabled = false;
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 ROLLBACK;
 \echo '--- a refused trial is not the candidate''s attempt: v4''s trial fails MODEL_UNAVAILABLE (expect failed), yet v4 is offered again on the same first board (expect n 1, map 70000000-...-001), and count reads the refusal as a repair with 0 trials spent, not UNPLAYABLE (expect decision repair, trials 0), rolled back'
 BEGIN;
-EXECUTE p_insert (2, 'ants', 59, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 59, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m59 FROM matches WHERE seed = 59 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000d', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m59', 0);
 SELECT seed, status, fault_reason FROM matches WHERE seed = 59;
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 EXECUTE c_batch_doc (10, 3) \gset
 SELECT i ->> 'decision' AS decision, i ->> 'reason' AS reason, i ->> 'trials' AS trials
   FROM json_array_elements((:'body')::json -> 'items') i
  WHERE i ->> 'kind' = 'verdict' AND i ->> 'model_id' = '20000000-0000-0000-0000-000000000004';
 ROLLBACK;
 \echo '--- promotion in the reverse order: v4 activated before v2 is demoted, under the deferred one-active constraint (expect INSERT 0 2; v2 superseded, v4 active; epoch 3)'
-EXECUTE p_insert (2, 'ants', 60, '70000000-0000-0000-0000-000000000001',
+EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 60, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
@@ -596,7 +596,7 @@ EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
   'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001', NULL);
 \echo '--- a trial played but not yet decided is still live, as matches_one_live_trial_uniq counts it: the trial read does not offer v4 a second one (expect n 0)'
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 \echo '--- and it is nobody''s but its owner''s yet: a trial finished and not yet decided is no public match, and its verified candidate no public version (expect 60 f, then 0 rows)'
 SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 60;
 EXECUTE v_public ('20000000-0000-0000-0000-000000000004', 2.0);
@@ -662,14 +662,14 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 
 \echo '--- the trial read now finds nothing (v4 active); the demand view over the final roster (burst 8, steady 2, settled 3.0)'
 \echo '    the baseline 10000000-...-001 is paced like any version (expect placement, want 6: burst 8 less 2 in flight)'
-EXECUTE p_trials ('ants', 3);
+EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 
 \echo '--- pair reads a baseline as it reads anyone. Under a season queue share of 4 the room map names every owner (expect two, alice a1 and the baseline b1, each 2 in flight with room 2), and no want carries a role (expect has_role f)'
 SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
 UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE p_demand_doc ('ants', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e::jsonb ? 'role' AS has_role
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
@@ -678,15 +678,15 @@ UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-
 
 \echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
-EXECUTE p_demand_doc ('ants', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
 \echo '--- disable a board with one match queued on it and one running: the queued one is cancelled MAP_DISABLED and the running one plays on (expect two INSERT 0 2, the flip INSERT 0 1, then cancelled/MAP_DISABLED and running, and one event with cancelled 1)'
 BEGIN;
 SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
-EXECUTE p_insert (:ep, 'ants', 80, '70000000-0000-0000-0000-000000000002',
+EXECUTE p_insert (:ep, '50000000-0000-0000-0000-000000000001', 80, '70000000-0000-0000-0000-000000000002',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (:ep, 'ants', 81, '70000000-0000-0000-0000-000000000002',
+EXECUTE p_insert (:ep, '50000000-0000-0000-0000-000000000001', 81, '70000000-0000-0000-0000-000000000002',
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 UPDATE matches SET status = 'running', claim_token = gen_random_uuid(), lease_expires_at = now() + interval '5 minutes'
  WHERE seed = 81;
@@ -776,8 +776,8 @@ SELECT EXISTS (SELECT 1 FROM ladder_field('50000000-0000-0000-0000-000000000001'
 EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
 \echo '--- disabling cancels the queued match seating it and lets the running one play on (expect two INSERT 0 2, the flip INSERT 0 1, then 90 cancelled BASELINE_DISABLED and 91 running, disable cancelled 1, off the ladder)'
 SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
-EXECUTE p_insert (:ep, 'ants', 90, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
-EXECUTE p_insert (:ep, 'ants', 91, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+EXECUTE p_insert (:ep, '50000000-0000-0000-0000-000000000001', 90, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+EXECUTE p_insert (:ep, '50000000-0000-0000-0000-000000000001', 91, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
 UPDATE matches SET status = 'running', claim_token = gen_random_uuid(), lease_expires_at = now() + interval '5 minutes' WHERE seed = 91;
 EXECUTE b_flip ('ants', 'summer-2026', 'scout', false, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed IN (90, 91) ORDER BY seed;
@@ -785,7 +785,7 @@ SELECT action, cancelled FROM baseline_events WHERE version_id = :'scout_v' ORDE
 SELECT EXISTS (SELECT 1 FROM ladder_field('50000000-0000-0000-0000-000000000001', 'open') f WHERE f.version_id = :'scout_v') AS on_ladder;
 \echo '    a disabled seat can be paired no longer (expect INSERT 0 0)'
 SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
-EXECUTE p_insert (:ep, 'ants', 92, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
+EXECUTE p_insert (:ep, '50000000-0000-0000-0000-000000000001', 92, '70000000-0000-0000-0000-000000000001', ARRAY[:'scout_v', '10000000-0000-0000-0000-000000000001']::uuid[], NULL, gen_random_uuid(), 5);
 \echo '--- enabling it again keeps its ratings (expect INSERT 0 1, still 2 rating rows and 2 seq-0 events)'
 UPDATE ratings SET mu = 27 WHERE version_id = :'scout_v';
 EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
@@ -820,9 +820,9 @@ EXECUTE a_batch_doc ('0b000000-0000-0000-0000-000000000001', 13, 19, '[]', 'tb.v
 SELECT right(i ->> 'model_id', 2) AS version, i ->> 'uploading' AS uploading
   FROM json_array_elements((:'body')::json -> 'items') i ORDER BY 1;
 \echo '    and the same two hashes POSTed again are a re-mint only inside that window (expect c1 t, c2 f)'
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e') \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc1', 'e0000000-0000-0000-0000-0000000000c1', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e', NULL) \gset
 SELECT (:'body')::json ->> 'same_submission' AS c1 \gset
-EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e') \gset
+EXECUTE s_why ('ants', '00000000-0000-0000-0000-0000000000a1', 'sha256:wc2', 'e0000000-0000-0000-0000-0000000000c2', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, NULL, '00000000-0000-0000-0000-00000000005e', NULL) \gset
 SELECT :'c1' AS c1, (:'body')::json ->> 'same_submission' AS c2;
 UPDATE model_versions SET created_at = now() WHERE id = '20000000-0000-0000-0000-0000000000c2';
 EXECUTE a_queue ('20000000-0000-0000-0000-0000000000c1', '{"name": "tb.v20000000-0000-0000-0000-0000000000c1"}', '{}', 5000, 1000000, '0b000000-0000-0000-0000-000000000001');
@@ -1175,3 +1175,57 @@ VALUES ((SELECT id FROM users WHERE handle = 'baseline.two'),
 -- for a field that limited nothing. Removing the field removed the exception with it.
 UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"]}}'::jsonb
  WHERE number = 1;
+
+-- ======================================================================================
+-- N30 TENANT FENCES: season_admits (entry + season_participants) and season_visible.
+-- Appended last, on its own fixtures, so it perturbs nothing above. A private restricted
+-- season beside the public open one, one pinned participant (alice), one season admin (prof),
+-- one stranger, and the platform admin (ops).
+-- ======================================================================================
+INSERT INTO users (id, github_id, handle, role) VALUES
+  ('00000000-0000-0000-0000-0000000000f1', 5001, 'prof',     'competitor'),
+  ('00000000-0000-0000-0000-0000000000f2', 5002, 'stranger', 'competitor');
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest,
+                     submissions_open_at, submissions_close_at, visibility, entry)
+VALUES ('50000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000000a', 99,
+        'Cohort', 'cohort', 'sha256:e1', now() - interval '1 day', now() + interval '30 days',
+        'private', 'restricted');
+INSERT INTO season_participants (season_id, provider, login, user_id, added_by)
+VALUES ('50000000-0000-0000-0000-0000000000f1', 'github', 'alice',
+        '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000ad');
+INSERT INTO season_admins (season_id, user_id, added_by)
+VALUES ('50000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000f1',
+        '00000000-0000-0000-0000-0000000000ad');
+
+\echo '--- season_admits: open admits anyone (t), restricted admits a listed participant (t) and refuses a stranger (f)'
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS open_anyone
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-000000000001';
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS restricted_participant,
+       season_admits(s, '00000000-0000-0000-0000-0000000000f2') AS restricted_stranger
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+
+\echo '--- season_visible: public to anonymous (t); private hidden from a stranger (f); shown to its participant, its admin, the platform admin (t t t)'
+SELECT season_visible(s, NULL) AS public_anon
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-000000000001';
+SELECT season_visible(s, '00000000-0000-0000-0000-0000000000f2') AS private_stranger,
+       season_visible(s, '00000000-0000-0000-0000-0000000000a1') AS private_participant,
+       season_visible(s, '00000000-0000-0000-0000-0000000000f1') AS private_admin,
+       season_visible(s, '00000000-0000-0000-0000-0000000000ad') AS private_platform
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+
+\echo '--- the wildcard row admits every identity of its provider: a stranger is admitted (t), and removing it refuses them again (f)'
+INSERT INTO season_participants (season_id, provider, login, user_id, added_by)
+VALUES ('50000000-0000-0000-0000-0000000000f1', 'github', NULL, NULL,
+        '00000000-0000-0000-0000-0000000000ad');
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000f2') AS wildcard_admits
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+UPDATE season_participants SET removed_at = now()
+ WHERE season_id = '50000000-0000-0000-0000-0000000000f1' AND login IS NULL;
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000f2') AS wildcard_gone
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+
+\echo '--- a removed participant is refused (f): remove alice, she no longer admits'
+UPDATE season_participants SET removed_at = now()
+ WHERE season_id = '50000000-0000-0000-0000-0000000000f1' AND lower(login) = 'alice';
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS removed_participant
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';

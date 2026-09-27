@@ -1,0 +1,133 @@
+{
+  "workflow_id": "soma-user-season-runner-keys-create",
+  "name": "Mint a season runner key",
+  "description": "A season admin (or a platform admin) mints the credential a SEASON runner presents at POST /v1/runner/token, and it is returned EXACTLY ONCE (the table stores sha256 of it). The key is bound to this season for ever: every runner started from it serves this season and no other, whatever another season's fleet policy says, so it is safe to hand to a university operator. The season-admin-only fragment gates it and hands down the season id.",
+  "tags": ["soma", "user", "runners"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.label" } },
+        "status": 400,
+        "body": { "error": "label_required" },
+        "name": "A key is named"
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the key",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.prefix",
+              "logic": { "cat": ["tbr_", { "random": ["string", 8, "hex"] }] }
+            },
+            {
+              "path": "temp_data.key",
+              "logic": {
+                "cat": [
+                  { "var": "temp_data.prefix" },
+                  "_",
+                  { "random": ["bytes", 32, "base64url"] }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "digest",
+      "name": "Hash the key",
+      "function": {
+        "name": "crypto",
+        "input": {
+          "op": "hash",
+          "algorithm": "sha256",
+          "data": { "var": "temp_data.key" },
+          "encoding": "hex",
+          "output": "temp_data.key_hash"
+        }
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Record the season key",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-season-runner-keys-create-insert.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.label" },
+            { "var": "temp_data.key_hash" },
+            { "var": "temp_data.prefix" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.created"
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "created" } },
+        "status": 401,
+        "body": { "error": "session_revoked" },
+        "name": "The session went away"
+      }
+    },
+    {
+      "id": "fetch",
+      "name": "Read the key back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('id', k.id, 'label', k.label, 'key_prefix', k.key_prefix, 'season_id', k.season_id, 'created_at', k.created_at) AS body FROM runner_keys k WHERE k.key_hash = ($1)::text",
+          "params": [{ "var": "temp_data.key_hash" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "id": { "var": "temp_data.rows.0.body.id" },
+                "label": { "var": "temp_data.rows.0.body.label" },
+                "key_prefix": { "var": "temp_data.rows.0.body.key_prefix" },
+                "created_at": { "var": "temp_data.rows.0.body.created_at" },
+                "key": { "var": "temp_data.key" },
+                "note": "Copy this key now. It is stored as a hash and cannot be shown again; if it is lost, revoke it and mint another. It plays this season only."
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,13 +1,13 @@
 {
-  "channel_id": "soma-admin-baselines-add",
-  "name": "soma-admin-baselines-add",
+  "channel_id": "soma-user-baselines-add",
+  "name": "soma-user-baselines-add",
   "description": "Uploads a named baseline into a season. 20s: it answers presigned PUTs and queues an admission, which the admit clock judges like any submission.",
-  "tags": ["soma", "admin", "baselines"],
+  "tags": ["soma", "user", "baselines"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["POST"],
   "route_pattern": "/v1/games/{game}/seasons/{slug}/baselines",
-  "workflow_id": "soma-admin-baselines-add",
+  "workflow_id": "soma-user-baselines-add",
   "config": {
     "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },
