@@ -298,10 +298,12 @@ SQL
       exit 1
     fi
   else
-    echo "==> declaring the engine (a patch: the live season takes it too)"
-    # Only `pending` rows are re-stamped: a claimed, running or finished row records the engine it
-    # was ACTUALLY played on, and that record is what makes a skew visible. The roster epoch bumps so
-    # a pair run mid-plan halts and re-reads.
+    echo "==> declaring the engine (a patch: EVERY live season takes it too)"
+    # Seasons overlap (N30), so the patch re-stamps every live season of the game and their pending
+    # matches, not one -- and the release above is refused while ANY season is live. Only `pending`
+    # rows are re-stamped: a claimed, running or finished row records the engine it was ACTUALLY
+    # played on, and that record is what makes a skew visible. The roster epoch bumps so a pair run
+    # mid-plan halts and re-reads.
     psql_db -v d="$digest" -v g="$GAME" <<'SQL'
 UPDATE games SET active_engine_digest = :'d' WHERE slug = :'g' AND active_engine_digest IS DISTINCT FROM :'d';
 WITH s AS (
