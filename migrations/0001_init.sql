@@ -2272,12 +2272,23 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
                       END);
 $$;
 
--- entries.max_per_user -- asked by the ENTRY create. A retired entry frees its slot.
-CREATE FUNCTION season_admits_entry(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+-- entries.max_per_user -- asked by the SUBMISSION, not the entry create (N30/C1). An entry (a
+-- `models` row) is per owner and game and free to make; the CAP is per SEASON, because a competitor
+-- may field different entries in a public season and a cohort's. It counts the DISTINCT entries the
+-- user already has a version of in THIS season, and exempts the entry being submitted to (p_model):
+-- a further submission to an entry already in the season adds a version, not an entry, and is never
+-- capped -- only a FIRST submission that would bring a new entry into the season is refused, and
+-- only when the user is already at the cap. p_model left NULL asks "is there room for one more
+-- entry", which is the preflight's may_add_model. A retired entry frees its slot.
+CREATE FUNCTION season_admits_entry(s seasons, p_user uuid, p_model uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT NOT coalesce((s.rules -> 'entries' ->> 'enabled')::bool, false)
         OR (s.rules -> 'entries' -> 'max_per_user') IS NULL
-        OR (SELECT count(*) FROM models e
-             WHERE e.owner_id = p_user AND e.game_id = s.game_id AND e.retired_at IS NULL)
+        OR EXISTS (SELECT 1 FROM model_versions v
+                    WHERE v.model_id = p_model AND v.season_id = s.id)
+        OR (SELECT count(DISTINCT v.model_id) FROM model_versions v
+             JOIN models e ON e.id = v.model_id
+            WHERE e.owner_id = p_user AND v.season_id = s.id AND e.retired_at IS NULL)
            < (s.rules -> 'entries' ->> 'max_per_user')::int;
 $$;
 

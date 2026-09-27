@@ -16,7 +16,12 @@ SELECT coalesce(me.live, false) AS session_ok, json_build_object( 'season', s.sl
         WHERE e.game_id = g.id
         AND e.owner_id = ($2)::uuid
         AND e.id = ($4)::uuid), 'participant', s.id IS NULL
-    OR season_admits(s, ($2)::uuid), 'in_flight', coalesce((SELECT json_agg(json_build_object('version_id',
+    OR season_admits(s, ($2)::uuid), 'entry_room', s.id IS NULL
+    OR (SELECT season_admits_entry(s, ($2)::uuid, e.id)
+        FROM models e
+        WHERE e.game_id = g.id
+        AND e.owner_id = ($2)::uuid
+        AND e.id = ($4)::uuid), 'in_flight', coalesce((SELECT json_agg(json_build_object('version_id',
                         f.id, 'model_id', f.model_id, 'model', fe.name, 'version', f.version, 'phase',
                         model_phase(f))
                 ORDER BY fe.name)

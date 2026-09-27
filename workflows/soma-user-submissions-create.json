@@ -170,6 +170,7 @@
               "or": [
                 { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
                 { "!": { "var": "temp_data.why.0.body.participant" } },
+                { "!": { "var": "temp_data.why.0.body.entry_room" } },
                 { "!!": { "var": "temp_data.why.0.body.model.retired" } },
                 {
                   "and": [
@@ -198,6 +199,8 @@
               "season_not_open",
               { "!": { "var": "temp_data.why.0.body.participant" } },
               "not_a_participant",
+              { "!": { "var": "temp_data.why.0.body.entry_room" } },
+              "entries_max",
               { "!!": { "var": "temp_data.why.0.body.model.retired" } },
               "model_retired",
               {

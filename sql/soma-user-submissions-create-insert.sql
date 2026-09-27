@@ -20,6 +20,7 @@ AND ls.user_id = ($1)::uuid
 LEFT JOIN model_versions v ON v.model_id = e.id
 WHERE g.slug = ($2)::text
 AND season_admits(s, ($1)::uuid)
+AND season_admits_entry(s, ($1)::uuid, e.id)
 AND season_admits_weights(s, ($1)::uuid, ($5)::text, e.id)
 AND season_admits_in_flight(s, ($1)::uuid)
 AND season_admits_version(s, ($1)::uuid, e.id)

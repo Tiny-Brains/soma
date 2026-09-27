@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-models-create",
   "name": "Create a model",
-  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, and addressed by its id ever after. Every ceiling on a competitor is a season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights), none names a repository, and this route reaches no host outside the deployment: GitHub is the sign-in identity and nothing else, so a rate-limited GitHub cannot stop anyone creating an entry. Write, then diagnose: the insert carries every remaining rule as a predicate so a refusal is a row that was never written, and `why` reads back which one it was, through the same functions. A model is created empty; POST /v1/submissions is what puts a version under it.",
+  "description": "A competitor naming a model. AN ENTRY IS A NAME: unique per owner per game, addressed by its id ever after, and PER SEASON NOTHING (N30/C1) -- naming a model reaches no season, so this route asks no participation or entry-cap question. Every ceiling on a competitor is a per-season rule (entries.max_per_user, max_per_class, in_flight_max, versions_max_per_*, cooldown_s, unique_weights) enforced at SUBMISSION, since a competitor may field different entries in a public season and a cohort's; and this route reaches no host outside the deployment. Write, then diagnose: the insert carries the remaining rules (game exists, session live, name non-empty, within length, not already yours) as predicates so a refusal is a row that was never written, and `why` reads back which one -- an unknown game (404), a name already yours or malformed (409). A model is created empty; POST /v1/submissions is what puts a version under it, in a named season.",
   "tags": ["soma", "user", "models"],
   "tasks": [
     {
@@ -102,27 +102,14 @@
       "id": "refused",
       "use": "refuse",
       "with": {
-        "when": {
-          "and": [
-            { "$use": "none_written", "with": { "slot": "written" } },
-            {
-              "or": [
-                { "!": { "var": "temp_data.why.0.body.participant" } },
-                { "!!": { "var": "temp_data.why.0.body.name_taken" } },
-                { "!": { "var": "temp_data.why.0.body.room" } }
-              ]
-            }
-          ]
-        },
+        "when": { "$use": "none_written", "with": { "slot": "written" } },
         "status": 409,
         "body": {
           "error": {
             "if": [
-              { "!": { "var": "temp_data.why.0.body.participant" } },
-              "not_a_participant",
               { "!!": { "var": "temp_data.why.0.body.name_taken" } },
               "model_name_taken",
-              "entries_max"
+              "name_invalid"
             ]
           },
           "detail": { "var": "temp_data.why.0.body" }
