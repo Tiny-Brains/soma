@@ -15,8 +15,9 @@ seen AS (
     GROUP BY s.user_id ),
 rows AS (
     SELECT u.id, u.role, u.handle, u.display_name, seen.at AS seen_at, json_build_object('id', u.id, 'handle',
-            u.handle, 'display_name', u.display_name, 'role', u.role, 'by_deployment', coalesce(u.github_id::text
-                = ANY (d.ids), false), 'you', u.id = me.id, 'joined_at', u.created_at, 'last_seen_at',
+            u.handle, 'display_name', u.display_name, 'role', u.role, 'by_deployment', EXISTS (SELECT 1
+                FROM identities i WHERE i.user_id = u.id AND (i.provider || ':' || i.subject) = ANY (d.ids)),
+            'you', u.id = me.id, 'joined_at', u.created_at, 'last_seen_at',
             seen.at, 'commenting', CASE
         WHEN commenting_off_until(u) IS NULL THEN 'on'
         ELSE 'off'

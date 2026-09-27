@@ -1,7 +1,8 @@
 -- BULK ADD (N30). The logins arrive as a JSON array or one comma-separated string (a textarea), and
 -- each becomes a season_participants row for the season the fragment resolved ($1), under the given
--- provider ($2, 'github' today). A login already matching an account is PINNED to it now; one that is
--- not is kept as a login and pinned at that identity's next sign-in -- so a member listed before they
+-- provider ($2, any provider slug, 'github' by default). A login already matching an identity of that
+-- provider is PINNED to its account now; one that is not is kept as a login and pinned at that
+-- identity's next sign-in -- so a member listed before they
 -- sign in is admitted the moment they do, without an edit. A login already live in the season is left
 -- as it is (ON CONFLICT DO NOTHING on the one-live partial index); a previously removed one is
 -- re-added as a fresh row. One audit line names the whole batch.
@@ -19,9 +20,9 @@ WITH given AS (
     SELECT coalesce(nullif(($2)::text, ''), 'github') AS provider
 ), resolved AS (
     SELECT given.login,
-           (SELECT u.id FROM users u, prov
-             WHERE prov.provider = 'github' AND u.github_id IS NOT NULL
-               AND lower(u.handle) = lower(given.login)
+           (SELECT i.user_id FROM identities i, prov
+             WHERE i.provider = prov.provider
+               AND lower(i.login) = lower(given.login)
              LIMIT 1) AS user_id
     FROM given
 ), ins AS (

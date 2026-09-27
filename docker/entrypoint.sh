@@ -90,19 +90,38 @@ serve() {
   esac
   export SOMA_COOKIE_SECURE
 
-  # [vars] admin_github_ids: GitHub numeric user ids, comma-separated. Spaces are dropped; anything
-  # else is refused, because a login here would match nobody and say nothing -- and a login is the
-  # wrong key anyway, since GitHub frees a renamed one for anyone to register.
-  SOMA_ADMIN_GITHUB_IDS=$(printf '%s' "${SOMA_ADMIN_GITHUB_IDS:-}" | tr -d ' \t\r\n')
-  case "$SOMA_ADMIN_GITHUB_IDS" in
-    "") echo "==> SOMA_ADMIN_GITHUB_IDS is empty: sign-in makes nobody an admin" ;;
-    *[!0-9,]*|,*|*,|*,,*)
-      echo "SOMA_ADMIN_GITHUB_IDS must be GitHub numeric user ids, comma-separated, not logins" >&2
-      echo "    web's scripts/setup/admin-user.sh <github-login> looks one up" >&2
-      exit 1 ;;
-    *) echo "==> $(printf '%s' "$SOMA_ADMIN_GITHUB_IDS" | tr ',' '\n' | grep -c .) GitHub account(s) are admins by deployment" ;;
-  esac
-  export SOMA_ADMIN_GITHUB_IDS
+  # [vars] admin_ids: `provider:subject` pairs, comma-separated (a GitHub id is `github:<id>`). Spaces
+  # are dropped; anything without the provider:subject shape is refused, because a bare id or a login
+  # here would match nobody and say nothing -- and a login is the wrong key anyway, since a provider
+  # frees a renamed one for anyone to register.
+  SOMA_ADMIN_IDS=$(printf '%s' "${SOMA_ADMIN_IDS:-}" | tr -d ' \t\r\n')
+  if [ -z "$SOMA_ADMIN_IDS" ]; then
+    echo "==> SOMA_ADMIN_IDS is empty: sign-in makes nobody an admin"
+  elif printf '%s' "$SOMA_ADMIN_IDS" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*:[^,]+(,[a-z0-9]+(-[a-z0-9]+)*:[^,]+)*$'; then
+    echo "==> $(printf '%s' "$SOMA_ADMIN_IDS" | tr ',' '\n' | grep -c .) account(s) are admins by deployment"
+  else
+    echo "SOMA_ADMIN_IDS must be provider:subject pairs, comma-separated (e.g. github:1234567), not logins" >&2
+    echo "    web's scripts/setup/admin-user.sh <github-login> looks a GitHub id up" >&2
+    exit 1
+  fi
+  export SOMA_ADMIN_IDS
+
+  # [vars] oauth_redirect_uri: a {provider} template. Defaulted HERE, not in soma.toml.tmpl, for the
+  # same reason as auth_providers below -- `{provider}` carries a `}` that would close a
+  # ${...:-default} early. Compose sets it in the stack; this covers a bare `docker run`.
+  if [ -z "${OAUTH_REDIRECT_URI:-}" ]; then
+    OAUTH_REDIRECT_URI='http://localhost:5173/v1/auth/{provider}/callback'
+  fi
+  export OAUTH_REDIRECT_URI
+
+  # [vars] auth_providers: the sign-in buttons GET /v1/auth-providers serves, a JSON array of
+  # {slug,label}. Defaulted HERE rather than in soma.toml.tmpl because the default carries `}`, which
+  # would close a ${...:-default} substitution early and mangle the value. Empty or unset falls back
+  # to GitHub alone; a deployment adding a provider sets the whole array.
+  if [ -z "${SOMA_AUTH_PROVIDERS:-}" ]; then
+    SOMA_AUTH_PROVIDERS='[{"slug":"github","label":"GitHub"}]'
+  fi
+  export SOMA_AUTH_PROVIDERS
 
 
   # The engine this node loads, which [vars] engine_digest names so a map upload can refuse a season

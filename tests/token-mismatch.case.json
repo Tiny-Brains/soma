@@ -6,7 +6,7 @@
     "label": "lab",
     "arch": "arm64",
     "engine_digest": "sha256:e1",
-    "orion_version": "1.10.0",
+    "orion_version": "1.11.0",
     "node_version": "dev",
     "max_in_flight": 4,
     "ops_budget": 1000000

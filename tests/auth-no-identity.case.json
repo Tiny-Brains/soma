@@ -1,0 +1,16 @@
+{
+  "name": "auth-no-identity: a provider that resolves no identity ends at the callback page, with nothing written",
+  "workflow": "../workflows/soma-pub-auth.json",
+  "input": {},
+  "metadata": {
+    "oauth": { "provider": "github", "access_token": "t", "return_to": "/x" },
+    "headers": { "user-agent": "ua" },
+    "vars": { "admin_ids": "", "app_url": "http://localhost:5173", "cookie_secure": false }
+  },
+  "expect": {
+    "data._orion.response.status": 302,
+    "data._orion.response.headers.location": "http://localhost:5173/signin/callback?error=identity_unavailable"
+  },
+  "expect_calls": { "db_write": [], "db_read": [] },
+  "expect_tasks": ["sid", "unavailable.answer"]
+}

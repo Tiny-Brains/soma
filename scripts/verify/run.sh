@@ -98,6 +98,8 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("b_insert", "soma-user-baselines-add", "insert"),
          ("b_ctx", "soma-user-baselines-add", "ctx"), ("b_fetch", "soma-user-baselines-add", "fetch"),
          ("s_why", "soma-user-submissions-create", "why"),
+         ("u_signin", "soma-pub-auth", "upsert"),
+         ("u_promote", "soma-pub-auth", "promote"),
          ("b_flip", "soma-user-baselines-update", "flip")]
 prepared = pathlib.Path("statements.sql").read_text()
 FRAGMENTS = (json.load(open("../../shared/soma.json")).get("fragments") or {})

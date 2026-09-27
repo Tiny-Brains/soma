@@ -1,0 +1,29 @@
+{
+  "workflow_id": "soma-pub-auth-providers",
+  "name": "List the sign-in providers",
+  "description": "The provider buttons the sign-in page draws, from [vars] auth_providers -- which a deployment keeps in step with the providers soma-pub-auth serves (github here, plus every [oauth2_login.providers.*] it merges). Served at /v1/auth-providers, a SIBLING of the sign-in routes: soma-pub-auth's oauth2_login captures every /v1/auth/{provider}, so a child path would be read as a provider slug. A ROUTE and not the SPA's own list, because which providers exist is the deployment's and moves with its config, not with a build. parse_json reads the var, a JSON array string, into `data.providers`; the body is that array, so an unconfigured provider never becomes a button that 404s. `metadata.vars` is read by parse_json's source against the whole context, which reaches it where a JSONLogic body could not.",
+  "tags": ["soma", "pub", "auth"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Read the provider list from config",
+      "function": {
+        "name": "parse_json",
+        "input": { "source": "metadata.vars.auth_providers", "target": "providers" }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "data.providers" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

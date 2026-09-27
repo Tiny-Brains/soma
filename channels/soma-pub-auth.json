@@ -1,0 +1,49 @@
+{
+  "channel_id": "soma-pub-auth",
+  "name": "soma-pub-auth",
+  "description": "Sign-in, for every identity provider on one channel (§I). `{provider}` in the route picks the entry: `/v1/auth/github` begins GitHub's grant, `/v1/auth/google` a directory's, and the callback comes back to `/v1/auth/{provider}/callback`. GitHub is carried in `providers` here because it is OAuth2 (no id_token) and needs a userinfo fetch and a custom identity map, which only a channel block can hold; `providers_from_instance` merges the deployment's `[oauth2_login.providers.*]` (a Google, an Entra, a Keycloak -- an OIDC issuer discovers its own endpoints), so a tenant adds a directory with no change here. Orion owns the 302, the signed state cookie and its CSRF binding, PKCE, the code exchange and, for an OIDC provider, id_token verification, and hands the workflow a NORMALISED identity at `metadata.identity` -- one upsert on (provider, subject) serves them all. The one route with a rate limit of its own rather than public_rate: it mints a session, so it is limited per address and far harder than a read. No auth block, because presenting one is what it is for.",
+  "tags": ["soma", "pub", "auth"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/auth/{provider}",
+  "workflow_id": "soma-pub-auth",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped", "allowed_headers": ["location"], "cookies": true },
+    "timeout_ms": 10000,
+    "rate_limit": {
+      "requests_per_second": "var://rate_signin_rps",
+      "burst": "var://rate_signin_burst"
+    },
+    "oauth2_login": {
+      "callback_path": "/v1/auth/{provider}/callback",
+      "redirect_uri": "var://oauth_redirect_uri",
+      "state_secret": "env://SOMA_SESSION_SECRET",
+      "state_cookie": {
+        "name": "soma_oauth_state",
+        "secure": "var://cookie_secure",
+        "same_site": "lax",
+        "path": "/",
+        "max_age": 600
+      },
+      "return_to": {
+        "param": "next",
+        "allow_list": ["var://app_return_url", "var://console_return_url"]
+      },
+      "providers_from_instance": true,
+      "providers": {
+        "github": {
+          "authorize_url": "https://github.com/login/oauth/authorize",
+          "token_url": "https://github.com/login/oauth/access_token",
+          "client_id": "env://GITHUB_CLIENT_ID",
+          "client_secret": "env://GITHUB_CLIENT_SECRET",
+          "client_auth": "body",
+          "scopes": ["read:user"],
+          "userinfo_url": "var://github_userinfo_url",
+          "identity": { "subject": "id", "login": "login", "name": "name", "picture": "avatar_url" }
+        }
+      }
+    }
+  }
+}

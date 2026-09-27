@@ -1,13 +1,13 @@
 # soma
 
 Soma is TinyBrains' public API, its schema and the life cycle of a model version: sign-in,
-submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.10.0 package
+submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.11.0 package
 (REST channels, cron clocks, workflows, connectors and two Rust/wasm plugins) plus the Postgres
 migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/soma`.
 [Kalam](https://github.com/Tiny-Brains/kalam) runners play the matches Soma queues, and
 [web](https://github.com/Tiny-Brains/web) is the site in front of it and the local stack.
 
-**Owns:** GitHub sign-in and sessions · public reads · submissions and their presigned uploads ·
+**Owns:** multi-provider sign-in and sessions · public reads · submissions and their presigned uploads ·
 seasons, their boards and baselines · admission, pairing, trials, promotion, rating, withdrawal and
 the season close · the runner gate `/v1/runner/*` · notifications · the schema and the
 `runner_gate` grants. **Does not:** run any model -- a submission is admitted on an admitting
@@ -63,7 +63,8 @@ channels add a per-principal quota.
 
 | Method | Path | Auth | What |
 |---|---|---|---|
-| GET | `/v1/auth/github` | Public | Redirect to GitHub (state, PKCE, `?next=`); the same channel serves `/callback` and sets the cookie |
+| GET | `/v1/auth-providers` | Public | The sign-in buttons the deployment serves (`[{slug,label}]`), for the chooser page (a sibling path: `/v1/auth/*` is the sign-in channel's) |
+| GET | `/v1/auth/{provider}` | Public | Redirect to that provider (state, PKCE, `?next=`); the same channel serves `/{provider}/callback` and sets the cookie. GitHub in the block, others via `[oauth2_login.providers.*]` |
 | GET · PATCH | `/v1/me` | Session | Current user, bio, commenting switch and `admin_of` (the seasons the caller administers), served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
 | GET | `/v1/me/candidates` | Session | The caller's versions still being admitted or on trial; uncached, polled with the bell |
 | GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included, as cards with `mine` on each seat |
@@ -263,13 +264,13 @@ compose file sets every one of them for the local stack.
 | `MODELS_PUBLIC_ENDPOINT` | required | Models bucket as **a competitor** reaches it; submission PUTs are signed for it |
 | `RUNNER_BLOB_ENDPOINT` | required | Object store as **a runner** dials it; replay PUTs are signed for it and it must equal the runner's `kalam-blobs-put` base |
 | `APP_URL` | `http://localhost:5173/` | Where sign-in returns; an allowed `?next=` origin |
-| `OAUTH_REDIRECT_URI` | `http://localhost:5173/v1/auth/github/callback` | Exactly as registered with GitHub; https except on loopback |
+| `OAUTH_REDIRECT_URI` | `http://localhost:5173/v1/auth/{provider}/callback` | A `{provider}` template, filled per provider and registered with each; https except on loopback |
 | `CONSOLE_URL` | `http://localhost:8081` | The Orion console, the second allowed `?next=` origin |
 | `SOMA_COOKIE_SECURE` | `1` | `0` only for a plain-http stack |
 | `SOMA_TRUSTED_PROXIES` | the RFC1918 ranges | TOML array of proxies whose `X-Forwarded-For` is believed |
-| `SOMA_ADMIN_GITHUB_IDS` | empty | GitHub numeric user ids, comma-separated, made admins at every sign-in; the node refuses to start on anything else |
+| `SOMA_ADMIN_IDS` | empty | `provider:subject` pairs, comma-separated (a GitHub id is `github:<id>`), made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
-| `ORION_VERSION` | `1.10.0` | Recorded on every verdict and match as `orion_version` |
+| `ORION_VERSION` | `1.11.0` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
 | `SOMA_CRON_CLAIM_LEASE_SECS` | `60` | How long a dead node's clock runs hold their slots, and how long a state-database outage a running clock survives (the lease minus one 15 s heartbeat) |
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
@@ -280,7 +281,8 @@ compose file sets every one of them for the local stack.
 | `SOMA_SESSION_CACHE_TTL_SECS` | `300` | How long `/v1/me`'s session entry lives on `soma-cache`; sign-out deletes it and every revocation invalidates it before that |
 | `SOMA_HOT_CACHE_TTL_SECS`, `SOMA_SEASON_CACHE_TTL_SECS` | 600, 600 | The ceiling on how long an anonymous read is served from `soma-cache`; a write invalidates the namespaces it touched before that |
 | `SOMA_RATE_*_RPS`, `SOMA_RATE_*_BURST` | as shipped | One pair per rate-limit family (`public`, `session`, `per_user_read`, `per_user_write`, `per_admin_board`, `runner`, `runner_token`, `per_runner`, `signin`); `docker/soma.toml.tmpl` lists them |
-| `GITHUB_API_BASE` | api.github.com | Load-time connector base |
+| `GITHUB_USERINFO_URL` | `https://api.github.com/user` | GitHub's userinfo endpoint; Orion fetches it with the access token to build the sign-in identity |
+| `SOMA_AUTH_PROVIDERS` | `[{"slug":"github","label":"GitHub"}]` | JSON array of the sign-in buttons `GET /v1/auth/providers` serves; keep in step with the providers the channel serves |
 | `SOMA_ARTIFACT` | `/var/lib/orion/soma.package.json` | Where `serve` compiles the package to, and what `[packages] apply` reads |
 | `SOMA_ADMIN_DB_URL` | bootstrap, required | The maintenance database (`.../postgres`), for `CREATE DATABASE orion_state` |
 | `RUNNER_GATE_DB_PASSWORD` | bootstrap; required | The runner gate role's password; the migration creates the role with none |
@@ -300,7 +302,7 @@ response cache takes load off the pools and the node at once: an anonymous read 
 workflow logic and not a connector's config, so that one is checked here.
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
-engine digest and component come from it), `ORION_VERSION` (1.10.0), `RUST_VERSION`,
+engine digest and component come from it), `ORION_VERSION` (1.11.0), `RUST_VERSION`,
 `WASM_TOOLS_VERSION`, `CURL_VERSION`, `DEBIAN_VERSION`. **Policy numbers** (pairing, rating,
 admission, runner contract) are `[vars]` in `docker/soma.toml.tmpl`, and most can be overridden per
 season through its `rules` document (`season_rule_spec()` in
@@ -335,13 +337,14 @@ season through its `rules` document (`season_rule_spec()` in
 7. **After the close**, push the season's boards and recipes from `tinybrains/maps/` to the backup
    repository. They are in no repository or release while the season runs.
 
-Admins are `users.role = 'admin'`. The first is the deployment's: `SOMA_ADMIN_GITHUB_IDS` lists GitHub
-numeric ids, and a listed account is made an admin each time it signs in (web's
-`scripts/setup/admin-user.sh <login>` looks an id up). An id, never a login: GitHub frees a renamed
-login for anyone to register. Every other admin is made and unmade by an admin on the Users admin
-page (`PATCH /v1/admin/users/{id}`), which refuses a caller's own role so there is always one left,
-and tells the account and every other admin. A demotion is immediate; a listed account is restored by
-its next sign-in, so removing someone for good means removing their id too.
+Admins are `users.role = 'admin'`. The first is the deployment's: `SOMA_ADMIN_IDS` lists
+`provider:subject` pairs (a GitHub id is `github:<id>`; web's `scripts/setup/admin-user.sh <login>`
+looks a GitHub id up), and a listed account is made an admin each time it signs in. The subject, never
+a login: a provider frees a renamed login for anyone to register. Every other admin is made and unmade
+by an admin on the Users admin page (`PATCH /v1/admin/users/{id}`), which refuses a caller's own role
+so there is always one left, and tells the account and every other admin. A demotion is immediate; a
+listed account is restored by its next sign-in, so removing someone for good means removing their
+`provider:subject` too.
 
 ## Production requirements
 
@@ -373,8 +376,8 @@ its next sign-in, so removing someone for good means removing their id too.
 - **Narrow `SOMA_TRUSTED_PROXIES`** to the proxy actually in front. Empty, every browser shares one
   rate-limit bucket. Too wide, anyone inside the range can claim any address.
 - **The role password** (`RUNNER_GATE_DB_PASSWORD`) comes from a secret store.
-- **`SOMA_ADMIN_GITHUB_IDS`** holds the owner's GitHub numeric id and nothing more. Empty, nobody
-  can reach an admin page; every other admin is granted on the Users page.
+- **`SOMA_ADMIN_IDS`** holds the owner's `provider:subject` (e.g. `github:<id>`) and nothing more.
+  Empty, nobody can reach an admin page; every other admin is granted on the Users page.
 - **Scale runners on demand, never on queue depth.** Pair caps the queue at `pair_depth_target`, so
   a scaler reading depth caps the fleet at `pair_depth_target` over a runner's lanes and looks
   correct doing it. Demand is what pair itself reads (`sql/soma-clock-pair-run-demand.sql`): the
@@ -413,7 +416,7 @@ docker/soma.toml.tmpl       the instance config, cluster mode, and every [vars] 
 channels/soma-*.json        routes: method, path, auth, rate limits, cache
 workflows/soma-*.json       their task lists and inline SQL; each `description` carries the route's reasoning
 channels/soma-clock-*.json   the five clocks; their task lists are workflows/soma-clock-*-run.json
-connectors/                 soma-db, soma-db-gate, soma-cache, soma-github, soma-blobs (replay GET),
+connectors/                 soma-db, soma-db-gate, soma-cache, soma-blobs (replay GET),
                             soma-blobs-gate (replay PUT), soma-models (public: upload PUT),
                             soma-models-internal (HEAD + GET), soma-models-http
 shared/soma.json            constants and fragments the set references with $from and use
@@ -492,8 +495,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   `ladder`, `matches`, `community` and `announcements`. Every writer of public data, a clock, a
   gate route or an admin or user route, follows its write with the `invalidate` fragment, so an
   entry is served until the data it was built from changes and the TTL is a ceiling, not the
-  freshness. The one write that bumps nothing is sign-in's upsert: `db_write` cannot say whether the
-  handle changed, so a handle renamed at GitHub reaches the ladder and the profiles at the ceiling.
+  freshness. The one write that bumps nothing is sign-in's upsert: it refreshes only the cached
+  provider login (`identities.login`), which no public read shows, and the handle it seeds once never
+  changes -- so there is nothing cached to invalidate.
 - **Something private gets its own path** (`/v1/me/matches`), never a parameter on a public route.
 - **The board and the terms of play ride the claim.** A runner fetches no board and holds no copy of
   `turn_ms`.

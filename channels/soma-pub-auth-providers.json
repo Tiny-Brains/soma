@@ -1,0 +1,17 @@
+{
+  "channel_id": "soma-pub-auth-providers",
+  "name": "soma-pub-auth-providers",
+  "description": "The sign-in providers the deployment serves, so the sign-in page draws one button each rather than guessing. A SIBLING of soma-pub-auth's routes, never a child: soma-pub-auth's oauth2_login matches every `/v1/auth/{provider}` itself, so `/v1/auth/providers` would be read as the provider slug `providers` and 404, whatever the static-vs-param table would otherwise do. `/v1/auth-providers` sits beside it and cannot be captured. Public and unauthenticated, like the sign-in it precedes.",
+  "tags": ["soma", "pub", "auth"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/auth-providers",
+  "workflow_id": "soma-pub-auth-providers",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.public_rate" }
+  }
+}

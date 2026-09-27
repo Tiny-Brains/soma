@@ -599,32 +599,29 @@ ALTER TABLE games
 -- ---------------------------------------------------------------------- users
 
 -- Baselines are users -- one per reference opponent, so they can be told apart on a ladder that
--- displays a model as its owner's handle. They never sign in, hence the nullable github_id. An
+-- displays a model as its owner's handle. They never sign in, so they hold no `identities` row; an
 -- admin makes one by uploading it into a season under a name (N29), and the account is
 -- `baseline.<slug of that name>`: the same name in a later season is the same baseline again.
 CREATE TABLE users (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- THE STABLE IDENTITY. GitHub guarantees an account id never changes and is never reused; the
-    -- login below is neither of those things. It is the conflict key of the sign-in upsert, so it
-    -- is the one thing recorded about a competitor that cannot go stale.
-    github_id   bigint      UNIQUE,
-
-    -- THE GITHUB LOGIN, not a nickname: soma-auth-github's upsert writes gh.login here on every
-    -- sign-in, not just the first. It is therefore a CACHE OF A MUTABLE REMOTE VALUE -- a
-    -- competitor who renames themselves on GitHub is renamed here at their next sign-in and not
-    -- before -- so it is a label, and anything decided by it is decided on a value that may be a
-    -- month old. github_id is what a decision about identity belongs on.
+    -- THE HANDLE: the account's stable public name, on the ladder and in its profile URL. SEEDED
+    -- ONCE from the login of the identity that created the account (`seed_handle`) and never
+    -- rewritten -- a competitor who renames themselves at a provider keeps their handle here, and
+    -- the provider's current login is cached on `identities.login` instead. The account's stable
+    -- identity is a row in `identities` keyed (provider, subject); a decision about who someone is
+    -- belongs there, never on this label. The old model made this a live cache of the GitHub login
+    -- and paid for it with a `released.` tombstone dance every sign-in; a per-identity login and a
+    -- fixed handle need neither.
     --
     -- Uniqueness is on lower(handle), below, and not here. Every reader compares case-insensitively
-    -- (season_admits and the profile route); a case-sensitive index and case-insensitive
+    -- (the profile route and the participant match); a case-sensitive index and case-insensitive
     -- readers protect different namespaces, which is how `Alice` and `alice` could be two rows that
-    -- both answer to one login.
+    -- both answer to one name.
     --
-    -- TWO RESERVED PREFIXES, both containing a `.`, which a GitHub login cannot: `baseline.` for
-    -- the uploaded reference opponents, and `released.` for a login taken back from a row that
-    -- provably no longer holds it -- see soma-auth-github. A login is [A-Za-z0-9-] and cannot
-    -- contain a dot, so neither prefix can be minted against us.
+    -- ONE RESERVED PREFIX: `baseline.` for the uploaded reference opponents. `seed_handle` sanitises
+    -- a provider login to [A-Za-z0-9-] before it becomes a handle, so no real account can land in
+    -- the dotted namespace and collide with a baseline.
     handle      text        NOT NULL,
 
     -- Seeded from GitHub ON INSERT ONLY: overwriting it at every sign-in would silently undo the
@@ -651,20 +648,83 @@ CREATE TABLE users (
                AND (comments_off_reason IS NULL
                     OR (btrim(comments_off_reason) <> '' AND char_length(comments_off_reason) <= 300))),
 
-    CONSTRAINT users_human_has_github_id
-        CHECK (role = 'baseline' OR github_id IS NOT NULL),
-
-    -- A baseline's handle lives in the reserved namespace and not in GitHub's. Without this a real
-    -- account whose login happened to equal a baseline's handle -- `baseline-nano-bc` was one -- could
-    -- never sign in at all: the upsert would collide on the handle index, unhandled, for ever.
+    -- A baseline's handle lives in the reserved namespace and a human's never does -- the two are
+    -- exactly the accounts without and with an `identities` row. Bidirectional, because `seed_handle`
+    -- now sanitises arbitrary provider logins and a dotted login must not reach the baseline space.
+    -- Without it a real account whose handle happened to equal a baseline's could never be created:
+    -- the insert would collide on the handle index, unhandled, for ever.
     CONSTRAINT users_baseline_handle_reserved
-        CHECK (role <> 'baseline' OR handle LIKE 'baseline.%')
+        CHECK ((role = 'baseline') = (handle LIKE 'baseline.%'))
 );
 
 -- Case-insensitive, because every reader is. It is also the conflict target of every
 -- INSERT ... ON CONFLICT on this table, and must be spelled `ON CONFLICT (lower(handle))` -- an
 -- expression index is only a valid arbiter in the exact form it was declared in.
 CREATE UNIQUE INDEX users_handle_uniq ON users (lower(handle));
+
+-- ---------------------------------------------------------------- identities
+
+-- HOW AN ACCOUNT SIGNS IN (§I). One row per (provider, subject): the provider's slug and the stable
+-- subject it guarantees never changes and never reuses. `soma-pub-auth` upserts one on every
+-- sign-in, keying the account on (provider, subject) and refreshing `login`. An account may hold
+-- more than one -- a competitor who links a second provider -- and a baseline holds none. This is
+-- what §I added: the single `users.github_id` it replaced could name one GitHub account and nothing
+-- else, so a second provider had nowhere to live.
+CREATE TABLE identities (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+
+    -- The provider slug, the same vocabulary as season_participants.provider and a season's
+    -- `providers` allow-list -- `github`, `google`, a tenant's directory. Lower-kebab, so it reads
+    -- the same everywhere it is compared.
+    provider    text        NOT NULL,
+
+    -- The provider's STABLE id for the account (an OIDC `sub`, GitHub's numeric id). Always a
+    -- string, the one shape every provider's subject fits; the sign-in upsert coerces a numeric id
+    -- to text. This, with `provider`, is the conflict key -- never the login.
+    subject     text        NOT NULL,
+
+    -- The provider's CURRENT login/username: a CACHE OF A MUTABLE VALUE refreshed on every sign-in,
+    -- used only to resolve a season_participants row listed by login before its owner has ever
+    -- signed in. NULL for a provider with no login concept, or a userinfo answer that carried none.
+    login       text,
+
+    created_at  timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT identities_provider_shape  CHECK (provider ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+    CONSTRAINT identities_subject_shape   CHECK (btrim(subject) <> ''),
+    CONSTRAINT identities_login_shape     CHECK (login IS NULL OR btrim(login) <> '')
+);
+-- The conflict target of the sign-in upsert: one account per (provider, subject).
+CREATE UNIQUE INDEX identities_provider_subject_uniq ON identities (provider, subject);
+CREATE INDEX identities_user_idx ON identities (user_id);
+-- Participant resolution matches (provider, login) case-insensitively, the shape
+-- season_participants_one_live_uniq has on the other side of the join.
+CREATE INDEX identities_provider_login_idx ON identities (provider, lower(login));
+
+-- Seed a fresh account's handle from the login of the identity creating it. A login is now a label
+-- from an arbitrary provider, so it may be empty, may collide with an account that already holds it,
+-- or may carry characters a handle (a public name, and a URL segment) must not. This sanitises it to
+-- [A-Za-z0-9-], falls back to `<provider>-<subject>` when nothing is left, and disambiguates a
+-- collision -- so the sign-in INSERT never fails on users_handle_uniq for a reason the competitor
+-- cannot fix. STABLE, not IMMUTABLE: it reads `users` to check a collision, so it cannot be a CHECK.
+CREATE FUNCTION seed_handle(p_login text, p_provider text, p_subject text) RETURNS text
+    LANGUAGE sql STABLE AS $$
+    WITH cand AS (
+        SELECT COALESCE(
+            NULLIF(btrim(regexp_replace(COALESCE(p_login, ''), '[^A-Za-z0-9-]+', '-', 'g'), '-'), ''),
+            p_provider || '-' || p_subject
+        ) AS c
+    )
+    SELECT CASE
+        WHEN NOT EXISTS (SELECT 1 FROM users WHERE lower(handle) = lower((SELECT c FROM cand)))
+            THEN (SELECT c FROM cand)
+        WHEN NOT EXISTS (SELECT 1 FROM users
+                          WHERE lower(handle) = lower((SELECT c FROM cand) || '-' || p_provider))
+            THEN (SELECT c FROM cand) || '-' || p_provider
+        ELSE (SELECT c FROM cand) || '-' || left(md5(p_provider || ':' || p_subject), 6)
+    END;
+$$;
 
 -- ------------------------------------------------------------------- runners
 
@@ -700,9 +760,10 @@ CREATE INDEX season_admins_user_idx ON season_admins (user_id) WHERE removed_at 
 -- that identity exists -- pinned at add time, or at the identity's next sign-in -- and kept as a
 -- login until then, since most of a class has never signed in when the roster is written. A NULL
 -- login is a WILDCARD: every identity of the provider is a participant (I7/Q14), one row instead of a
--- roster. §I (the identity rebuild) is DEFERRED, so `provider` is 'github' today and resolution is
--- lower(login) against users.handle -- exactly what the old rule did; when §I lands this keys on the
--- identities table with no shape change here.
+-- roster. §I (the identity rebuild) has LANDED: `provider` is any provider slug, and resolution is
+-- (provider, lower(login)) against the `identities` table (season_admits) -- the table's shape did
+-- not change, only what a `login` is matched against. `DEFAULT 'github'` stays: it is the provider a
+-- participants-add row omits, and the platform's public one.
 CREATE TABLE season_participants (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     season_id   uuid        NOT NULL REFERENCES seasons (id),
@@ -882,11 +943,11 @@ CREATE TABLE models (
 -- stops a rename producing two rows a page has no way to tell apart.
 --
 -- THERE IS DELIBERATELY NO CROSS-COMPETITOR UNIQUENESS. Two competitors may both call an entry
--- `ants`: a name is not an identity, and nothing is decided on one. Who a competitor is, is
--- `users.github_id` -- sign-in, which is the whole of what GitHub does here now. The repository
--- that used to be the global key limited nothing (every ceiling is a season rule and none of them
--- mentioned it) and cost a normaliser, a season predicate, two indexes and an ownership call that
--- failed closed, so a rate-limited GitHub stopped anyone creating an entry at all.
+-- `ants`: a name is not an identity, and nothing is decided on one. Who a competitor is, is a row in
+-- `identities` (provider, subject) -- sign-in, which is the whole of what a provider does here now.
+-- The repository that used to be the global key limited nothing (every ceiling is a season rule and
+-- none of them mentioned it) and cost a normaliser, a season predicate, two indexes and an ownership
+-- call that failed closed, so a rate-limited GitHub stopped anyone creating an entry at all.
 --
 -- NOT partial on retired_at: retiring an entry must not be how its version numbers restart.
 CREATE UNIQUE INDEX models_owner_game_name_uniq
@@ -2216,26 +2277,29 @@ $$;
 -- Each counts WITHIN THE SEASON WHOSE RULE IT IS. A document reaching back into a previous season's
 -- rows would make a competitor's allowance depend on a competition that is over.
 
--- WHO MAY ENTER (N30). `entry = 'open'` admits anyone who may see the season. `entry = 'restricted'`
--- admits a PARTICIPANT: a season_participants row pinned to this user, a wildcard row (null login) of
--- a provider the user has an identity with, or an unpinned row whose (provider, login) matches one of
--- the user's identities. Resolved at the time of asking, not at add, because a cohort is written
--- before most of its members have signed in -- so a member listed by login is admitted at their first
--- sign-in without an edit. §I (the identity rebuild) is DEFERRED, so "identity" here is the GitHub
--- one: provider 'github', login = users.handle (case-insensitive), a real user is one with a
--- github_id. When §I lands this keys on the identities table instead, with no caller change.
+-- WHO MAY ENTER (N30, §I). `entry = 'open'` admits anyone who may see the season; `restricted`
+-- admits a PARTICIPANT. A season's `providers` allow-list (NULL = any provider) narrows BOTH: the
+-- caller must hold an identity from a permitted provider, so a university season that lists its own
+-- directory shuts a GitHub identity out even where a login is listed. A participant is a
+-- season_participants row pinned to this user, a wildcard row (null login) of a provider the user
+-- has an identity with, or an unpinned row whose (provider, login) matches one of the user's
+-- identities -- resolved against `identities` at the time of asking, not at add, because a cohort is
+-- written before most of its members have signed in, so a member listed by login is admitted at
+-- their first sign-in without an edit. A pinned row still requires a permitted identity, so it too
+-- honours `providers`. A baseline (no identity) is never admitted, which is right: it does not enter.
 CREATE FUNCTION season_admits(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT s.entry = 'open'
-        OR EXISTS (
-            SELECT 1 FROM season_participants sp
-             WHERE sp.season_id = s.id AND sp.removed_at IS NULL
-               AND (sp.user_id = p_user
-                 OR (sp.provider = 'github' AND sp.login IS NULL
-                     AND EXISTS (SELECT 1 FROM users u
-                                  WHERE u.id = p_user AND u.github_id IS NOT NULL))
-                 OR (sp.provider = 'github' AND sp.login IS NOT NULL
-                     AND EXISTS (SELECT 1 FROM users u
-                                  WHERE u.id = p_user AND lower(u.handle) = lower(sp.login)))));
+    SELECT EXISTS (
+        SELECT 1 FROM identities i
+         WHERE i.user_id = p_user
+           AND (s.providers IS NULL
+                OR i.provider IN (SELECT jsonb_array_elements_text(s.providers)))
+           AND (s.entry = 'open'
+                OR EXISTS (SELECT 1 FROM season_participants sp
+                            WHERE sp.season_id = s.id AND sp.removed_at IS NULL
+                              AND (sp.user_id = p_user
+                                OR (sp.provider = i.provider AND sp.login IS NULL)
+                                OR (sp.provider = i.provider
+                                    AND lower(sp.login) = lower(i.login))))));
 $$;
 
 -- WHO MAY SEE A SEASON (N30). `public` is everyone's. `private` is its participants' (season_admits),

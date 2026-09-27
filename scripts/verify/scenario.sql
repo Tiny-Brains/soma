@@ -12,9 +12,11 @@ INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions
 VALUES ('50000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 1,
         'Summer 2026', 'summer-2026', 'sha256:e1',
         now() - interval '1 hour', now() + interval '1 day');
-INSERT INTO users (id, github_id, handle, role) VALUES
-  ('00000000-0000-0000-0000-0000000000b1', NULL, 'baseline.random', 'baseline'),
-  ('00000000-0000-0000-0000-0000000000a1', 1,    'alice',           'competitor');
+INSERT INTO users (id, handle, role) VALUES
+  ('00000000-0000-0000-0000-0000000000b1', 'baseline.random', 'baseline'),
+  ('00000000-0000-0000-0000-0000000000a1', 'alice',           'competitor');
+INSERT INTO identities (user_id, provider, subject, login) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', 'github', '1', 'alice');
 -- Two ENTRIES -- one baseline's, one alice's -- and three versions between them. Alice's two
 -- versions are the same entry, which is what makes the promotion below a supersede rather than two
 -- unrelated models both standing active.
@@ -44,8 +46,10 @@ INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
 -- A runner is not enrolled: it upserts itself on (key_id, label) at token exchange, so these rows
 -- are what that leaves behind. mini-2 is allowed ONE row in flight, which is what the ceiling below
 -- is measured against. The hash is a stand-in: the key itself never reaches the database.
-INSERT INTO users (id, github_id, handle, role)
-VALUES ('00000000-0000-0000-0000-0000000000ad', 9, 'ops', 'admin');
+INSERT INTO users (id, handle, role)
+VALUES ('00000000-0000-0000-0000-0000000000ad', 'ops', 'admin');
+INSERT INTO identities (user_id, provider, subject, login)
+VALUES ('00000000-0000-0000-0000-0000000000ad', 'github', '9', 'ops');
 INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix)
 VALUES ('c0000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000ad',
         'the fleet', 'sha256:not-a-real-digest', 'tbr_deadbeef');
@@ -398,7 +402,7 @@ SELECT subject, description, link, season, data FROM notifications WHERE categor
 ROLLBACK;
 \echo '--- the close freezes the podium: one place per owner -- alice''s better entry stands for her and her other is not a second place -- and the baseline is skipped; then a medal per place, once (expect nano and open each alice then carol, INSERT 0 4, INSERT 0 0, four medal rows), rolled back'
 BEGIN;
-INSERT INTO users (id, github_id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 777, 'carol');
+INSERT INTO users (id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 'carol');
 INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'ants lord'),
   ('e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', 'colony');
@@ -429,7 +433,7 @@ INSERT INTO comment_words (word, added_by) VALUES ('sc.m', '00000000-0000-0000-0
 ROLLBACK;
 \echo '--- the field at an instant: a version stands from its seq-0 row on Open until a later version of its entry has one (expect on 1 Feb x v1 18.00 #1 and colony 10.00 #2; on 1 Mar x v2 22.00 #1 and colony 10.00 #2); the hour''s snapshots, written once (expect INSERT 0 6, INSERT 0 6, then INSERT 0 0); the series reads them for each edge but the last (expect 3 edges; x v1 then null, x v2 null then a rating)'
 BEGIN;
-INSERT INTO users (id, github_id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 777, 'carol');
+INSERT INTO users (id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 'carol');
 INSERT INTO models (id, owner_id, game_id, name) VALUES
   ('e0000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', 'x'),
   ('e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', 'colony');
@@ -1118,54 +1122,70 @@ EXECUTE k_start ('00000000-0000-0000-0000-0000000000ff',
 SELECT status AS finished_state, (claim_token = '30000000-0000-0000-0000-000000000001') AS token_still_matches
   FROM matches WHERE seed = 42;
 
-\echo '===== identity: the handle is a label, and the index protects the namespace the readers use ====='
+\echo '===== identity: (provider, subject) is the account key; the handle is a seeded label ====='
 
 \echo '--- a baseline handle must live in the reserved namespace (expect check violation)'
-INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline-legacy', 'baseline');
+INSERT INTO users (handle, role) VALUES ('baseline-legacy', 'baseline');
+
+\echo '--- and a human handle must NOT: the reserved namespace is exclusive both ways (expect check violation)'
+INSERT INTO users (handle, role) VALUES ('baseline.sneak', 'competitor');
 
 \echo '--- `Alice` and `alice` are one name (expect duplicate key on users_handle_uniq)'
--- Case-sensitive uniqueness with case-insensitive readers is how two rows came to answer to one
--- login: every reader compares case-insensitively, so two rows both answered to one.
-INSERT INTO users (github_id, handle) VALUES (77, 'Alice');
+-- Case-sensitive column, case-insensitive readers: the index on lower(handle) is what stops two
+-- rows both answering to one name.
+INSERT INTO users (handle) VALUES ('Alice');
 
-\echo '--- sign-in takes a freed login off the row that provably no longer holds it:'
-\echo '    github_id 1 renamed on GitHub and has not signed back in, so its row still says `alice`,'
-\echo '    and the account that holds the login now signs in for the first time (expect released.1 / alice)'
-UPDATE users SET handle = 'released.' || github_id
- WHERE lower(handle) = lower('alice') AND github_id IS NOT NULL AND github_id <> 99;
-INSERT INTO users (github_id, handle, display_name) VALUES (99, 'alice', NULL)
-ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
-SELECT github_id, handle FROM users WHERE github_id IN (1, 99) ORDER BY github_id;
+\echo '--- one account per (provider, subject): a second identity for github/1 collides (expect duplicate key)'
+INSERT INTO identities (user_id, provider, subject, login)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'github', '1', 'alice-again');
 
-\echo '--- and the other half: an existing account renaming INTO a login a stale row holds'
-\echo '    (expect released.100 / bob -- without the release step both halves are a 500 that never clears)'
-INSERT INTO users (github_id, handle) VALUES (100, 'bob'), (101, 'carol');
-UPDATE users SET handle = 'released.' || github_id
- WHERE lower(handle) = lower('bob') AND github_id IS NOT NULL AND github_id <> 101;
-INSERT INTO users (github_id, handle, display_name) VALUES (101, 'bob', NULL)
-ON CONFLICT (github_id) DO UPDATE SET handle = excluded.handle;
-SELECT github_id, handle FROM users WHERE github_id IN (100, 101) ORDER BY github_id;
+\echo '--- sign-in on a NEW identity mints an account, handle seeded once from the login (expect octocat / The Octocat)'
+EXECUTE u_signin ('github', '4210', 'octocat', 'The Octocat');
+EXECUTE u_promote ('github', '4210', '');
+SELECT u.handle, u.display_name FROM identities i JOIN users u ON u.id = i.user_id
+ WHERE i.provider = 'github' AND i.subject = '4210';
+
+\echo '--- a RETURNING identity keeps its handle and refreshes only the cached login (expect foo / foo-renamed)'
+-- github/7000 renamed at the provider; the account (and its handle) is untouched, the login moves.
+EXECUTE u_signin ('github', '7000', 'foo', 'Foo');
+EXECUTE u_signin ('github', '7000', 'foo-renamed', 'Foo');
+SELECT u.handle, i.login FROM identities i JOIN users u ON u.id = i.user_id
+ WHERE i.provider = 'github' AND i.subject = '7000';
+
+\echo '--- a login that collides with a taken handle is disambiguated by seed_handle, never a 500 (expect alice-github)'
+EXECUTE u_signin ('github', '4211', 'alice', 'Another Alice');
+SELECT u.handle FROM identities i JOIN users u ON u.id = i.user_id
+ WHERE i.provider = 'github' AND i.subject = '4211';
+
+\echo '--- admin by deployment: a listed provider:subject is promoted at sign-in, only ever promoted (expect admin)'
+EXECUTE u_signin ('github', '9000', 'newadmin', NULL);
+EXECUTE u_promote ('github', '9000', 'github:9000,github:5');
+SELECT u.role FROM identities i JOIN users u ON u.id = i.user_id
+ WHERE i.provider = 'github' AND i.subject = '9000';
 
 \echo '===== an entry is a name: unique per owner, and deliberately NOT unique across them ====='
 
 \echo '--- one entry per name per owner, case-insensitively (expect INSERT 0 1, then duplicate key on models_owner_game_name_uniq)'
 INSERT INTO models (owner_id, game_id, name)
-VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a', 'brain');
+VALUES ((SELECT user_id FROM identities WHERE provider = 'github' AND subject = '4210'),
+        '00000000-0000-0000-0000-00000000000a', 'brain');
 INSERT INTO models (owner_id, game_id, name)
-VALUES ((SELECT id FROM users WHERE github_id = 99), '00000000-0000-0000-0000-00000000000a', 'BRAIN');
+VALUES ((SELECT user_id FROM identities WHERE provider = 'github' AND subject = '4210'),
+        '00000000-0000-0000-0000-00000000000a', 'BRAIN');
 
 \echo '--- and TWO COMPETITORS MAY HOLD ONE NAME (expect INSERT 0 1)'
 -- The repository was a GLOBAL key, so `alice/brain` could be entered once platform-wide and a
 -- second competitor naming the same repository was refused. A name is not an identity and nothing
 -- is decided on one, so there is no cross-owner index here and this insert must SUCCEED. Who a
--- competitor is, is users.github_id -- which is sign-in, and the whole of what GitHub does now.
+-- competitor is, is a row in identities (provider, subject) -- sign-in, the whole of what a provider does now.
 INSERT INTO models (owner_id, game_id, name)
-VALUES ((SELECT id FROM users WHERE github_id = 101), '00000000-0000-0000-0000-00000000000a', 'brain');
+VALUES ((SELECT user_id FROM identities WHERE provider = 'github' AND subject = '4211'),
+        '00000000-0000-0000-0000-00000000000a', 'brain');
 
 \echo '--- the baselines need no carve-out any more (expect INSERT 0 1)'
--- Three of them shared one repository, which was legal only because models_repo_uniq was PARTIAL
--- on owner_github_id. With no repository there is no shared value and no exception to explain.
-INSERT INTO users (github_id, handle, role) VALUES (NULL, 'baseline.two', 'baseline');
+-- Three of them shared one repository, which was legal only because models_repo_uniq was PARTIAL on
+-- the owner's key. With no repository there is no shared value and no exception to explain.
+INSERT INTO users (handle, role) VALUES ('baseline.two', 'baseline');
 INSERT INTO models (owner_id, game_id, name)
 VALUES ((SELECT id FROM users WHERE handle = 'baseline.two'),
         '00000000-0000-0000-0000-00000000000a', 'two');
@@ -1182,9 +1202,12 @@ UPDATE seasons SET rules = '{"repo": {"enabled": true, "allow_orgs": ["acme-lab"
 -- season beside the public open one, one pinned participant (alice), one season admin (prof),
 -- one stranger, and the platform admin (ops).
 -- ======================================================================================
-INSERT INTO users (id, github_id, handle, role) VALUES
-  ('00000000-0000-0000-0000-0000000000f1', 5001, 'prof',     'competitor'),
-  ('00000000-0000-0000-0000-0000000000f2', 5002, 'stranger', 'competitor');
+INSERT INTO users (id, handle, role) VALUES
+  ('00000000-0000-0000-0000-0000000000f1', 'prof',     'competitor'),
+  ('00000000-0000-0000-0000-0000000000f2', 'stranger', 'competitor');
+INSERT INTO identities (user_id, provider, subject, login) VALUES
+  ('00000000-0000-0000-0000-0000000000f1', 'github', '5001', 'prof'),
+  ('00000000-0000-0000-0000-0000000000f2', 'github', '5002', 'stranger');
 INSERT INTO seasons (id, game_id, number, name, slug, engine_digest,
                      submissions_open_at, submissions_close_at, visibility, entry)
 VALUES ('50000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000000a', 99,
@@ -1212,6 +1235,16 @@ SELECT season_visible(s, '00000000-0000-0000-0000-0000000000f2') AS private_stra
        season_visible(s, '00000000-0000-0000-0000-0000000000f1') AS private_admin,
        season_visible(s, '00000000-0000-0000-0000-0000000000ad') AS private_platform
   FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+
+\echo '--- providers allow-list: a season restricted to google refuses a pinned github identity (f) until the user has a google one (t)'
+UPDATE seasons SET providers = '["google"]'::jsonb WHERE id = '50000000-0000-0000-0000-0000000000f1';
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS github_pinned_refused
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+INSERT INTO identities (user_id, provider, subject, login)
+VALUES ('00000000-0000-0000-0000-0000000000a1', 'google', 'g-alice', 'alice@example.edu');
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS google_admitted
+  FROM seasons s WHERE s.id = '50000000-0000-0000-0000-0000000000f1';
+UPDATE seasons SET providers = NULL WHERE id = '50000000-0000-0000-0000-0000000000f1';
 
 \echo '--- the wildcard row admits every identity of its provider: a stranger is admitted (t), and removing it refuses them again (f)'
 INSERT INTO season_participants (season_id, provider, login, user_id, added_by)
