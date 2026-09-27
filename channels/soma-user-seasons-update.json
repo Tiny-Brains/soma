@@ -1,13 +1,13 @@
 {
-  "channel_id": "soma-admin-seasons-update",
-  "name": "soma-admin-seasons-update",
-  "description": "Edits a season's window and rules before it closes.",
-  "tags": ["soma", "admin", "seasons"],
+  "channel_id": "soma-user-seasons-update",
+  "name": "soma-user-seasons-update",
+  "description": "Edits a season's window and rules before it opens. Reachable by the season's own admins and by platform admins.",
+  "tags": ["soma", "user", "seasons"],
   "channel_type": "sync",
   "protocol": "rest",
   "methods": ["PATCH"],
   "route_pattern": "/v1/games/{game}/seasons/{slug}",
-  "workflow_id": "soma-admin-seasons-update",
+  "workflow_id": "soma-user-seasons-update",
   "config": {
     "request": { "$from": "constants.payload_body" },
     "response": { "$from": "constants.shaped" },

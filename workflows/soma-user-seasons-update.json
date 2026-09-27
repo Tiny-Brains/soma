@@ -1,0 +1,121 @@
+{
+  "workflow_id": "soma-user-seasons-update",
+  "name": "Edit a season that has not opened",
+  "description": "Reached by the season's own admins and by platform admins (season-admin-only, A4): editing a season's window, rules and weight classes before it opens is season-scoped work, so a season admin does it for their season and a platform admin for any. The Edit button belongs on a `scheduled` row and no other: a season that has not opened has no submissions stamped into it, no matches paired against it and no standings, so its window, its rules and its caps are still safe to move. THE PREDICATE `now() < submissions_open_at` IN THE UPDATE is what enforces that, so the refusal cannot be raced by a caller arriving in the second the season opens; `why` then reads the state back and 409 carries which state it found. The season's visibility, its entry and its fleet policy are platform-admin settings and are NOT edited here (visibility is fixed at creation; entry and fleet have their own platform-admin routes). The engine digest is not editable -- a season plays one engine from beginning to end or its standings mean nothing -- and neither is the NAME or the slug, which are fixed at creation: a body naming one is refused rather than ignored. The season's maps are not edited here either: they have routes of their own, and unlike everything here they may change while the season is live. Every field is coalesced against the stored value, which is what PATCH means; `rules` is replaced whole rather than merged, because the seasons_rules_known CHECK refuses an unknown key and a merge could only produce a document the constraint would reject anyway.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "renamed",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "or": [{ "!!": { "var": "data.req.name" } }, { "!!": { "var": "data.req.slug" } }]
+        },
+        "status": 400,
+        "body": {
+          "error": "season_name_fixed",
+          "detail": "A season's name and slug are fixed when it is created, so every link to it keeps working."
+        },
+        "name": "No renaming"
+      }
+    },
+    {
+      "id": "edit",
+      "name": "Edit",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-seasons-update-edit.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.submissions_open_at" },
+            { "var": "data.req.submissions_close_at" },
+            { "var": "data.req.rules" },
+            { "var": "data.req.weight_classes" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.edited"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "diagnose",
+      "name": "Diagnose a write that changed nothing",
+      "description": "Only when the edit wrote nothing. The season exists (season-admin-only 404s an unknown one before the edit), so the sole reason left is that it is no longer scheduled: `why` reads the state back and 409 carries it.",
+      "condition": { "$use": "none_written", "with": { "slot": "edited" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why not",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT json_build_object('slug', s.slug, 'state', season_state(s)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+              "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "refused",
+          "use": "refuse",
+          "with": {
+            "when": true,
+            "status": 409,
+            "body": {
+              "error": "season_not_scheduled",
+              "detail": { "var": "temp_data.why.0.body" }
+            },
+            "name": "It has already opened"
+          }
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "name": "Read it back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

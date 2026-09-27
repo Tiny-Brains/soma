@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-admin-seasons-fleet",
+  "name": "soma-admin-seasons-fleet",
+  "description": "Changes a season's fleet policy (which runners play and admit it) while it is live. Platform admin only.",
+  "tags": ["soma", "admin", "seasons"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PATCH"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/fleet",
+  "workflow_id": "soma-admin-seasons-fleet",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

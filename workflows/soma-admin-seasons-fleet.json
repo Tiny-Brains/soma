@@ -1,0 +1,170 @@
+{
+  "workflow_id": "soma-admin-seasons-fleet",
+  "name": "Change a season's fleet policy",
+  "description": "Platform admin only (admin-only): changing which runners play and admit a season is a platform decision, off limits to a season admin, and unlike the season's window it may change WHILE THE SEASON IS LIVE (R4) -- the platform steps in when a university's own runners die mid-term. `fleet` is `{matches, admissions}`, each `own | platform | both`; a well-formed shape is checked here (400), and season_fleet_ok() in the write refuses anything the shape guard let through by writing nothing, so `why` tells 422 from 409 (the season has closed) from 404. The gate reads fleet live on every claim, so the change takes effect on the next claim with nothing cached to invalidate and no roster epoch to move.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.fleet" } },
+        "status": 400,
+        "body": {
+          "error": "fleet_required",
+          "detail": "Give the fleet policy in `fleet`: { matches, admissions }, each \"own\", \"platform\" or \"both\"."
+        },
+        "name": "A policy, declared"
+      }
+    },
+    {
+      "id": "shape",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "and": [
+              {
+                "or": [
+                  { "===": [{ "var": "data.req.fleet.matches" }, "own"] },
+                  { "===": [{ "var": "data.req.fleet.matches" }, "platform"] },
+                  { "===": [{ "var": "data.req.fleet.matches" }, "both"] }
+                ]
+              },
+              {
+                "or": [
+                  { "===": [{ "var": "data.req.fleet.admissions" }, "own"] },
+                  { "===": [{ "var": "data.req.fleet.admissions" }, "platform"] },
+                  { "===": [{ "var": "data.req.fleet.admissions" }, "both"] }
+                ]
+              }
+            ]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "fleet_invalid",
+          "detail": "fleet has matches and admissions, each \"own\", \"platform\" or \"both\"."
+        },
+        "name": "Fleet policy is well formed"
+      }
+    },
+    {
+      "id": "set",
+      "name": "Set the fleet policy",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-fleet-set.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.fleet" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.set"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why not",
+      "condition": { "$use": "none_written", "with": { "slot": "set" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('found', s.id IS NOT NULL, 'closed', s.closed_at IS NOT NULL, 'valid', season_fleet_ok(($3)::jsonb)) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.slug = ($2)::text WHERE g.slug = ($1)::text",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.fleet" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such game or season"
+      }
+    },
+    {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!!": { "var": "temp_data.why.0.body.closed" } }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "A closed season's fleet policy cannot change: it plays nothing more."
+        },
+        "name": "It has closed"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "set" } },
+        "status": 422,
+        "body": {
+          "error": "fleet_invalid",
+          "detail": "fleet has matches and admissions, each \"own\", \"platform\" or \"both\", and no other key."
+        },
+        "name": "A well-formed policy"
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the season back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT (season_json(s)::jsonb || jsonb_build_object('fleet', s.fleet)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}
