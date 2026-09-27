@@ -54,7 +54,9 @@ channel is quarantined.
 **Auth modes.** *Public*: no credential. *Session*: an HS256 JWT in the HttpOnly `soma_session`
 cookie (issuer `soma`, 30 days), checked against `live_sessions` inside every query, so revocation
 is immediate. *Admin*: a session whose live `users.role` is `admin`, read off the row, never off the
-cookie. *Runner*: an `Authorization: Bearer` JWT with `aud: runner`, signed with
+cookie. *Season admin*: a platform admin OR a live member of the season's `season_admins`, resolved
+from the route's `{game}`/`{slug}` and read off the row on every call, so a removal takes effect at
+the next request. *Runner*: an `Authorization: Bearer` JWT with `aud: runner`, signed with
 `RUNNER_TOKEN_SECRET`, ten minutes, checked against `live_runners` inside every statement. Every
 channel but `/v1/admin-check` also has an address-keyed `rate_limit` applied before auth, and authed
 channels add a per-principal quota.
@@ -62,7 +64,7 @@ channels add a per-principal quota.
 | Method | Path | Auth | What |
 |---|---|---|---|
 | GET | `/v1/auth/github` | Public | Redirect to GitHub (state, PKCE, `?next=`); the same channel serves `/callback` and sets the cookie |
-| GET · PATCH | `/v1/me` | Session | Current user, bio and commenting switch, served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
+| GET · PATCH | `/v1/me` | Session | Current user, bio, commenting switch and `admin_of` (the seasons the caller administers), served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
 | GET | `/v1/me/candidates` | Session | The caller's versions still being admitted or on trial; uncached, polled with the bell |
 | GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included, as cards with `mine` on each seat |
 | GET | `/v1/me/matches/{id}` | Session | One match the caller has a seat in, any status, with a signed replay URL: a trial in progress or a rejected candidate's |
@@ -80,13 +82,19 @@ channels add a per-principal quota.
 | GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
 | GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |
 | GET | `.../seasons/{slug}/podium` | Public | The frozen podium per ladder, each place with its owner's latest match |
-| GET · POST | `/v1/games/{game}/seasons` | Public · Admin | Seasons with counts · create `{name, submissions_open_at, submissions_close_at, rules?, weight_classes?}` |
-| PATCH | `/v1/games/{game}/seasons/{slug}` | Admin | Edit a season that has not opened; name and slug are refused |
+| GET · POST | `/v1/games/{game}/seasons` | Public · Admin | Seasons with counts (public seasons to a stranger) · create `{name, submissions_open_at, submissions_close_at, visibility?, entry?, fleet?, providers?, admins?, rules?, weight_classes?}` (private forces restricted) |
+| PATCH | `/v1/games/{game}/seasons/{slug}` | Season admin | Edit window, rules, weight classes before open; name and slug are refused |
+| POST | `/v1/games/{game}/seasons/{slug}/featured` | Admin | Make a public season the game's featured one; a private season is refused |
+| PATCH | `/v1/games/{game}/seasons/{slug}/fleet` | Admin | Change the fleet policy `{matches, admissions}` (each `own`\|`platform`\|`both`) while live |
 | POST | `/v1/games/{game}/seasons/{slug}/close` | Admin | Request a close; 202, consumed by the withdraw clock |
+| GET · POST · DELETE | `.../seasons/{slug}/participants` | Season admin | Participants (resolved and waiting) · add in bulk (`logins`, `provider?` default github, a null login is a provider wildcard) · remove one |
+| GET | `.../seasons/{slug}/admins` | Season admin | The season's admins by platform handle |
+| POST · DELETE | `.../seasons/{slug}/admins` | Admin | Assign · remove a season admin by handle (bumps that account's session) |
+| POST | `.../seasons/{slug}/runner-keys` | Season admin | Mint a runner key bound to this season |
 | GET | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Public | A season's boards, enabled or not (`?enabled=`, `?boards=`) · one board and its history |
-| POST · PATCH | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Admin | Upload one map file named `size-terrain-Np-Hh`, stored disabled (422 `map_name_pattern`, `map_name_players`, `map_name_hills`) · `{"enabled": bool}` |
-| GET · POST | `.../seasons/{slug}/baselines` | Admin | Baselines and refused uploads · `{name, weights_hash, manifest_hash}`, answered with two presigned PUTs |
-| PATCH | `.../seasons/{slug}/baselines/{baseline}` | Admin | `{"enabled": bool}`; `{baseline}` is the slug of its name |
+| POST · PATCH | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Season admin | Upload one map file named `size-terrain-Np-Hh`, stored disabled (422 `map_name_pattern`, `map_name_players`, `map_name_hills`) · `{"enabled": bool}` |
+| GET · POST | `.../seasons/{slug}/baselines` | Season admin | Baselines and refused uploads · `{name, weights_hash, manifest_hash}`, answered with two presigned PUTs |
+| PATCH | `.../seasons/{slug}/baselines/{baseline}` | Season admin | `{"enabled": bool}`; `{baseline}` is the slug of its name |
 | POST | `/v1/games/{game}/models` | Session | Create an entry `{name}` |
 | GET | `/v1/models` | Session | The caller's versions with ratings and ranks; `?game=` |
 | GET · PATCH | `/v1/models/{id}` | Public · Session | An entry and its versions · `{name, retired}` |
@@ -163,7 +171,7 @@ the singleton buys order, and the SQL fences buy correctness.
 | `soma-clock-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
 | `soma-clock-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
 | `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
-| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close the season; snapshot the live season's ladders once an hour | none: idempotent |
+| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close each live season that settled or was asked to; snapshot every live season's ladders once an hour | none: idempotent |
 | `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
@@ -193,13 +201,14 @@ judged by `worldgen`.
 |---|---|
 | `users`, `sessions` | sign-in, `PATCH /v1/me`, session routes; roles by hand |
 | `games` | `bootstrap` |
-| `seasons`, `season_maps`, `season_map_events`, `baseline_events` | admin routes; withdraw closes a season; `bootstrap` moves a live season's engine on a patch; count's fold moves the match counts |
+| `seasons`, `season_maps`, `season_map_events`, `baseline_events` | admin and season-admin routes; withdraw closes each settled season; `bootstrap` re-stamps every live season's engine on a patch; count's fold moves the match counts |
 | `models`, `model_versions` | entry and submission routes insert; admit and count decide; baseline flips |
 | `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate), which lists an ordinary match; count rates, and a trial's pass lists it; withdraw, promotion and disables cancel |
 | `ladder_snapshots` | withdraw, once an hour per live season |
 | `ratings`, `rating_events` | count; a baseline's first enable seeds its two ratings at the prior |
 | `clocks` | count's fence; every roster change bumps `roster` |
-| `runner_keys`, `runners` | admin routes; the token exchange upserts runners |
+| `season_admins`, `season_participants` | admin assigns/removes admins; season admins add/remove participants; `season_admits`/`season_visible` read them |
+| `runner_keys`, `runners` | admin routes and the season runner-keys route (a key may bind to one season, `runner_keys.season_id`); the token exchange upserts runners |
 | `notifications`, `notification_settings` | the writer after each decision; the settings route; Notify |
 | `threads`, `comments`, `comment_reports`, `comment_words` | the comment, report and admin desk routes; no clock |
 | `model_stories`, `posts`, `announcements`, `picks`, `notify_sends` | the story route and the admin desks |
