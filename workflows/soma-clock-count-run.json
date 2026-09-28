@@ -76,6 +76,31 @@
         }
       },
       {
+        "id": "round",
+        "name": "Start the rounds that are due",
+        "description": "A season round's reset is a ladder write, so it is count's, under count's fence and before the batch: every result folded after it folds into the reset ratings. At most one round a live season is waiting; this starts each whose time has come (raising sigma to its floor, drawing mu toward the season's mean, cancelling the queue paired for the round before) and stamps it applied. The count tick is skipped while nothing finishes, but its marker lives 60 s, so a round starts within a minute or so of its time either way.",
+        "function": {
+          "name": "db_write",
+          "input": {
+            "connector": "soma-db",
+            "query": { "$sql": "../sql/soma-clock-count-run-round.sql" },
+            "params": [
+              { "var": "metadata.trigger.scheduled_for" },
+              { "var": "metadata.trigger.attempt" }
+            ],
+            "output": "temp_data.round"
+          }
+        }
+      },
+      {
+        "id": "invalidate_round",
+        "use": "invalidate",
+        "with": {
+          "namespaces": ["ladder", "season"],
+          "when": { ">": [{ "var": "temp_data.round.rows_affected" }, 0] }
+        }
+      },
+      {
         "id": "batch",
         "name": "Read this run's work",
         "function": {

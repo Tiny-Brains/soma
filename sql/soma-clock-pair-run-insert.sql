@@ -23,7 +23,7 @@ WITH season AS (
         OR (v.status = 'verified' AND v.id = ($6)::uuid)
 ), m AS (
     INSERT INTO matches (game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders,
-                         trial_version_id, pairing_id, strike_ceiling)
+                         trial_version_id, pairing_id, strike_ceiling, round)
     SELECT season.game_id, season.id, season.engine_digest, ($3)::bigint, board.id, board.players,
            -- ONE RATED LADDER. Every rated match feeds Open and nothing else; a weight class is a
            -- view of Open, not a rating, so a same-class match is not credited twice. A trial still
@@ -38,7 +38,11 @@ WITH season AS (
            -- were silent this insert fails, loudly, here -- where a halt is correct -- instead of
            -- Kalam comparing a strike count against null, which is TRUE, and forfeiting every seat
            -- on turn 0.
-           coalesce((season.rules -> 'pairing' ->> 'forfeit_strikes')::smallint, ($8)::smallint)
+           coalesce((season.rules -> 'pairing' ->> 'forfeit_strikes')::smallint, ($8)::smallint),
+           -- THE ROUND IT COUNTS FOR: the season's current one as this statement sees it, read here
+           -- rather than off the plan, so a reset applied between demand and insert stamps the new
+           -- round. A trial counts for none.
+           CASE WHEN ($6)::uuid IS NULL THEN (season_round(season.id)).n END
       FROM season
       JOIN board ON true
       JOIN (SELECT key FROM clocks WHERE key = 'roster' AND epoch = ($1)::bigint FOR SHARE) fence

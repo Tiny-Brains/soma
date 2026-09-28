@@ -1,0 +1,34 @@
+{
+  "name": "rounds-create-window-open: finals while submissions are open are 409 window_open",
+  "workflow": "../workflows/soma-admin-seasons-rounds-create.json",
+  "input": { "kind": "finals", "games": 50 },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "role": "admin",
+            "found": true,
+            "closed": false,
+            "waiting": false,
+            "finals": false,
+            "window_open": true,
+            "admitting": 0,
+            "past": false,
+            "valid": true
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "window_open"
+  }
+}

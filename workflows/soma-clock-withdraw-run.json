@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-clock-withdraw-run",
   "name": "Clock: withdraw",
-  "description": "The backstop clock, and the season's. Seasons overlap (N30), so every statement here is per season and set-based: a tick may close, sweep or snapshot more than one live season of the game at once. Three idempotent statements a minute, none fenced. The sweep cancels every queued match whose season has closed, whose engine has been retired or whose seats have stopped contesting, recording why and, where there is one, the successor that replaced the seat -- each match by its own season. The close ends EACH live season the admin has asked to close or whose window has closed and every score has settled -- no submission undecided, nothing in flight, every active version at or below settled_sigma with at least burst matches -- and freezes each one's podium into season_podium in the same statement. rows_affected is zero almost every minute in each, which is not a halt. Promotion does its own withdraw and the close cancels its own queue, so a persistently non-zero sweep count is a signal, not routine. The snapshot writes every live season's ladder_snapshots once an hour, which the rating series reads. A close that wrote is followed by one notification per entrant of each season that just closed, keyed on the season, and a medal per placed owner, each in a task that may fail without failing the close (the notifiers read every season closed in the last few minutes, which is every season this tick closed).",
+  "description": "The backstop clock, and the season's. Seasons overlap (N30), so every statement here is per season and set-based: a tick may close, sweep or snapshot more than one live season of the game at once. Three idempotent statements a minute, none fenced. The sweep cancels every queued match whose season has closed, whose engine has been retired or whose seats have stopped contesting, recording why and, where there is one, the successor that replaced the seat -- each match by its own season. The close ends EACH live season the admin has asked to close, whose finals are done (every entry at its number of games, nothing in flight), or -- with no finals scheduled and a policy that settles -- whose window has closed and every score has settled -- no submission undecided, nothing in flight, every active version at or below settled_sigma with at least burst matches -- and freezes each one's podium into season_podium in the same statement. Before it, the schedule keeps each season played in rounds one reset ahead, and the announce posts each round's countdown `warn_minutes` before it starts. rows_affected is zero almost every minute in each, which is not a halt. Promotion does its own withdraw and the close cancels its own queue, so a persistently non-zero sweep count is a signal, not routine. The snapshot writes every live season's ladder_snapshots once an hour, which the rating series reads. A close that wrote is followed by one notification per entrant of each season that just closed, keyed on the season, and a medal per placed owner, each in a task that may fail without failing the close (the notifiers read every season closed in the last few minutes, which is every season this tick closed).",
   "tags": ["soma", "clock", "seasons"],
   "condition": true,
   "tasks": [
@@ -49,8 +49,70 @@
       }
     },
     {
+      "id": "schedule",
+      "name": "Schedule each season's next round",
+      "description": "A season played in rounds (rules.rounds) always has its next reset waiting: the first at the window's open, then one every `days` on that grid, never past the window's close. Idempotent: a season with a round waiting is skipped. The finals are never scheduled here; an admin starts them.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-schedule.sql" },
+          "params": [{ "var": "temp_data.game.0.id" }],
+          "output": "temp_data.scheduled"
+        }
+      }
+    },
+    {
+      "id": "invalidate_schedule",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.scheduled.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "announce",
+      "name": "Post the countdown to each round that is about to start",
+      "description": "`warn_minutes` before a round or the finals start, one line across every page of the site (a public season) and one bell notification per entrant. The line carries the instant and web counts down to it. Stamped announced, so each round is announced once.",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-clock-withdraw-run-announce.sql" },
+          "params": [{ "var": "temp_data.game.0.id" }],
+          "output": "temp_data.announced"
+        }
+      }
+    },
+    {
+      "id": "when_announced",
+      "description": "Only after an announce that wrote. The notification is its own statement after the decision and may fail without failing it.",
+      "condition": { ">": [{ "var": "temp_data.announced.rows_affected" }, 0] },
+      "tasks": [
+        {
+          "id": "invalidate_announce",
+          "use": "invalidate",
+          "with": { "namespaces": ["announcements", "season"] }
+        },
+        {
+          "id": "notify_round",
+          "name": "Tell each entrant the round is about to start",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-clock-withdraw-run-notify_round.sql" },
+              "params": [{ "var": "temp_data.game.0.id" }],
+              "output": "temp_data.notified_round"
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "close",
-      "name": "Close the season if it has settled or was asked to",
+      "name": "Close the season if it has settled, finished its finals or was asked to",
       "function": {
         "name": "db_write",
         "input": {
@@ -74,7 +136,7 @@
         {
           "id": "invalidate_close",
           "use": "invalidate",
-          "with": { "namespaces": ["season", "ladder", "matches"] }
+          "with": { "namespaces": ["season", "ladder", "matches", "announcements"] }
         },
         {
           "id": "bump_finished_close",

@@ -1,0 +1,15 @@
+{
+  "name": "rounds-create-made: a schedule that writes answers 201 with the rounds document",
+  "workflow": "../workflows/soma-admin-seasons-rounds-create.json",
+  "input": { "kind": "round", "games": 100, "sigma_floor": 3 },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": { "soma-db": [{ "body": { "role": "admin", "season": "s1", "rounds": [] } }] }
+  },
+  "expect": { "data._orion.response.status": 201 }
+}

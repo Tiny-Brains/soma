@@ -4,10 +4,22 @@ WITH live AS (
      WHERE s.game_id = ($1)::uuid AND s.closed_at IS NULL
        -- closure.policy 'admin' waits for the request and never settles itself; 'settle' and
        -- 'deadline' both reach the settled test, and 'deadline' additionally gives up waiting
-       -- once settle_grace_days have passed since the window closed.
+       -- once settle_grace_days have passed since the window closed. 'finals' never settles
+       -- itself either: it waits for the admin to start the finals.
+       --
+       -- THE FINALS DECIDE, WHATEVER THE POLICY, once an admin has scheduled them: the season
+       -- closes when they are done -- started, every entry at its number of games -- and nothing
+       -- is left in flight to fold after the podium is frozen; and no settled test closes it before
+       -- then. A request to close still wins over both, which is how an admin ends finals that
+       -- cannot finish (an entry with nobody left to play).
        AND (s.close_requested_at IS NOT NULL
+         OR (coalesce((SELECT f.done FROM season_finals(s.id) f), false)
+             AND NOT EXISTS (SELECT 1 FROM matches m
+                              WHERE m.season_id = s.id
+                                AND m.status IN ('claimed', 'running', 'finished')))
          OR (s.submissions_close_at <= now()
-             AND coalesce(s.rules -> 'closure' ->> 'policy', 'settle') <> 'admin'
+             AND coalesce(s.rules -> 'closure' ->> 'policy', 'settle') NOT IN ('admin', 'finals')
+             AND NOT EXISTS (SELECT 1 FROM season_finals(s.id))
              AND (
                 (coalesce(s.rules -> 'closure' ->> 'policy', 'settle') = 'deadline'
                  AND s.submissions_close_at
@@ -45,6 +57,21 @@ WITH live AS (
       FROM closed
      WHERE m.season_id = closed.id AND m.status = 'pending'
  RETURNING m.id
+), unplayed AS (
+    -- A round still waiting when the season closes never starts, and its countdown, if posted,
+    -- ends now rather than counting down to nothing.
+    UPDATE season_rounds r
+       SET cancelled_at = now()
+      FROM closed
+     WHERE r.season_id = closed.id AND r.applied_at IS NULL AND r.cancelled_at IS NULL
+ RETURNING r.n
+), silenced AS (
+    UPDATE announcements a
+       SET ends_at = now()
+      FROM closed
+     WHERE a.season_id = closed.id AND a.source IS NOT NULL
+       AND (a.ends_at IS NULL OR a.ends_at > now())
+ RETURNING a.id
 ), podium AS (
     -- THE PODIUM, FROZEN IN THE STATEMENT THAT CLOSES: first to third on every ladder, one place
     -- per owner, no baselines (podium_of). It reads the season's `active` versions, which neither

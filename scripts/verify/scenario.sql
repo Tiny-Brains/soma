@@ -1294,3 +1294,192 @@ SELECT count(*) FILTER (WHERE ms.visibility = 'public') AS public_medals, count(
   FROM season_podium p JOIN seasons ms ON ms.id = p.season_id
  WHERE p.owner_id = '00000000-0000-0000-0000-0000000000a1'
    AND p.version_id IN ('20000000-0000-0000-0000-0000000000f8', '20000000-0000-0000-0000-0000000000f9');
+
+\echo '===== rounds, the idle fill and the finals: a season whose score is not its versions'' age ====='
+-- A season of its own, rolled back at the end: two competitors -- dora's old version with 400
+-- games and a settled sigma, eve's new one with ten -- and a baseline, one two-seat board, played
+-- in weekly rounds of 4 games with a sigma floor of 3. Everything below walks the shipped
+-- statements; the clock and gate calls are made as the clocks make them.
+BEGIN;
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, rules)
+VALUES ('50000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-00000000000a', 9,
+        'Rounds 2026', 'rounds-2026', 'sha256:e1', now() - interval '10 days', now() + interval '10 days',
+        '{"rounds": {"enabled": true, "days": 7, "games": 4, "sigma_floor": 3, "warn_minutes": 15}}');
+INSERT INTO users (id, handle, role) VALUES
+  ('00000000-0000-0000-0000-0000000000d1', 'rd-dora', 'competitor'),
+  ('00000000-0000-0000-0000-0000000000d2', 'rd-eve', 'competitor'),
+  ('00000000-0000-0000-0000-0000000000d3', 'baseline.rd-wall', 'baseline');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-00000000000a', 'old hand'),
+  ('e0000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-00000000000a', 'newcomer'),
+  ('e0000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-00000000000a', 'wall');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, weights_hash, manifest_hash, orion_version) VALUES
+  ('20000000-0000-0000-0000-0000000000d1', 'e0000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 1, 'active', 'nano', 'sha256:wd1', 'sha256:md1', '1.8.1'),
+  ('20000000-0000-0000-0000-0000000000d2', 'e0000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 1, 'active', 'nano', 'sha256:wd2', 'sha256:md2', '1.8.1'),
+  ('10000000-0000-0000-0000-0000000000d3', 'e0000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 1, 'active', 'nano', 'sha256:wd3', 'sha256:md3', '1.8.1');
+INSERT INTO ratings (version_id, ladder, mu, sigma, matches_played) VALUES
+  ('20000000-0000-0000-0000-0000000000d1', 'open', 30, 0.7, 400),
+  ('20000000-0000-0000-0000-0000000000d2', 'open', 32, 1.3, 10),
+  ('10000000-0000-0000-0000-0000000000d3', 'open', 26, 1.0, 300);
+INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
+  ('70000000-0000-0000-0000-0000000000e1', '50000000-0000-0000-0000-0000000000e1', 'rounds-board', 2, 24, 24, 'sha256:re1', '{"id": "rounds-board"}', true, '00000000-0000-0000-0000-0000000000ad');
+
+\echo '--- the schedule: round 1 at the window''s open, born announced (expect INSERT 0 1, then 1 | round | 4 | t | f)'
+EXECUTE w_schedule ('00000000-0000-0000-0000-00000000000a');
+SELECT n, kind, games, announced_at IS NOT NULL AS announced, applied_at IS NOT NULL AS applied
+  FROM season_rounds WHERE season_id = '50000000-0000-0000-0000-0000000000e1';
+\echo '--- count starts it under its fence: every sigma raised to the floor 3, mu kept (expect UPDATE 1; then 30 3 | 32 3 | 26 3)'
+EXECUTE c_fence ('2026-09-08 00:00:00+00', 1);
+EXECUTE c_round ('2026-09-08 00:00:00+00', 1);
+SELECT version_id, mu, sigma FROM ratings
+ WHERE version_id IN ('20000000-0000-0000-0000-0000000000d1', '20000000-0000-0000-0000-0000000000d2', '10000000-0000-0000-0000-0000000000d3')
+ ORDER BY version_id DESC;
+\echo '    ... and a stale fence starts nothing (expect UPDATE 0)'
+EXECUTE c_round ('2026-09-07 00:00:00+00', 1);
+\echo '--- the next round, on the grid after now: day 14 of the window (expect INSERT 0 1, then 2 | 14 days); and never a second waiting one (expect INSERT 0 0)'
+EXECUTE w_schedule ('00000000-0000-0000-0000-00000000000a');
+SELECT n, starts_at - (SELECT submissions_open_at FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1') AS after_open
+  FROM season_rounds WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND applied_at IS NULL;
+EXECUTE w_schedule ('00000000-0000-0000-0000-00000000000a');
+
+\echo '--- pair in round 1: every version wants the round''s 4 whatever its age (expect quota 4 for all three, rooms 4 each, room 12, round n 1)'
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e ->> 'played' AS played
+  FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
+SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
+SELECT (:'body')::json ->> 'room' AS room, (:'body')::json -> 'round' AS round, (:'body')::json -> 'limits' ->> 'strict_rooms' AS strict;
+\echo '--- the insert stamps the round the match counts for (expect INSERT 0 2, then 901 | 1)'
+SELECT epoch AS rep FROM clocks WHERE key = 'roster' \gset
+EXECUTE p_insert (:rep, '50000000-0000-0000-0000-0000000000e1', 901, '70000000-0000-0000-0000-0000000000e1',
+  '{20000000-0000-0000-0000-0000000000d2,10000000-0000-0000-0000-0000000000d3}', NULL, gen_random_uuid(), 5);
+SELECT seed, round FROM matches WHERE seed = 901;
+\echo '--- a rated round-1 game for dora and the wall: round_games counts it; the queued 901 is in flight for eve and the wall (expect dora 3 of 4, eve 3, wall 2 -- least-played first among equal wants)'
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+VALUES ('11111111-1111-1111-1111-1111111111e1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 902,
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9001, 1);
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
+  ('11111111-1111-1111-1111-1111111111e1', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
+  ('11111111-1111-1111-1111-1111111111e1', 1, '10000000-0000-0000-0000-0000000000d3', 'sha256:wd3', 'sha256:md3', 2, 1, 0);
+SELECT version_id, games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) ORDER BY 1;
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS played
+  FROM json_array_elements((:'body')::json -> 'wants') e;
+
+\echo '--- the idle fill: off, no lanes are read (expect spare null); on at 10 games with mini-1''s lanes live, the target is 10, less what each has played and holds in the round (expect wall 8, dora 9, eve 9, and a spare number)'
+SELECT (:'body')::json -> 'spare' AS spare_off;
+EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": true, "games": 10}', '00000000-0000-0000-0000-0000000000ad');
+UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-1';
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
+SELECT (:'body')::json -> 'spare' IS NOT NULL AS spare_read;
+\echo '    ... a fill without games, or with a key it does not know, writes nothing (expect INSERT 0 0 twice)'
+EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": true}', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": false, "gmaes": 3}', '00000000-0000-0000-0000-0000000000ad');
+\echo '    ... and a token exchange that reports slots marks a runner as one that plays; one that reports none does not (expect t, f)'
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 3, 2400000, 1);
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-admit', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1);
+SELECT label, plays_matches FROM runners WHERE label IN ('rd-match', 'rd-admit') ORDER BY label DESC;
+
+\echo '--- the countdown: round 2 moved to ten minutes from now is inside its fifteen-minute warning (expect UPDATE 1; one live public line naming the season, at = the start; then two bell rows, dora and eve, none for the wall)'
+UPDATE season_rounds SET starts_at = now() + interval '10 minutes'
+ WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND n = 2;
+EXECUTE w_announce ('00000000-0000-0000-0000-00000000000a');
+SELECT kind, body, at = (SELECT starts_at FROM season_rounds WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND n = 2) AS at_is_start,
+       announcement_live(a) AS live, source
+  FROM announcements a WHERE season_id = '50000000-0000-0000-0000-0000000000e1';
+EXECUTE n_round ('00000000-0000-0000-0000-00000000000a');
+SELECT u.handle, n.subject, n.data ->> 'games' AS games, n.dedupe_key LIKE 'round:%' AS keyed
+  FROM notifications n JOIN users u ON u.id = n.user_id WHERE n.dedupe_key LIKE 'round:50000000-0000-0000-0000-0000000000e1%' ORDER BY 1;
+\echo '    ... again: nothing twice (expect UPDATE 0, INSERT 0 0)'
+EXECUTE w_announce ('00000000-0000-0000-0000-00000000000a');
+EXECUTE n_round ('00000000-0000-0000-0000-00000000000a');
+
+\echo '===== the finals, the admin''s ====='
+\echo '--- while the window is open they are refused: round 2 waits, and the window is open (expect INSERT 0 0; waiting t, window_open t)'
+EXECUTE r_create ('ants', 'rounds-2026', 'finals', NULL, 2, 4, 0.5, 5, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_create_why ('ants', 'rounds-2026', 'finals', NULL, 2, 4, 0.5, 5) \gset cw_
+SELECT (:'cw_body')::json ->> 'waiting' AS waiting, (:'cw_body')::json ->> 'window_open' AS window_open;
+\echo '--- the window closes; round 2 is cancelled by the admin, and its countdown ends with it (expect INSERT 0 1 audit; cancelled t; the line no longer live)'
+UPDATE seasons SET submissions_close_at = now() - interval '1 minute', rules = rules || '{"closure": {"enabled": true, "policy": "finals"}}'
+ WHERE id = '50000000-0000-0000-0000-0000000000e1';
+EXECUTE r_update ('ants', 'rounds-2026', 2, NULL, NULL, NULL, NULL, NULL, true, '00000000-0000-0000-0000-0000000000ad');
+SELECT cancelled_at IS NOT NULL AS cancelled FROM season_rounds WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND n = 2;
+SELECT announcement_live(a) AS still_live FROM announcements a WHERE season_id = '50000000-0000-0000-0000-0000000000e1';
+\echo '    ... a cancelled round takes nothing more (expect INSERT 0 0; cancelled t)'
+EXECUTE r_update ('ants', 'rounds-2026', 2, NULL, 9, NULL, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_update_why ('ants', 'rounds-2026', 2, NULL, 9, NULL, NULL, NULL, NULL) \gset uw_
+SELECT (:'uw_body')::json ->> 'cancelled' AS cancelled;
+\echo '--- out-of-range numbers are refused and named (expect INSERT 0 0; valid f)'
+EXECUTE r_create ('ants', 'rounds-2026', 'finals', NULL, 2.5, 4, 1.5, 5, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_create_why ('ants', 'rounds-2026', 'finals', NULL, 2.5, 4, 1.5, 5) \gset cv_
+SELECT (:'cv_body')::json ->> 'valid' AS valid;
+\echo '--- a submission still being admitted holds the finals back (expect INSERT 0 0; admitting 1), rolled back to a savepoint'
+SAVEPOINT admitting;
+INSERT INTO model_versions (model_id, game_id, season_id, version, status) VALUES
+  ('e0000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 2, 'testing');
+EXECUTE r_create ('ants', 'rounds-2026', 'finals', NULL, 2, 4, 0.5, 5, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_create_why ('ants', 'rounds-2026', 'finals', NULL, 2, 4, 0.5, 5) \gset ca_
+SELECT (:'ca_body')::json ->> 'admitting' AS admitting;
+ROLLBACK TO SAVEPOINT admitting;
+\echo '--- the finals, starting now: 2 games each, sigma floor 4, mu halfway to the mean (expect INSERT 0 1 audit; then 3 | finals | 2)'
+EXECUTE r_create ('ants', 'rounds-2026', 'finals', now(), 2, 4, 0.5, 5, '00000000-0000-0000-0000-0000000000ad');
+SELECT n, kind, games FROM season_rounds WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND kind = 'finals';
+\echo '    ... and nothing after them, of either kind (expect INSERT 0 0 twice)'
+EXECUTE r_create ('ants', 'rounds-2026', 'round', NULL, 2, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_create ('ants', 'rounds-2026', 'finals', NULL, 3, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+\echo '--- count starts them: mean mu 29.33, so dora 29.67, eve 30.67, wall 27.67, every sigma 4; the queued 901 is cancelled ROUND_ENDED (expect UPDATE 1, the three ratings, then 901 cancelled ROUND_ENDED)'
+EXECUTE c_round ('2026-09-08 00:00:00+00', 1);
+SELECT version_id, round(mu::numeric, 2) AS mu, sigma FROM ratings
+ WHERE version_id IN ('20000000-0000-0000-0000-0000000000d1', '20000000-0000-0000-0000-0000000000d2', '10000000-0000-0000-0000-0000000000d3')
+ ORDER BY version_id DESC;
+SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 901;
+\echo '--- pair in the finals: the wall asks for nothing and has no wall of its own; the two entries want 2 behind a strict room (expect dora 2, eve 2 -- no wall row; rooms dora 2, eve 2; strict t; fill ignored, spare null)'
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
+SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
+SELECT (:'body')::json -> 'limits' ->> 'strict_rooms' AS strict, (:'body')::json -> 'spare' AS spare;
+\echo '--- one finals game each: not done, and the season stays open whatever its policy says (expect entries 2, complete 0, done f; closed f)'
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+VALUES ('11111111-1111-1111-1111-1111111111e2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 903,
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9002, 3);
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
+  ('11111111-1111-1111-1111-1111111111e2', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
+  ('11111111-1111-1111-1111-1111111111e2', 1, '20000000-0000-0000-0000-0000000000d2', 'sha256:wd2', 'sha256:md2', 2, 1, 0);
+SELECT entries, complete, done FROM season_finals('50000000-0000-0000-0000-0000000000e1');
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
+\echo '--- the leaderboard counts the round beside the season (expect round finals 2, each entry''s round_matches 1, the wall 0)'
+EXECUTE x_leaderboard ('ants', 'open', 10, 0, 3.0, 'rounds-2026') \gset lb_
+SELECT (:'lb_body')::json -> 'round' AS round;
+SELECT e ->> 'model' AS model, e ->> 'round_matches' AS round_matches, e ->> 'matches' AS matches
+  FROM json_array_elements((:'lb_body')::json -> 'entries') e ORDER BY 1;
+\echo '--- the admin extends the running finals to 3 (expect INSERT 0 1); a start move on a started round is refused (expect INSERT 0 0; started t); back to 2'
+EXECUTE r_update ('ants', 'rounds-2026', 3, NULL, 3, NULL, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_update ('ants', 'rounds-2026', 3, now() + interval '1 hour', NULL, NULL, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE r_update_why ('ants', 'rounds-2026', 3, now() + interval '1 hour', NULL, NULL, NULL, NULL, NULL) \gset us_
+SELECT (:'us_body')::json ->> 'started' AS started;
+EXECUTE r_update ('ants', 'rounds-2026', 3, NULL, 2, NULL, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
+\echo '--- the second game each, with one match still running: done, but nothing folds after the podium, so the close waits (expect done t; closed f)'
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+VALUES ('11111111-1111-1111-1111-1111111111e3', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 904,
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9003, 3);
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
+  ('11111111-1111-1111-1111-1111111111e3', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 2, 1, 0),
+  ('11111111-1111-1111-1111-1111111111e3', 1, '20000000-0000-0000-0000-0000000000d2', 'sha256:wd2', 'sha256:md2', 1, 5, 0);
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, claim_token, lease_expires_at, round)
+VALUES ('11111111-1111-1111-1111-1111111111e4', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 905,
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'running', gen_random_uuid(), now() + interval '5 minutes', 3);
+SELECT done FROM season_finals('50000000-0000-0000-0000-0000000000e1');
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
+\echo '--- it finishes and is rated: the close takes the season, the podium is frozen from the finals (expect closed t; open places 1 and 2, the two entries)'
+UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9004 WHERE seed = 905;
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
+SELECT ladder, place FROM season_podium WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND ladder = 'open';
+\echo '--- the admin''s rounds document reads it all back (expect state closed, policy finals, current 3, 3 rounds, finals done, 3 versions)'
+EXECUTE r_doc ('ants', 'rounds-2026') \gset rd_
+SELECT (:'rd_body')::json ->> 'state' AS state, (:'rd_body')::json ->> 'policy' AS policy,
+       (:'rd_body')::json ->> 'current' AS current, json_array_length((:'rd_body')::json -> 'rounds') AS rounds,
+       (:'rd_body')::json -> 'finals' ->> 'done' AS done, json_array_length((:'rd_body')::json -> 'versions') AS versions;
+ROLLBACK;

@@ -45,18 +45,22 @@
     "cache_read": { "soma-cache": [null, null] }
   },
   "expect": {
-    "calls.db_write[1].task_id": "pass",
-    "calls.db_write[2].task_id": "withdraw",
-    "calls.db_write[3].task_id": "notify_promoted",
-    "calls.cache_invalidate[0].input.namespaces": ["ladder", "season"]
+    "calls.db_write[1].task_id": "round",
+    "calls.db_write[2].task_id": "pass",
+    "calls.db_write[3].task_id": "withdraw",
+    "calls.db_write[4].task_id": "notify_promoted",
+    "calls.cache_invalidate[0].input.namespaces": ["ladder", "season"],
+    "calls.cache_invalidate[1].input.namespaces": ["ladder", "season"]
   },
-  "expect_calls": { "db_write": [{}, {}, {}, {}] },
+  "expect_calls": { "db_write": [{}, {}, {}, {}, {}] },
   "expect_tasks": [
     "probe",
     "generation.zero",
     "fresh",
     "fence",
     "fenced",
+    "round",
+    "invalidate_round.bump",
     "batch",
     "pass",
     "invalidate_pass.bump",

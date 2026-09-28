@@ -264,7 +264,7 @@ $$;
 -- down can read `rules` with a plain `->>` and a cast without a defensive coalesce around the
 -- shape. A document that reached the column is a document of this shape.
 --
--- Nine blocks, each with its own `enabled`, so a rule is turned on or off per season without a
+-- Ten blocks, each with its own `enabled`, so a rule is turned on or off per season without a
 -- schema change -- and so one season can be a nano-only cohort and the next an open field with no
 -- code between them. EVERY block now defaults OFF: a season silent about a rule does not play it.
 -- The tenth was `repo`, the lone default-true block, and it was the anti-impersonation guard for a
@@ -379,9 +379,23 @@ LANGUAGE sql IMMUTABLE AS $$
                                             ARRAY['nano','micro','mini','small','large','open']),
       ('standings', 'lambda',              'num',     0, 1000, NULL),
       ('standings', 'visibility',          'enum', NULL, NULL, ARRAY['live', 'hidden_until_close']),
-    -- ---- closure: when the season ends.
+    -- ---- rounds: THE SEASON PLAYED IN ROUNDS, so a version's age is not its score. Every `days`
+    --      from the window's open the withdraw clock schedules a season_rounds row; count applies it
+    --      at its start (every active version's sigma raised to `sigma_floor`, mu drawn `mu_shrink`
+    --      of the way to the season's mean) and pair gives every version the same `games` in it.
+    --      `warn_minutes` before, the site says so. Absent keys are the generator's defaults (7
+    --      days, 100 games, 15 minutes, no floor, no shrink). The finals are not a rule: an admin
+    --      starts them, with their own numbers, once the window has closed (season_rounds).
+      ('rounds', 'enabled',      'bool', NULL, NULL, NULL),
+      ('rounds', 'days',         'int',     1,   60, NULL),
+      ('rounds', 'games',        'int',     1, 100000, NULL),
+      ('rounds', 'sigma_floor',  'num',  1e-9, 1000, NULL),
+      ('rounds', 'mu_shrink',    'num',     0,    1, NULL),
+      ('rounds', 'warn_minutes', 'int',     0, 1440, NULL),
+    -- ---- closure: when the season ends. `finals` never settles itself: once the window closes it
+    --      waits for an admin to start the finals, and closes when every entry has played them.
       ('closure', 'enabled',           'bool', NULL, NULL, NULL),
-      ('closure', 'policy',            'enum', NULL, NULL, ARRAY['settle', 'deadline', 'admin']),
+      ('closure', 'policy',            'enum', NULL, NULL, ARRAY['settle', 'deadline', 'admin', 'finals']),
       ('closure', 'settle_grace_days', 'int',     0,  365, NULL)
     ) AS t (block, key, kind, lo, hi, allowed);
 $$;
@@ -470,6 +484,25 @@ CREATE FUNCTION season_fleet_ok(f jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE 
                         WHERE k NOT IN ('matches', 'admissions'));
 $$;
 
+-- THE IDLE FILL'S SHAPE (seasons.fill below). `enabled`, always; `games`, the number of rated games
+-- a version is topped up to in the window (the current round, or the season when it has none),
+-- required while enabled; `headroom`, runner lanes left free for the queue a new submission makes.
+CREATE FUNCTION season_fill_ok(f jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT jsonb_typeof(f) = 'object'
+       AND jsonb_typeof(f -> 'enabled') = 'boolean'
+       AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(f) AS k
+                        WHERE k NOT IN ('enabled', 'games', 'headroom'))
+       AND (f -> 'games' IS NULL
+            OR (jsonb_typeof(f -> 'games') = 'number'
+                AND (f ->> 'games')::numeric = trunc((f ->> 'games')::numeric)
+                AND (f ->> 'games')::numeric BETWEEN 1 AND 100000))
+       AND (f -> 'headroom' IS NULL
+            OR (jsonb_typeof(f -> 'headroom') = 'number'
+                AND (f ->> 'headroom')::numeric = trunc((f ->> 'headroom')::numeric)
+                AND (f ->> 'headroom')::numeric BETWEEN 0 AND 1000))
+       AND (NOT (f ->> 'enabled')::boolean OR f -> 'games' IS NOT NULL);
+$$;
+
 -- seasons.providers is null (any provider) or a JSON array of non-empty slug strings. A CHECK cannot
 -- hold a subquery, so the array walk lives here (as season_fleet_ok's does).
 CREATE FUNCTION season_providers_ok(p jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
@@ -553,6 +586,16 @@ CREATE TABLE seasons (
     -- A column, not a rule, because a platform admin changes it while the season is live.
     fleet                jsonb       NOT NULL DEFAULT '{"matches":"platform","admissions":"platform"}'::jsonb,
 
+    -- THE IDLE FILL: what pair does with runner lanes nothing else wants. Off, the ladder asks only
+    -- for what a round's quota or the settling rule asks for, and a settled field leaves the fleet
+    -- idle while a version admitted last week sits on a tenth of the games of one admitted on day
+    -- one. On, pair counts the free lanes of the runners that may play this season and queues
+    -- matches into them, least-played version first, until every version has `games` in the
+    -- window. A column and not a rule, like `fleet`: it is capacity, which changes with the fleet
+    -- while the season is live, and it never moves a rating's meaning -- only how many games one
+    -- rests on. season_fill_ok() above is the shape; the finals ignore it.
+    fill                 jsonb       NOT NULL DEFAULT '{"enabled":false}'::jsonb,
+
     -- WHICH IDENTITY PROVIDERS MAY ENTER. NULL means any enabled provider (today's season). A JSON
     -- array of provider slugs restricts entry to identities from them: a university season lists its
     -- own provider so a GitHub identity cannot enter even if a login is listed. jsonb, not text[], so
@@ -584,6 +627,7 @@ CREATE TABLE seasons (
     -- A private season is watchable only by its participants, so it can only be entered by them.
     CONSTRAINT seasons_private_restricted CHECK (visibility <> 'private' OR entry = 'restricted'),
     CONSTRAINT seasons_fleet_shape      CHECK (season_fleet_ok(fleet)),
+    CONSTRAINT seasons_fill_shape       CHECK (season_fill_ok(fill)),
     CONSTRAINT seasons_providers_shape  CHECK (season_providers_ok(providers))
 );
 
@@ -856,6 +900,11 @@ CREATE TABLE runners (
     -- reported, or an admitting one, which the claim does not bound.
     match_timeout_ms bigint,
     seat_concurrency smallint,
+
+    -- WHETHER IT PLAYS MATCHES: it has reported match slots at a token exchange. An admitting runner
+    -- reports none (its row keeps the default four above, which it never uses), so pair's idle fill
+    -- counts the lanes of these runners alone, rather than queueing work for slots nobody polls.
+    plays_matches boolean     NOT NULL DEFAULT false,
 
     first_seen_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at  timestamptz NOT NULL DEFAULT now(),
@@ -1273,6 +1322,71 @@ CREATE TABLE baseline_events (
 );
 CREATE INDEX baseline_events_version_idx ON baseline_events (version_id, at);
 
+-- -------------------------------------------------------------- season rounds
+
+-- A SEASON IN ROUNDS, AND ITS FINALS. A row is a scheduled reset: at `starts_at` the count clock
+-- (the only writer of a ladder) raises every active version's Open sigma to `sigma_floor` and draws
+-- its mu `mu_shrink` of the way to the season's mean, cancels the queue paired under the round
+-- before, and stamps `applied_at`; from then on the round is the season's CURRENT one (the newest
+-- applied row, season_round()), pair stamps it on every match it pairs and gives each active
+-- version `games` rated matches in it, and the leaderboard counts them. Raising every sigma to one
+-- floor gives an old version and a new one the same 3-sigma discount, which is what stops a
+-- version's age being its score; `mu_shrink` 1 with the prior's sigma is a full reset.
+--
+-- Two kinds. `round`: the weekly ones the withdraw clock schedules from `rules.rounds`, and any an
+-- admin adds by hand. `finals`: the admin's alone, only once the window has closed, with numbers
+-- chosen then; `games` becomes a wall no entry passes, and the season closes when every entry has
+-- played them. `warn_minutes` before the start the withdraw clock posts the countdown
+-- (`announced_at`). An unapplied row may be edited or cancelled; nothing deletes one.
+CREATE TABLE season_rounds (
+    season_id    uuid        NOT NULL REFERENCES seasons (id),
+    n            int         NOT NULL,
+    kind         text        NOT NULL,
+    starts_at    timestamptz NOT NULL,
+    games        int         NOT NULL,
+    sigma_floor  float8,
+    mu_shrink    float8      NOT NULL DEFAULT 0,
+    warn_minutes int         NOT NULL DEFAULT 15,
+    created_by   uuid        REFERENCES users (id),   -- null: scheduled by the clock from the rules
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    announced_at timestamptz,
+    applied_at   timestamptz,
+    cancelled_at timestamptz,
+    PRIMARY KEY (season_id, n),
+    CONSTRAINT season_rounds_n           CHECK (n >= 1),
+    CONSTRAINT season_rounds_kind        CHECK (kind IN ('round', 'finals')),
+    CONSTRAINT season_rounds_games       CHECK (games BETWEEN 1 AND 100000),
+    CONSTRAINT season_rounds_sigma_floor CHECK (sigma_floor IS NULL OR sigma_floor > 0 AND sigma_floor <= 1000),
+    CONSTRAINT season_rounds_mu_shrink   CHECK (mu_shrink BETWEEN 0 AND 1),
+    CONSTRAINT season_rounds_warn        CHECK (warn_minutes BETWEEN 0 AND 1440),
+    CONSTRAINT season_rounds_one_end     CHECK (applied_at IS NULL OR cancelled_at IS NULL)
+);
+-- One finals a season, and one round waiting at a time: an admin moves the waiting one rather than
+-- stacking a second behind it, and the clock schedules the next only once it has started.
+CREATE UNIQUE INDEX season_rounds_one_finals_uniq
+    ON season_rounds (season_id) WHERE kind = 'finals' AND cancelled_at IS NULL;
+CREATE UNIQUE INDEX season_rounds_one_waiting_uniq
+    ON season_rounds (season_id) WHERE applied_at IS NULL AND cancelled_at IS NULL;
+
+-- A ROUND'S NUMBERS AS AN ADMIN GIVES THEM, each optional here (the schedule requires `games`
+-- itself): the one rule the schedule and edit writes and their `why` all ask, so a write and its
+-- diagnosis cannot disagree about why a request failed. The table's CHECKs say the same.
+CREATE FUNCTION season_round_numbers_ok(p_games float8, p_sigma_floor float8, p_mu_shrink float8,
+                                        p_warn float8)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT (p_games IS NULL OR (p_games = trunc(p_games) AND p_games BETWEEN 1 AND 100000))
+       AND (p_sigma_floor IS NULL OR (p_sigma_floor > 0 AND p_sigma_floor <= 1000))
+       AND (p_mu_shrink IS NULL OR p_mu_shrink BETWEEN 0 AND 1)
+       AND (p_warn IS NULL OR (p_warn = trunc(p_warn) AND p_warn BETWEEN 0 AND 1440));
+$$;
+
+-- THE SEASON'S CURRENT ROUND: the newest one applied, or NULL while it has none.
+CREATE FUNCTION season_round(p_season uuid) RETURNS season_rounds LANGUAGE sql STABLE AS $$
+    SELECT r.* FROM season_rounds r
+     WHERE r.season_id = p_season AND r.applied_at IS NOT NULL
+     ORDER BY r.n DESC LIMIT 1;
+$$;
+
 -- -------------------------------------------------------------------- matches
 
 -- A match is born 'pending' by pair with everything needed to play it and nothing about how it
@@ -1296,6 +1410,10 @@ CREATE TABLE matches (
     ladders              ladder[]     NOT NULL,   -- derived at insert; empty for a trial
     trial_version_id     uuid         REFERENCES model_versions (id),
     pairing_id           uuid,                    -- the pairing run that proposed it, for audit
+    -- THE ROUND IT WAS PAIRED IN (season_rounds.n), null for a trial or a season with no round. A
+    -- round's games are the rated matches carrying its number, so a match paired before a reset
+    -- and folded after it counts for the round it was played for and not the one it landed in.
+    round                int,
 
     -- THE RULE THE WAVE PLAYS BY, pinned here rather than read at judging time -- the same reason
     -- engine_digest is a copy and not a lookup. Kalam applies it turn by turn and count reads its
@@ -1359,6 +1477,8 @@ CREATE TABLE matches (
     CONSTRAINT matches_listed_played      CHECK (NOT listed OR status IN ('finished', 'rated')),
     CONSTRAINT matches_strike_ceiling     CHECK (strike_ceiling > 0),
     CONSTRAINT matches_lapses_bounded     CHECK (lapses BETWEEN 0 AND 3),
+    CONSTRAINT matches_round_fkey         FOREIGN KEY (season_id, round) REFERENCES season_rounds (season_id, n),
+    CONSTRAINT matches_trial_no_round     CHECK (trial_version_id IS NULL OR round IS NULL),
 
     -- The status and the columns that go with it cannot disagree. This is also half of what
     -- confines a runner: `runner_gate` holds UPDATE on the match player's columns only, so there is
@@ -1742,6 +1862,11 @@ CREATE INDEX posts_published_idx ON posts (published_at DESC, id DESC) WHERE pub
 -- A LINE ACROSS EVERY PAGE. Live while not disabled and not past `ends_at`. Its link is a site path
 -- or an https:// URL: only an admin writes one. (Notify keeps the site-path rule, since each send
 -- becomes a notifications row.)
+--
+-- THE CLOCK WRITES ONE TOO: a season round's countdown ("Scores reset in 14 min"). That row names
+-- its `season_id`, the instant it counts down to (`at`, which web draws as a live countdown so the
+-- words never go stale), and a `source` naming the round, unique, which is what makes the withdraw
+-- clock's post idempotent; it has no publisher and ends at `at`.
 CREATE TABLE announcements (
     id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     kind         text        NOT NULL,
@@ -1749,14 +1874,18 @@ CREATE TABLE announcements (
     link         text,
     dismissable  boolean     NOT NULL DEFAULT true,
     ends_at      timestamptz,
-    published_by uuid        NOT NULL REFERENCES users (id),
+    season_id    uuid        REFERENCES seasons (id),
+    at           timestamptz,
+    source       text        UNIQUE,
+    published_by uuid        REFERENCES users (id),
     published_at timestamptz NOT NULL DEFAULT now(),
     disabled_at  timestamptz,
     disabled_by  uuid        REFERENCES users (id),
     CONSTRAINT announcements_kind      CHECK (kind IN ('notice', 'season', 'maintenance', 'incident')),
     CONSTRAINT announcements_body      CHECK (line_ok(body, 200)),
     CONSTRAINT announcements_link      CHECK (link IS NULL OR link_ok(link)),
-    CONSTRAINT announcements_disabled  CHECK ((disabled_at IS NULL) = (disabled_by IS NULL))
+    CONSTRAINT announcements_disabled  CHECK ((disabled_at IS NULL) = (disabled_by IS NULL)),
+    CONSTRAINT announcements_publisher CHECK (published_by IS NOT NULL OR source IS NOT NULL)
 );
 CREATE INDEX announcements_live_idx ON announcements (published_at DESC) WHERE disabled_at IS NULL;
 
@@ -1990,6 +2119,40 @@ CREATE INDEX matches_trial_history_idx
 CREATE INDEX matches_runner_in_flight_idx
     ON matches (played_by) WHERE status IN ('claimed', 'running');
 
+-- A round's games: pair's demand, the finals' close and the leaderboard count them per version.
+CREATE INDEX matches_season_round_idx
+    ON matches (season_id, round) WHERE round IS NOT NULL;
+
+-- EACH VERSION'S RATED GAMES IN ONE ROUND of a season: the rated matches pair stamped with it. One
+-- function, so pair's quota, the finals' close, the leaderboard and the admin's progress count the
+-- same thing.
+CREATE FUNCTION round_games(p_season uuid, p_round int)
+RETURNS TABLE (version_id uuid, games bigint) LANGUAGE sql STABLE AS $$
+    SELECT s.version_id, count(*)
+      FROM matches m JOIN match_seats s ON s.match_id = m.id
+     WHERE m.season_id = p_season AND m.round = p_round AND m.status = 'rated'
+     GROUP BY s.version_id;
+$$;
+
+-- WHERE A SEASON'S FINALS STAND: null with none (or one cancelled), else how many entries are in
+-- them, how many have played their games, and whether they are done -- started, and every active
+-- entry at its number. Baselines are not entries: they fill the last seats and are never waited for.
+CREATE FUNCTION season_finals(p_season uuid)
+RETURNS TABLE (n int, games int, starts_at timestamptz, applied boolean,
+               entries bigint, complete bigint, done boolean)
+LANGUAGE sql STABLE AS $$
+    SELECT r.n, r.games, r.starts_at, r.applied_at IS NOT NULL,
+           count(v.id), count(v.id) FILTER (WHERE coalesce(g.games, 0) >= r.games),
+           r.applied_at IS NOT NULL AND count(v.id) FILTER (WHERE coalesce(g.games, 0) < r.games) = 0
+      FROM season_rounds r
+      LEFT JOIN model_versions v ON v.season_id = r.season_id AND v.status = 'active'
+                                AND NOT EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id
+                                                 WHERE e.id = v.model_id AND u.role = 'baseline')
+      LEFT JOIN round_games(r.season_id, r.n) g ON g.version_id = v.id
+     WHERE r.season_id = p_season AND r.kind = 'finals' AND r.cancelled_at IS NULL
+     GROUP BY r.n, r.games, r.starts_at, r.applied_at;
+$$;
+
 -- match_seats ---------------------------------------------------------------
 
 -- a version's matches: GET /matches?version={id}, and the demand view's in-flight count
@@ -2112,6 +2275,15 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
         'entered_versions',   (SELECT count(*) FROM model_versions v
                                WHERE v.season_id = s.id),
         'matches_played',     s.matches_played,
+        -- THE ROUND IT IS IN, and the reset waiting to start: what the leaderboard's header says
+        -- ("Round 3 · 100 games each", "resets in 2 days", "Finals"). Null when it has none.
+        'round',      (SELECT json_build_object('n', r.n, 'kind', r.kind, 'games', r.games,
+                                                'started_at', r.applied_at)
+                         FROM season_round(s.id) r WHERE r.n IS NOT NULL),
+        'next_round', (SELECT json_build_object('n', w.n, 'kind', w.kind, 'games', w.games,
+                                                'starts_at', w.starts_at)
+                         FROM season_rounds w
+                        WHERE w.season_id = s.id AND w.applied_at IS NULL AND w.cancelled_at IS NULL),
         -- No `playing` here: it moves at every claim, finish and release, so it has its own
         -- uncached route (soma-pub-playing) and never invalidates the season document.
         'in_flight_versions', (SELECT count(*) FROM model_versions v

@@ -152,6 +152,8 @@ fn pair(input: &Value) -> Result<Value, Fault> {
                     Some(Want {
                         model_id: w.get("model_id")?.as_str()?.to_string(),
                         want: w.get("want")?.as_i64()?,
+                        // Games in the window; absent is none, which only moves a tie-break.
+                        played: w.get("played").and_then(Value::as_i64).unwrap_or(0),
                     })
                 })
                 .collect()
@@ -208,8 +210,34 @@ fn pair(input: &Value) -> Result<Value, Fault> {
         }
     }
 
+    // model_id -> seats left in the window (a round's quota or the idle fill's target), the same
+    // convention: absent is uncapped. `limits.strict_rooms` makes them walls (the finals).
+    let mut version_room: HashMap<String, i64> = HashMap::new();
+    if let Some(rows) = demand.get("rooms").and_then(Value::as_array) {
+        for r in rows {
+            if let (Some(v), Some(n)) =
+                (r.get("model_id").and_then(Value::as_str), r.get("room").and_then(Value::as_i64))
+            {
+                version_room.insert(v.to_string(), n);
+            }
+        }
+    }
+    let strict_rooms =
+        limits.and_then(|l| l.get("strict_rooms")).and_then(Value::as_bool).unwrap_or(false);
+
     let plan = choose::choose(
-        &Input { room, wants, pool, played, maps, cross_class_fraction, self_pairing, owner_room },
+        &Input {
+            room,
+            wants,
+            pool,
+            played,
+            maps,
+            cross_class_fraction,
+            self_pairing,
+            owner_room,
+            version_room,
+            strict_rooms,
+        },
         &mut Rng::from_str(seed),
     );
 

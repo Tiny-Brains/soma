@@ -1,0 +1,228 @@
+{
+  "workflow_id": "soma-admin-seasons-rounds-create",
+  "name": "Schedule a reset or the finals",
+  "description": "Platform admin only. `kind` is `round` (a score reset, any time the season is live) or `finals` (once its window has closed and nothing is still being admitted, once a season). `games` is what every entry plays in it and is required; `starts_at` defaults to `warn_minutes` (default 15) from now, so the countdown runs its full length; `sigma_floor` and `mu_shrink` are the reset (none and 0 when unsaid). At the start the count clock applies the reset and pair gives every active version the games -- a wall no entry passes in the finals -- and the season closes when the finals are done. One round waits at a time: move or cancel it (PATCH .../rounds/{n}) rather than stack a second. Refusals: 400 without a kind or games, 404, 409 season_closed / round_waiting / finals_scheduled / window_open / admitting, 422 for a past start or numbers out of range. 201 with the rounds document.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "and": [
+              {
+                "or": [
+                  { "===": [{ "var": "data.req.kind" }, "round"] },
+                  { "===": [{ "var": "data.req.kind" }, "finals"] }
+                ]
+              },
+              { "!==": [{ "var": "data.req.games" }, null] }
+            ]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "round_invalid",
+          "detail": "Give `kind` (\"round\" or \"finals\") and `games`, the matches every entry plays; `starts_at`, `sigma_floor`, `mu_shrink` and `warn_minutes` are optional."
+        },
+        "name": "A kind and a number of games"
+      }
+    },
+    {
+      "id": "write",
+      "name": "Schedule it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-rounds-create-write.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.kind" },
+            { "var": "data.req.starts_at" },
+            { "var": "data.req.games" },
+            { "var": "data.req.sigma_floor" },
+            { "var": "data.req.mu_shrink" },
+            { "var": "data.req.warn_minutes" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.made"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.made.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "not_written",
+      "description": "Nothing was written: read why, and answer the first reason that holds.",
+      "condition": { "$use": "none_written", "with": { "slot": "made" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why not",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-admin-seasons-rounds-create-why.sql" },
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.kind" },
+                { "var": "data.req.starts_at" },
+                { "var": "data.req.games" },
+                { "var": "data.req.sigma_floor" },
+                { "var": "data.req.mu_shrink" },
+                { "var": "data.req.warn_minutes" }
+              ],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "unknown",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.found" } },
+            "status": 404,
+            "body": { "error": "unknown_season" },
+            "name": "No such game or season"
+          }
+        },
+        {
+          "id": "closed",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.closed" } },
+            "status": 409,
+            "body": { "error": "season_closed", "detail": "A closed season plays no more rounds." },
+            "name": "It has closed"
+          }
+        },
+        {
+          "id": "waiting",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.waiting" } },
+            "status": 409,
+            "body": {
+              "error": "round_waiting",
+              "detail": "A round is already waiting to start. Move or cancel it first."
+            },
+            "name": "One waiting round at a time"
+          }
+        },
+        {
+          "id": "finals",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.finals" } },
+            "status": 409,
+            "body": {
+              "error": "finals_scheduled",
+              "detail": "The finals are scheduled: they are the season's last round."
+            },
+            "name": "Nothing after the finals"
+          }
+        },
+        {
+          "id": "valid",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "or": [
+                { "!": { "var": "temp_data.why.0.body.valid" } },
+                { "!!": { "var": "temp_data.why.0.body.past" } }
+              ]
+            },
+            "status": 422,
+            "body": {
+              "error": "round_invalid",
+              "detail": "games is a whole number from 1 to 100000, sigma_floor above 0 and at most 1000, mu_shrink from 0 to 1, warn_minutes from 0 to 1440, and starts_at not in the past."
+            },
+            "name": "Numbers in range"
+          }
+        },
+        {
+          "id": "window_open",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.window_open" } },
+            "status": 409,
+            "body": {
+              "error": "window_open",
+              "detail": "The finals start once submissions have closed, so every entry's last submission plays them."
+            },
+            "name": "Finals after the window"
+          }
+        },
+        {
+          "id": "admitting",
+          "use": "refuse",
+          "with": {
+            "when": { ">": [{ "var": "temp_data.why.0.body.admitting" }, 0] },
+            "status": 409,
+            "body": {
+              "error": "admitting",
+              "detail": "Submissions are still being admitted; the finals wait for every one of them."
+            },
+            "name": "Nobody left out"
+          }
+        },
+        {
+          "id": "other",
+          "use": "refuse",
+          "with": {
+            "when": true,
+            "status": 409,
+            "body": { "error": "round_not_scheduled" },
+            "name": "Anything else"
+          }
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "name": "Read the rounds back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-rounds.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}

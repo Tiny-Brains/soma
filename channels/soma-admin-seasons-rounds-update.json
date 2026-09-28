@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-admin-seasons-rounds-update",
+  "name": "soma-admin-seasons-rounds-update",
+  "description": "Moves, re-numbers or cancels a waiting round, or changes a running round's games (extends or cuts the finals). Platform admin.",
+  "tags": ["soma", "admin", "seasons"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["PATCH"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/rounds/{n}",
+  "workflow_id": "soma-admin-seasons-rounds-update",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

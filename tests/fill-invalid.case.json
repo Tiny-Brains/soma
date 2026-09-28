@@ -1,0 +1,20 @@
+{
+  "name": "fill-invalid: a fill switched on without games writes nothing and is 422 fill_invalid",
+  "workflow": "../workflows/soma-admin-seasons-fill.json",
+  "input": { "fill": { "enabled": true } },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [{ "body": { "role": "admin", "found": true, "closed": false, "valid": false } }]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 422,
+    "data.body.error": "fill_invalid"
+  }
+}

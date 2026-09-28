@@ -78,6 +78,10 @@ impl Entry {
 pub struct Want {
     pub model_id: String,
     pub want: i64,
+    /// Rated games in the window pair is filling -- the season's current round, or the whole
+    /// season when it has none. Equal wants are served least-played first, so the idle fill and a
+    /// round's quota close the gap between an old version and a new one instead of widening it.
+    pub played: i64,
 }
 
 /// A map, and how many seats are played on it.
@@ -110,6 +114,16 @@ pub struct Input {
     /// Looked up by key and never iterated: the document is built by `json_agg`, which promises no
     /// order, and a plan that depended on one would not be replayable from its own occurrence id.
     pub owner_room: HashMap<String, i64>,
+    /// model_id -> how many more seats that VERSION may take in the window: a round's quota (or the
+    /// idle fill's target) less what it has played and holds. Absent means uncapped, as above. It
+    /// is what stops a version with the games already being drawn as everyone's opponent -- the
+    /// way an old version piled up thousands of matches while a new one played eight.
+    pub version_room: HashMap<String, i64>,
+    /// Whether `version_room` is a wall or a preference. A round prefers an opponent with room and
+    /// falls back to one without rather than leave a wanting version unpaired; the finals make it a
+    /// wall, because every entry must end on the same number of games. A baseline is left out of
+    /// the map, so there is always someone to sit opposite the last version short of its games.
+    pub strict_rooms: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -118,6 +132,12 @@ pub struct Pairing {
     pub seats: Vec<String>,
     pub map: String,
     pub seed: i64,
+}
+
+/// The two seat ledgers an opponent draw reads: the owner's and the version's.
+struct Budgets<'m, 'k> {
+    owner: &'m HashMap<&'k str, i64>,
+    version: &'m HashMap<&'k str, i64>,
 }
 
 /// Choose up to `room` pairings.
@@ -166,10 +186,16 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
     let room_for = |budget: &HashMap<&str, i64>, owner: &str| -> i64 {
         budget.get(owner).copied().unwrap_or(i64::MAX)
     };
+    // The same ledger per version: seats it may still take in the window, spent as the plan grows.
+    let mut version_budget: HashMap<&str, i64> =
+        input.version_room.iter().map(|(v, n)| (v.as_str(), *n)).collect();
 
-    // Largest want first, ties by id so the order is the document's rather than the hash map's.
+    // Largest want first, then the least-played in the window, ties by id so the order is the
+    // document's rather than the hash map's.
     let mut queue: Vec<&Want> = input.wants.iter().filter(|w| w.want > 0).collect();
-    queue.sort_by(|a, b| b.want.cmp(&a.want).then(a.model_id.cmp(&b.model_id)));
+    queue.sort_by(|a, b| {
+        b.want.cmp(&a.want).then(a.played.cmp(&b.played)).then(a.model_id.cmp(&b.model_id))
+    });
 
     while out.len() < input.room {
         // The next version that still wants a match, in want order.
@@ -189,14 +215,15 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
 
         // Its owner is at their share of the queue across every model they hold. Spend the want
         // rather than spin, exactly as an unfillable map does: the next run may find room.
-        if room_for(&owner_budget, &a.owner_id) < 1 {
+        if room_for(&owner_budget, &a.owner_id) < 1 || room_for(&version_budget, &a.model_id) < 1 {
             remaining.insert(seat_a, 0);
             continue;
         }
 
         // The map comes FIRST, because it decides how many seats there are to fill.
         let map = map_for(a, &maps, input, rng);
-        let opponents = opponents(a, &pool, &remaining, input, &owner_budget, map.players - 1, rng);
+        let budgets = Budgets { owner: &owner_budget, version: &version_budget };
+        let opponents = opponents(a, &pool, &remaining, input, &budgets, map.players - 1, rng);
         if opponents.len() + 1 < map.players {
             // Not enough distinct versions to seat this map. Spend the want rather than spin:
             // the next run may have a fuller roster, or a smaller map.
@@ -214,6 +241,12 @@ pub fn choose(input: &Input, rng: &mut Rng) -> Vec<Pairing> {
         // Every seat of the match spends one of its owner's, the wanting side included.
         for owner in std::iter::once(&a.owner_id).chain(opponents.iter().map(|b| &b.owner_id)) {
             if let Some(r) = owner_budget.get_mut(owner.as_str()) {
+                *r -= 1;
+            }
+        }
+        // And one of each seated version's room in the window.
+        for v in std::iter::once(&a.model_id).chain(opponents.iter().map(|b| &b.model_id)) {
+            if let Some(r) = version_budget.get_mut(v.as_str()) {
                 *r -= 1;
             }
         }
@@ -265,15 +298,21 @@ fn map_for<'a>(a: &Entry, maps: &[&'a Map], input: &Input, rng: &mut Rng) -> &'a
 ///
 /// Returns fewer than `n` only when the pool cannot supply them; the caller treats that as
 /// unseatable rather than seating a version twice.
+///
+/// A version whose window room is spent is passed over: always under `strict_rooms`, and otherwise
+/// only while someone with room is left to take its place.
 fn opponents<'a>(
     a: &Entry,
     pool: &[&'a Entry],
     remaining: &HashMap<&str, i64>,
     input: &Input,
-    owner_budget: &HashMap<&str, i64>,
+    budgets: &Budgets,
     n: usize,
     rng: &mut Rng,
 ) -> Vec<&'a Entry> {
+    let owner_budget = budgets.owner;
+    let has_room =
+        |e: &Entry| budgets.version.get(e.model_id.as_str()).copied().unwrap_or(i64::MAX) > 0;
     let mut chosen: Vec<&'a Entry> = Vec::with_capacity(n);
     while chosen.len() < n {
         // Never the wanting version, and never anyone already seated in this match.
@@ -298,6 +337,8 @@ fn opponents<'a>(
                         > chosen.iter().filter(|c| c.owner_id == e.owner_id).count() as i64
             })
             .collect();
+        let with_room: Vec<&&Entry> = others.iter().copied().filter(|e| has_room(e)).collect();
+        let others = if input.strict_rooms || !with_room.is_empty() { with_room } else { others };
         if others.is_empty() {
             break;
         }
@@ -392,7 +433,7 @@ mod tests {
             room,
             wants: wants
                 .iter()
-                .map(|(id, w)| Want { model_id: id.to_string(), want: *w })
+                .map(|(id, w)| Want { model_id: id.to_string(), want: *w, played: 0 })
                 .collect(),
             pool,
             played: HashMap::new(),
@@ -400,6 +441,8 @@ mod tests {
             cross_class_fraction: 0.20,
             self_pairing: false,
             owner_room: HashMap::new(),
+            version_room: HashMap::new(),
+            strict_rooms: false,
         }
     }
 
@@ -704,6 +747,81 @@ mod tests {
         let out = choose(&inp, &mut Rng::from_str("occ"));
         assert_eq!(out.len(), 5);
         assert!(out.iter().all(|p| p.seats[1] == "settled"));
+    }
+
+    // ------------------------------------------------------- a round's quota, and the idle fill
+
+    #[test]
+    fn a_version_with_its_games_is_passed_over_while_another_has_room() {
+        // The old version has its round's games; the other two do not. Opponents come from the two.
+        let pool = vec![
+            entry("a", "nano", 25.0, 1.0),
+            entry("b", "nano", 25.0, 1.0),
+            entry("old", "nano", 25.0, 0.6),
+        ];
+        let mut i = input(20, &[("a", 20)], pool);
+        i.cross_class_fraction = 0.0;
+        i.version_room = HashMap::from([("old".to_string(), 0), ("b".to_string(), 50)]);
+        let out = choose(&i, &mut Rng::from_str("occ"));
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|p| p.seats[1] == "b"), "{out:?}");
+    }
+
+    #[test]
+    fn a_soft_room_falls_back_rather_than_leave_a_want_unpaired() {
+        // A round prefers someone with room, but a version short of its games is still paired
+        // against one that has them when there is nobody else.
+        let pool = vec![entry("a", "nano", 25.0, 1.0), entry("old", "nano", 25.0, 0.6)];
+        let mut i = input(3, &[("a", 3)], pool);
+        i.version_room = HashMap::from([("old".to_string(), 0)]);
+        assert_eq!(choose(&i, &mut Rng::from_str("occ")).len(), 3);
+    }
+
+    #[test]
+    fn a_strict_room_is_a_wall() {
+        // The finals: a version at its number of games is never seated again, even if that leaves
+        // a want unpaired this run.
+        let pool = vec![entry("a", "nano", 25.0, 1.0), entry("old", "nano", 25.0, 0.6)];
+        let mut i = input(3, &[("a", 3)], pool);
+        i.version_room = HashMap::from([("old".to_string(), 0)]);
+        i.strict_rooms = true;
+        assert!(choose(&i, &mut Rng::from_str("occ")).is_empty());
+    }
+
+    #[test]
+    fn a_room_is_spent_across_the_plan() {
+        // Room for two more: the third pairing cannot seat it, however many wants remain.
+        let pool = vec![entry("a", "nano", 25.0, 1.0), entry("b", "nano", 25.0, 1.0)];
+        let mut i = input(10, &[("a", 10)], pool);
+        i.version_room = HashMap::from([("b".to_string(), 2)]);
+        i.strict_rooms = true;
+        assert_eq!(choose(&i, &mut Rng::from_str("occ")).len(), 2);
+    }
+
+    #[test]
+    fn the_wanting_side_stops_at_its_own_room() {
+        let pool = vec![entry("a", "nano", 25.0, 1.0), entry("b", "nano", 25.0, 1.0)];
+        let mut i = input(10, &[("a", 10)], pool);
+        i.version_room = HashMap::from([("a".to_string(), 1)]);
+        assert_eq!(choose(&i, &mut Rng::from_str("occ")).len(), 1);
+    }
+
+    #[test]
+    fn equal_wants_are_served_least_played_first() {
+        // Room for one pairing and two versions wanting the same: the one with fewer games in the
+        // window is the wanting side, whichever id sorts first.
+        let pool = vec![
+            entry("a", "nano", 25.0, 1.0),
+            entry("z", "nano", 25.0, 1.0),
+            entry("base", "nano", 25.0, 1.0),
+        ];
+        let mut i = input(1, &[], pool);
+        i.wants = vec![
+            Want { model_id: "a".into(), want: 4, played: 900 },
+            Want { model_id: "z".into(), want: 4, played: 12 },
+        ];
+        let out = choose(&i, &mut Rng::from_str("occ"));
+        assert_eq!(out[0].seats[0], "z", "{out:?}");
     }
 
     #[test]

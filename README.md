@@ -88,6 +88,9 @@ channels add a per-principal quota.
 | POST | `/v1/games/{game}/seasons/{slug}/featured` | Admin | Make a public season the game's featured one; a private season is refused |
 | PATCH | `/v1/games/{game}/seasons/{slug}/fleet` | Admin | Change the fleet policy `{matches, admissions}` (each `own`\|`platform`\|`both`) while live |
 | POST | `/v1/games/{game}/seasons/{slug}/close` | Admin | Request a close; 202, consumed by the withdraw clock |
+| GET · POST | `/v1/games/{game}/seasons/{slug}/rounds` | Admin | The rounds document (every round, the finals' progress, each version's games in the current round, the fill, the capacity) · schedule `{kind: round\|finals, games, starts_at?, sigma_floor?, mu_shrink?, warn_minutes?}`; 409 `round_waiting`, `finals_scheduled`, `window_open`, `admitting`; 422 `round_invalid` |
+| PATCH | `/v1/games/{game}/seasons/{slug}/rounds/{n}` | Admin | A waiting round's numbers, start or `cancel: true`; a started one's `games` alone (409 `round_started`) |
+| PATCH | `/v1/games/{game}/seasons/{slug}/fill` | Admin | The idle fill `{enabled, games?, headroom?}` while live; 422 `fill_invalid` |
 | GET · POST · DELETE | `.../seasons/{slug}/participants` | Season admin | Participants (resolved and waiting) · add in bulk (`logins`, `provider?` default github, a null login is a provider wildcard) · remove one |
 | GET | `.../seasons/{slug}/admins` | Season admin | The season's admins by platform handle |
 | POST · DELETE | `.../seasons/{slug}/admins` | Admin | Assign · remove a season admin by handle (bumps that account's session) |
@@ -170,9 +173,9 @@ the singleton buys order, and the SQL fences buy correctness.
 | Channel | Every | Timeout | Does | Fence |
 |---|---|---|---|---|
 | `soma-clock-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
-| `soma-clock-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
-| `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
-| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close each live season that settled or was asked to; snapshot every live season's Open ladder once an hour | none: idempotent |
+| `soma-clock-pair` | 15 s | 60 s | Read demand (a round's quota, else the settling rule, plus the idle fill into free lanes), fill the room with the plugin's plan, insert trials first, stamp each match's round; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
+| `soma-clock-count` | 10 s | 60 s | Start each round that is due (the reset, and the old round's queue cancelled `ROUND_ENDED`); fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
+| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; keep a season played in rounds one reset ahead; post each round's countdown and tell its entrants; close each live season whose finals are done, that settled or was asked to; snapshot every live season's Open ladder once an hour | none: idempotent |
 | `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
@@ -325,11 +328,24 @@ season through its `rules` document (`season_rule_spec()` in
    `disabled`; enabling seeds its ratings at the prior. The season's admin page does all of this.
    **Nothing pairs** until a board is enabled, and no trial pairs until a baseline is enabled.
 4. **While it runs**, boards and baselines can be enabled and disabled. A disable cancels the
-   pending matches on it, while claimed and running ones finish and count.
-5. **Close it.** The withdraw clock closes a season once its window has closed and every version has
-   settled (`closure.policy` `settle`, the default), after `settle_grace_days` (`deadline`), or only
-   on request (`admin`). `POST .../close` records a request; within the minute the close rejects
-   versions still waiting (`SEASON_CLOSED`), cancels the queue and lets running matches count.
+   pending matches on it, while claimed and running ones finish and count. **Rounds** (`rules.rounds`)
+   put a reset in `season_rounds` every `days` from the open; count applies each at its start (every
+   active sigma raised to `sigma_floor`, mu drawn `mu_shrink` toward the season mean, the old round's
+   queue cancelled `ROUND_ENDED`), pair gives every active version the round's `games`, least-played
+   first, and the withdraw clock posts the countdown `warn_minutes` before. An admin can add, move or
+   cancel a reset on the season's Rounds and finals page. The **idle fill** (`seasons.fill`, live)
+   queues matches into the free lanes of the runners that may play the season, toward `fill.games`
+   in the window; it reads the fleet's capacity to size demand and never the reverse.
+5. **Close it.** With `closure.policy` `finals`, the season waits after its window for an admin to
+   start the **finals** (`POST .../rounds` `{kind: "finals", games, ...}`, refused while the window is
+   open or a submission is still being admitted): a reset, then exactly `games` matches for every
+   entry (a wall in the plugin; baselines fill seats and are never waited for), and the close once
+   every entry has played them and nothing is in flight. Once scheduled, the finals decide the close
+   whatever the policy. Otherwise the withdraw clock closes a season once its window has closed and
+   every version has settled (`settle`, the default), after `settle_grace_days` (`deadline`), or only
+   on request (`admin`). `POST .../close` records a request, which wins over all of these (it is how
+   finals that cannot finish are ended); within the minute the close rejects versions still waiting
+   (`SEASON_CLOSED`), cancels the queue and any round still waiting, and lets running matches count.
 6. **Change the engine.** `bootstrap` from an image on a new ants release declares a **patch** by
    default: the game and the live season take the new digest, pending rows are re-stamped and the
    roster epoch bumps. `ENGINE_RELEASE=1` declares a **release**, refused while a season is live: a
@@ -545,6 +561,16 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
 - The admit and pair clocks still tick against Postgres when idle: admit cannot tell nothing
   waiting from waiting but leased without a read, and pair's demand moves with time.
+- A round's reset writes no `rating_events` row (its seq is `matches_played`, and a reset is not a
+  match), so a version's history shows the reset only at its next match.
+- Finals can stall for an entry nobody is left to play (every other entry at its number, no enabled
+  baseline of another owner). The admin page shows it, and a close request ends them.
+- The idle fill counts a runner's lanes from its last 90 s of roster heartbeats; a runner that dies
+  holds that share of the fill for up to 90 s, and the fill never outruns `pair_depth_target`.
+- The leaderboard's `provisional` reads the deploy's `settled_sigma`, not the season's
+  `rating.settled_sigma`.
+- Retiring an entry (`models.retired_at`) leaves its active version paired: the demand read does not
+  filter on it.
 - An off-site runner must hold a GET key for the models bucket. The fix is an Orion ask, not yet
   filed: a URL-valued artifact reference on the `models` entity.
 

@@ -1,0 +1,18 @@
+{
+  "name": "rounds-create-no-games: a schedule without games is 400 before anything is written",
+  "workflow": "../workflows/soma-admin-seasons-rounds-create.json",
+  "input": { "kind": "finals" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": { "soma-db": [{ "body": { "role": "admin", "found": true } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 400,
+    "data.body.error": "round_invalid"
+  }
+}

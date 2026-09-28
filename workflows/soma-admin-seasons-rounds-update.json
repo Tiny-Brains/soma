@@ -1,0 +1,161 @@
+{
+  "workflow_id": "soma-admin-seasons-rounds-update",
+  "name": "Move, change or cancel a round",
+  "description": "Platform admin only. A WAITING round takes a new `starts_at` (not in the past), `games`, `sigma_floor`, `mu_shrink` and `warn_minutes`, or `cancel: true` -- it then never starts, and a weekly season's clock schedules the next one on its grid; a waiting finals cancelled leaves the season waiting for new ones. A STARTED round takes `games` alone, for every entry at once: the finals extended or cut short while they run, or a weekly round's quota changed. A posted countdown moves or ends with its round, in the same statement. Refusals: 404, 409 season_closed / round_cancelled / round_started, 422 for an empty edit, a past start or numbers out of range. 200 with the rounds document.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "write",
+      "name": "Change it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-rounds-update-write.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.params.n" },
+            { "var": "data.req.starts_at" },
+            { "var": "data.req.games" },
+            { "var": "data.req.sigma_floor" },
+            { "var": "data.req.mu_shrink" },
+            { "var": "data.req.warn_minutes" },
+            { "var": "data.req.cancel" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.edited"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "announcements"],
+        "when": { ">": [{ "var": "temp_data.edited.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "not_written",
+      "description": "Nothing was written: read why, and answer the first reason that holds.",
+      "condition": { "$use": "none_written", "with": { "slot": "edited" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why not",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-admin-seasons-rounds-update-why.sql" },
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "metadata.params.n" },
+                { "var": "data.req.starts_at" },
+                { "var": "data.req.games" },
+                { "var": "data.req.sigma_floor" },
+                { "var": "data.req.mu_shrink" },
+                { "var": "data.req.warn_minutes" },
+                { "var": "data.req.cancel" }
+              ],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "unknown",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.found" } },
+            "status": 404,
+            "body": { "error": "unknown_round" },
+            "name": "No such season or round"
+          }
+        },
+        {
+          "id": "closed",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.closed" } },
+            "status": 409,
+            "body": { "error": "season_closed", "detail": "A closed season's rounds are over." },
+            "name": "It has closed"
+          }
+        },
+        {
+          "id": "cancelled",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.cancelled" } },
+            "status": 409,
+            "body": { "error": "round_cancelled", "detail": "A cancelled round takes no changes." },
+            "name": "It was cancelled"
+          }
+        },
+        {
+          "id": "started",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.started" } },
+            "status": 409,
+            "body": {
+              "error": "round_started",
+              "detail": "A round that has started takes only a new number of games."
+            },
+            "name": "Only games once started"
+          }
+        },
+        {
+          "id": "invalid",
+          "use": "refuse",
+          "with": {
+            "when": true,
+            "status": 422,
+            "body": {
+              "error": "round_invalid",
+              "detail": "Give at least one change: games is a whole number from 1 to 100000, sigma_floor above 0 and at most 1000, mu_shrink from 0 to 1, warn_minutes from 0 to 1440, and starts_at not in the past."
+            },
+            "name": "Numbers in range"
+          }
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "name": "Read the rounds back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-rounds.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

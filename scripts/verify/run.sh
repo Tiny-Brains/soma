@@ -100,7 +100,19 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("s_why", "soma-user-submissions-create", "why"),
          ("u_signin", "soma-pub-auth", "upsert"),
          ("u_promote", "soma-pub-auth", "promote"),
-         ("b_flip", "soma-user-baselines-update", "flip")]
+         ("b_flip", "soma-user-baselines-update", "flip"),
+         ("c_round", "soma-clock-count-run", "round"),
+         ("w_schedule", "soma-clock-withdraw-run", "schedule"),
+         ("w_announce", "soma-clock-withdraw-run", "announce"),
+         ("n_round", "soma-clock-withdraw-run", "notify_round"),
+         ("r_create", "soma-admin-seasons-rounds-create", "write"),
+         ("r_create_why", "soma-admin-seasons-rounds-create", "why"),
+         ("r_update", "soma-admin-seasons-rounds-update", "write"),
+         ("r_update_why", "soma-admin-seasons-rounds-update", "why"),
+         ("r_doc", "soma-admin-seasons-rounds", "read"),
+         ("f_set", "soma-admin-seasons-fill", "set"),
+         ("x_leaderboard", "soma-pub-leaderboard", "query"),
+         ("g_register", "soma-gate-token", "register")]
 prepared = pathlib.Path("statements.sql").read_text()
 FRAGMENTS = (json.load(open("../../shared/soma.json")).get("fragments") or {})
 def tasks(ts, prefix=""):

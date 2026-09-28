@@ -1,0 +1,31 @@
+{
+  "name": "rounds-update-started: a started round asked to move is 409 round_started",
+  "workflow": "../workflows/soma-admin-seasons-rounds-update.json",
+  "input": { "starts_at": "2030-01-01T00:00:00Z" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1", "n": "3" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "role": "admin",
+            "found": true,
+            "closed": false,
+            "cancelled": false,
+            "started": true,
+            "valid": true
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "round_started"
+  }
+}

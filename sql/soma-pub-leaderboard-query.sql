@@ -4,6 +4,14 @@ WITH season AS (
     WHERE g.slug = ($1)::text ),
 lim AS (
     SELECT least(greatest(($3)::int, 1), 200) AS n ),
+-- THE SEASON'S CURRENT ROUND, if it is played in rounds or in its finals: each row then carries its
+-- games in the round beside its games in the season, since the round's are the ones every version
+-- has the same number of to play.
+rnd AS (
+    SELECT r.n, r.kind, r.games FROM season CROSS JOIN LATERAL season_round(season.id) r
+     WHERE r.n IS NOT NULL ),
+rg AS (
+    SELECT g.version_id, g.games FROM season, rnd, round_games(season.id, rnd.n) g ),
 field AS (
     SELECT f.version_id
     FROM season, ladder_field(season.id, ($2)::ladder) f ),
@@ -11,7 +19,9 @@ page AS (
     SELECT row_number() OVER (ORDER BY r.conservative DESC, v.id) AS rank, v.id::text AS version_id,
         e.id::text AS model_id, e.name AS model, u.handle AS owner, v.version, v.weight_class::text
         AS class, v.size_bytes, r.conservative AS rating, (r.sigma > ($5)::float8) AS provisional,
-        r.matches_played AS matches, (u.role = 'baseline') AS baseline, (SELECT (ev.mu_after - 3 *
+        r.matches_played AS matches,
+        CASE WHEN (SELECT n FROM rnd) IS NOT NULL THEN coalesce(rg.games, 0) END AS round_matches,
+        (u.role = 'baseline') AS baseline, (SELECT (ev.mu_after - 3 *
                 ev.sigma_after) - (ev.mu_before - 3 * ev.sigma_before)
         FROM rating_events ev
         WHERE ev.version_id = v.id
@@ -35,6 +45,7 @@ page AS (
     JOIN ratings r ON r.version_id = v.id
     AND r.ladder = 'open'
     JOIN users u ON u.id = e.owner_id
+    LEFT JOIN rg ON rg.version_id = v.id
     ORDER BY r.conservative DESC, v.id
     OFFSET ($4)::int
     LIMIT (SELECT n
@@ -42,7 +53,8 @@ page AS (
 SELECT json_build_object( 'season', (SELECT slug
         FROM season), 'season_name', (SELECT name
         FROM season), 'closed', (SELECT closed
-        FROM season), 'total', (SELECT count(*)
+        FROM season), 'round', (SELECT json_build_object('n', n, 'kind', kind, 'games', games)
+        FROM rnd), 'total', (SELECT count(*)
         FROM field), 'entries', coalesce(json_agg(page
             ORDER BY page.rank), '[]'::json), 'next_cursor', CASE
     WHEN count(*) = (SELECT n

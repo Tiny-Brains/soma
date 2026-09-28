@@ -28,8 +28,18 @@
   },
   "expect_calls": {
     "cache_incr": [],
-    "cache_invalidate": [],
+    "cache_invalidate": [{ "namespaces": ["ladder", "season"] }],
     "cache_write": [{ "key": "idle:count", "value": 0, "ttl_secs": 60 }]
   },
-  "expect_tasks": ["probe", "generation.zero", "fresh", "fence", "fenced", "batch", "mark"]
+  "expect_tasks": [
+    "probe",
+    "generation.zero",
+    "fresh",
+    "fence",
+    "fenced",
+    "round",
+    "invalidate_round.bump",
+    "batch",
+    "mark"
+  ]
 }

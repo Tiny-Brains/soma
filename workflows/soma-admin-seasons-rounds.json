@@ -1,0 +1,48 @@
+{
+  "workflow_id": "soma-admin-seasons-rounds",
+  "name": "A season's rounds and finals",
+  "description": "Platform admin only. The document the admin's rounds page is drawn from, and that every write on it answers with (soma-admin-shared-rounds): the season's state and closure policy, the idle fill as set, every round newest first with the current one marked, the finals' standing, each active version's games in the current round and in flight (least-played first: the finals' progress), how many submissions are still being admitted, and the capacity to choose numbers against. 404 for a season that does not exist.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "read",
+      "name": "Read the rounds",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-rounds.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such game or season"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

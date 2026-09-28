@@ -1,0 +1,141 @@
+{
+  "workflow_id": "soma-admin-seasons-fill",
+  "name": "Change a season's idle fill",
+  "description": "Platform admin only, and like the fleet policy it may change WHILE THE SEASON IS LIVE: it is capacity, not a rule, and moves no rating's meaning. `fill` is `{enabled, games, headroom}`: on, pair queues matches into the lanes nothing else wants -- least-played version first, never past the depth target -- until every active version has `games` rated matches in the window (the current round, or the season without one), leaving `headroom` lanes free for a new submission's queue; the finals ignore it. `games` is required while enabled. A well-formed shape is checked here (400), and season_fill_ok() in the write refuses what the shape guard let through by writing nothing, so `why` tells 422 from 409 (closed) from 404. Pair reads it on its next tick. 200 with the rounds document.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "or": [
+              { "===": [{ "var": "data.req.fill.enabled" }, true] },
+              { "===": [{ "var": "data.req.fill.enabled" }, false] }
+            ]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "fill_required",
+          "detail": "Give the fill in `fill`: { enabled, games, headroom }, with games required while enabled."
+        },
+        "name": "A fill, declared"
+      }
+    },
+    {
+      "id": "set",
+      "name": "Set the fill",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-fill-set.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.fill" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.set"
+        }
+      }
+    },
+    {
+      "id": "not_written",
+      "description": "Nothing was written: read why, and answer the first reason that holds.",
+      "condition": { "$use": "none_written", "with": { "slot": "set" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why not",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT json_build_object('found', s.id IS NOT NULL, 'closed', s.closed_at IS NOT NULL, 'valid', season_fill_ok(($3)::jsonb)) AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.slug = ($2)::text WHERE g.slug = ($1)::text",
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.fill" }
+              ],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "unknown",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.found" } },
+            "status": 404,
+            "body": { "error": "unknown_season" },
+            "name": "No such game or season"
+          }
+        },
+        {
+          "id": "closed",
+          "use": "refuse",
+          "with": {
+            "when": { "!!": { "var": "temp_data.why.0.body.closed" } },
+            "status": 409,
+            "body": {
+              "error": "season_closed",
+              "detail": "A closed season's fill cannot change: it plays nothing more."
+            },
+            "name": "It has closed"
+          }
+        },
+        {
+          "id": "invalid",
+          "use": "refuse",
+          "with": {
+            "when": true,
+            "status": 422,
+            "body": {
+              "error": "fill_invalid",
+              "detail": "fill has enabled, games (a whole number from 1 to 100000, required while enabled) and headroom (0 to 1000 lanes), and no other key."
+            },
+            "name": "A well-formed fill"
+          }
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "name": "Read the rounds back",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-shared-rounds.sql" },
+          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}
