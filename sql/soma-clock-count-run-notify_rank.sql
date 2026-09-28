@@ -10,22 +10,37 @@ WITH m AS (
            e.mu_after  - 3 * e.sigma_after  AS after
       FROM rating_events e JOIN m ON e.match_id = m.id
 ), field AS MATERIALIZED (
+    -- The fields this match can move: Open, and the weight class of each participant. A class field
+    -- is Open filtered to that class (ladder_field), and a member's before/after conservative is its
+    -- OWN Open event (the only ladder folded), so a class rank shifts by the same movement as Open.
     SELECT l.ladder, f.version_id, coalesce(ev.before, f.conservative) AS before, f.conservative AS after
       FROM m
-     CROSS JOIN (SELECT DISTINCT ladder FROM ev) l
+     CROSS JOIN (
+        SELECT 'open'::ladder AS ladder
+         UNION
+        SELECT v.weight_class FROM ev JOIN model_versions v ON v.id = ev.version_id
+         WHERE v.weight_class IS NOT NULL
+     ) l
      CROSS JOIN LATERAL ladder_field(m.season_id, l.ladder) f
-      LEFT JOIN ev ON ev.version_id = f.version_id AND ev.ladder = l.ladder
-), moved AS (
-    SELECT ev.version_id, ev.ladder, ev.sigma_after, ev.after,
-           (SELECT count(*) + 1 FROM field x
-             WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id
-               AND (x.before > ev.before OR (x.before = ev.before AND x.version_id < ev.version_id))) AS prev_rank,
-           (SELECT count(*) + 1 FROM field x
-             WHERE x.ladder = ev.ladder AND x.version_id <> ev.version_id
-               AND (x.after > ev.after OR (x.after = ev.after AND x.version_id < ev.version_id))) AS rank,
-           (SELECT count(*) FROM field x WHERE x.ladder = ev.ladder) AS field
+      LEFT JOIN ev ON ev.version_id = f.version_id AND ev.ladder = 'open'
+), targets AS (
+    -- Each participant on Open AND in its own class: one Open result moves both of its ranks.
+    SELECT ev.version_id, l.ladder, ev.sigma_after, ev.before, ev.after
       FROM ev
-     WHERE EXISTS (SELECT 1 FROM field x WHERE x.ladder = ev.ladder AND x.version_id = ev.version_id)
+      JOIN model_versions v ON v.id = ev.version_id
+     CROSS JOIN LATERAL (VALUES ('open'::ladder), (v.weight_class)) AS l (ladder)
+     WHERE l.ladder IS NOT NULL
+), moved AS (
+    SELECT t.version_id, t.ladder, t.sigma_after, t.after,
+           (SELECT count(*) + 1 FROM field x
+             WHERE x.ladder = t.ladder AND x.version_id <> t.version_id
+               AND (x.before > t.before OR (x.before = t.before AND x.version_id < t.version_id))) AS prev_rank,
+           (SELECT count(*) + 1 FROM field x
+             WHERE x.ladder = t.ladder AND x.version_id <> t.version_id
+               AND (x.after > t.after OR (x.after = t.after AND x.version_id < t.version_id))) AS rank,
+           (SELECT count(*) FROM field x WHERE x.ladder = t.ladder) AS field
+      FROM targets t
+     WHERE EXISTS (SELECT 1 FROM field x WHERE x.ladder = t.ladder AND x.version_id = t.version_id)
 )
 INSERT INTO notifications (user_id, category, kind, tone, subject, description, link,
                            game, season, model_id, version_id, match_id, data, dedupe_key)

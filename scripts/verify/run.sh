@@ -308,7 +308,7 @@ SELECT s.id, 'fixture', 2, 24, 24, 'sha256:fixture', '{"id": "fixture"}', true,
   FROM seasons s WHERE s.closed_at IS NULL;
 INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders)
 SELECT '11111111-1111-1111-1111-111111111111', g.id, s.id, s.engine_digest, 1, sm.id, 2,
-       ARRAY['nano','open']::ladder[]
+       ARRAY['open']::ladder[]
   FROM games g JOIN seasons s ON s.game_id = g.id AND s.closed_at IS NULL
   JOIN season_maps sm ON sm.season_id = s.id WHERE g.slug = 'ants';
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash)

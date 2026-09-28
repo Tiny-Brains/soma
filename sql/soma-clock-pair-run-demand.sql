@@ -27,22 +27,16 @@ WITH live AS (
      WHERE sm.enabled
      ORDER BY sm.added_at, sm.map_id
 ), v AS (
+    -- ONE RATED LADDER: a version settles on Open. Its sigma and match count are the Open row's;
+    -- there is no per-class rating to reconcile, so no reachability test and no aggregate. The weight
+    -- class is still carried, for the pool below and for same-class-preferred matchmaking.
     SELECT vv.id AS model_id, e.owner_id, vv.weight_class,
-           max(r.sigma)          FILTER (WHERE r.ladder = 'open' OR reach.n > 0) AS sigma,
-           min(r.matches_played) FILTER (WHERE r.ladder = 'open' OR reach.n > 0) AS played
+           r.sigma, r.matches_played AS played
       FROM model_versions vv
-      JOIN models e ON e.id = vv.model_id
-      JOIN live     ON live.id = vv.season_id
-      LEFT JOIN ratings r ON r.version_id = vv.id
-      LEFT JOIN LATERAL (
-          -- a class ladder is reachable only if another active version of the class is in the
-          -- season; a version alone in its class is judged on open alone, or it never settles
-          SELECT count(*) AS n FROM model_versions o
-           WHERE o.season_id = vv.season_id AND o.status = 'active'
-             AND o.weight_class = vv.weight_class AND o.id <> vv.id
-      ) reach ON true
+      JOIN models e  ON e.id = vv.model_id
+      JOIN live      ON live.id = vv.season_id
+      LEFT JOIN ratings r ON r.version_id = vv.id AND r.ladder = 'open'
      WHERE vv.status = 'active'
-     GROUP BY vv.id, e.owner_id, vv.weight_class
 ), f AS (
     -- In flight INCLUDES a finished row count has not yet folded: its result is what the next
     -- pairing's prior will move, which is the whole reason the cap exists. Without it, in the ten
@@ -97,8 +91,15 @@ WITH live AS (
       FROM w CROSS JOIN lim LEFT JOIN owner_load ol ON ol.owner_id = w.owner_id
 ), pool AS (
     SELECT vv.id AS model_id, e.owner_id, vv.weight_class,
-           (SELECT json_agg(json_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma)
-                            ORDER BY r.ladder) FROM ratings r WHERE r.version_id = vv.id) AS ratings
+           -- Each version has one rated row, on Open. It is presented under BOTH the 'open' label and
+           -- the version's own class label, carrying the same mu/sigma, so the pairing plugin -- which
+           -- reads the affinity rating of the "shared ladder" (the class for a same-class pair, else
+           -- Open) -- finds a number either way, with no per-class rating and no plugin change.
+           (SELECT json_agg(json_build_object('ladder', l.ladder, 'mu', r.mu, 'sigma', r.sigma)
+                            ORDER BY l.ladder)
+              FROM ratings r
+              CROSS JOIN LATERAL (VALUES ('open'::ladder), (vv.weight_class)) AS l (ladder)
+             WHERE r.version_id = vv.id AND r.ladder = 'open' AND l.ladder IS NOT NULL) AS ratings
       FROM model_versions vv
       JOIN models e ON e.id = vv.model_id
       JOIN live     ON live.id = vv.season_id

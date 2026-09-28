@@ -1,11 +1,11 @@
 {
   "name": "admissions-claim-marks: nothing claimed and nothing waiting writes the marker under the generation read before the claim",
   "workflow": "../workflows/soma-gate-admissions-claim.json",
-  "input": { "orion_version": "1.11.0" },
+  "input": { "orion_version": "1.11.1" },
   "metadata": {
     "auth": { "claims": { "sub": "r1", "sid": "s1" } },
     "vars": {
-      "orion_version": "1.11.0",
+      "orion_version": "1.11.1",
       "idle_marker_ttl_secs": 30,
       "admit_lease_s": 300,
       "admit_observations": 64,

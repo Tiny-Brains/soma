@@ -19,23 +19,17 @@ WITH live AS (
              AND NOT EXISTS (SELECT 1 FROM matches m
                               WHERE m.season_id = s.id
                                 AND m.status NOT IN ('rated', 'cancelled', 'failed'))
+             -- Settled is now judged on the one rated ladder, Open: no active version is missing its
+             -- Open row, still above settled_sigma, or short of its placement burst.
              AND NOT EXISTS (SELECT 1
                                FROM model_versions v
-                               LEFT JOIN ratings r ON r.version_id = v.id
-                               LEFT JOIN LATERAL (
-                                   SELECT count(*) AS n FROM model_versions o
-                                    WHERE o.season_id = v.season_id AND o.status = 'active'
-                                      AND o.weight_class = v.weight_class AND o.id <> v.id
-                               ) reach ON true
+                               LEFT JOIN ratings r ON r.version_id = v.id AND r.ladder = 'open'
                               WHERE v.season_id = s.id AND v.status = 'active'
-                              GROUP BY v.id
-                             HAVING count(r.version_id) = 0
-                                 OR max(r.sigma) FILTER (WHERE r.ladder = 'open' OR reach.n > 0)
-                                    > coalesce((s.rules -> 'rating' ->> 'settled_sigma')::float8,
-                                               ($2)::float8)
-                                 OR min(r.matches_played) FILTER (WHERE r.ladder = 'open' OR reach.n > 0)
-                                    < coalesce((s.rules -> 'pairing' ->> 'burst')::int,
-                                               ($3)::int))))))
+                                AND (r.version_id IS NULL
+                                  OR r.sigma > coalesce((s.rules -> 'rating' ->> 'settled_sigma')::float8,
+                                                        ($2)::float8)
+                                  OR r.matches_played < coalesce((s.rules -> 'pairing' ->> 'burst')::int,
+                                                                 ($3)::int)))))))
 ), closed AS (
     UPDATE seasons s SET closed_at = now()
       FROM live WHERE s.id = live.id

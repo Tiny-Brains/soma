@@ -72,8 +72,16 @@ matched AS NOT MATERIALIZED (
             JOIN models me ON me.id = mv.model_id
             JOIN users ou ON ou.id = me.owner_id
             WHERE lower(ou.handle) = lower(($10)::text)))
+    -- The Ladder chip sends 'open' (every rated match counts on Open) or a weight class; a class now
+    -- means a match with a seat of that class, since there is one rated ladder and mt.ladders is
+    -- always {open}. ($4, the legacy ?class=, is kept below for old links -- the same test.)
     AND (($3)::text IS NULL
-        OR ($3)::ladder = ANY (mt.ladders))
+        OR ($3)::ladder = 'open'
+        OR EXISTS (SELECT 1
+            FROM match_seats ms
+            JOIN model_versions mv ON mv.id = ms.version_id
+            WHERE ms.match_id = mt.id
+            AND mv.weight_class = ($3)::ladder))
     AND (($4)::text IS NULL
         OR EXISTS (SELECT 1
             FROM match_seats ms

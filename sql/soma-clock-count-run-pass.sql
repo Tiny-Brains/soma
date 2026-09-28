@@ -44,17 +44,19 @@ WITH fence AS (
        AND (SELECT count(*) FROM pred) >= 0
  RETURNING c.id, c.weight_class
 ), seeded AS (
+    -- ONE RATED ROW, on Open. A weight class is a view of Open, not a rating, so a promotion seeds
+    -- Open alone -- inheriting the predecessor's Open mean, its sigma inflated by `inflation` (capped
+    -- at the prior) so a resubmission is not treated as already settled.
     INSERT INTO ratings (version_id, ladder, mu, sigma, seed_mu, seed_sigma)
-    SELECT cand.id, l.ladder,
+    SELECT cand.id, 'open'::ladder,
            coalesce(prev.mu, live.prior_mu),
            coalesce(seed.sigma, live.prior_sigma),
            prev.mu,
            seed.sigma
       FROM cand
       CROSS JOIN live
-      CROSS JOIN LATERAL (VALUES (cand.weight_class), ('open'::ladder)) AS l (ladder)
       LEFT JOIN pred ON true
-      LEFT JOIN ratings prev ON prev.version_id = pred.id AND prev.ladder = l.ladder
+      LEFT JOIN ratings prev ON prev.version_id = pred.id AND prev.ladder = 'open'
       CROSS JOIN LATERAL (
           SELECT CASE WHEN prev.sigma IS NULL THEN NULL
                       ELSE least(prev.sigma * live.inflation, live.prior_sigma) END AS sigma

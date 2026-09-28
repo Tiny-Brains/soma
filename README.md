@@ -1,7 +1,7 @@
 # soma
 
 Soma is TinyBrains' public API, its schema and the life cycle of a model version: sign-in,
-submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.11.0 package
+submissions, admission, trials, promotion, pairing, rating and seasons. It is an Orion 1.11.1 package
 (REST channels, cron clocks, workflows, connectors and two Rust/wasm plugins) plus the Postgres
 migrations every package shares, shipped as the node image `ghcr.io/tiny-brains/soma`.
 [Kalam](https://github.com/Tiny-Brains/kalam) runners play the matches Soma queues, and
@@ -172,7 +172,7 @@ the singleton buys order, and the SQL fences buy correctness.
 | `soma-clock-admit` | 20 s | 600 s | Expire, claim `testing` versions, prepare each for an admitting runner or judge its report, write one verdict each | per-row `admit_token` claim |
 | `soma-clock-pair` | 15 s | 60 s | Read demand, fill the room with the plugin's plan, insert trials first; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
 | `soma-clock-count` | 10 s | 60 s | Fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
-| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close each live season that settled or was asked to; snapshot every live season's ladders once an hour | none: idempotent |
+| `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; close each live season that settled or was asked to; snapshot every live season's Open ladder once an hour | none: idempotent |
 | `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
@@ -194,7 +194,7 @@ verdict. A report that decided nothing (the
 runner could not fetch, ran out of time, or measured the probe over `max_probe_ms`) goes back to the
 queue with its attempt spent; a submission waiting for a runner spends none. Nothing is admitted
 while no admitting runner is up. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
-`tb.rating.trueskill` is the TrueSkill update per ladder, pure; `tb.pairing.pair` picks opponents and
+`tb.rating.trueskill` is the TrueSkill update on the one rated ladder (Open), pure; `tb.pairing.pair` picks opponents and
 boards, pure and seeded by the occurrence id. `tb.ants` is the engine, loaded so a map upload can be
 judged by `worldgen`.
 
@@ -206,7 +206,7 @@ judged by `worldgen`.
 | `models`, `model_versions` | entry and submission routes insert; admit and count decide; baseline flips |
 | `matches`, `match_seats` | pair inserts; Kalam claims, plays and finishes (through the gate), which lists an ordinary match; count rates, and a trial's pass lists it; withdraw, promotion and disables cancel |
 | `ladder_snapshots` | withdraw, once an hour per live season |
-| `ratings`, `rating_events` | count; a baseline's first enable seeds its two ratings at the prior |
+| `ratings`, `rating_events` | count; a baseline's first enable seeds its Open rating at the prior |
 | `clocks` | count's fence; every roster change bumps `roster` |
 | `season_admins`, `season_participants` | admin assigns/removes admins; season admins add/remove participants; `season_admits`/`season_visible` read them |
 | `runner_keys`, `runners` | admin routes and the season runner-keys route (a key may bind to one season, `runner_keys.season_id`); the token exchange upserts runners |
@@ -270,7 +270,7 @@ compose file sets every one of them for the local stack.
 | `SOMA_TRUSTED_PROXIES` | the RFC1918 ranges | TOML array of proxies whose `X-Forwarded-For` is believed |
 | `SOMA_ADMIN_IDS` | empty | `provider:subject` pairs, comma-separated (a GitHub id is `github:<id>`), made admins at every sign-in; the node refuses to start on anything else |
 | `ORION_CLUSTER_ENABLED`, `ORION_INSTANCE_ID` | `true`, empty | Cluster mode; a stable id per node |
-| `ORION_VERSION` | `1.11.0` | Recorded on every verdict and match as `orion_version` |
+| `ORION_VERSION` | `1.11.1` | Recorded on every verdict and match as `orion_version` |
 | `ORION_SHUTDOWN_DRAIN_SECS`, `ORION_SHUTDOWN_FORCE_SECS`, `ORION_CRON_SHUTDOWN_SECS` | 30, 30, 60 | Shutdown bounds |
 | `SOMA_CRON_CLAIM_LEASE_SECS` | `60` | How long a dead node's clock runs hold their slots, and how long a state-database outage a running clock survives (the lease minus one 15 s heartbeat) |
 | `PLUGIN_SIG_DIR` | none | `<component>.sig` files for tb.rating, tb.pairing and tb.ants |
@@ -302,7 +302,7 @@ response cache takes load off the pools and the node at once: an anonymous read 
 workflow logic and not a connector's config, so that one is checked here.
 
 **Build args:** `ANTS_RELEASE` (empty is the latest ants release; the cartridge, reference set,
-engine digest and component come from it), `ORION_VERSION` (1.11.0), `RUST_VERSION`,
+engine digest and component come from it), `ORION_VERSION` (1.11.1), `RUST_VERSION`,
 `WASM_TOOLS_VERSION`, `CURL_VERSION`, `DEBIAN_VERSION`. **Policy numbers** (pairing, rating,
 admission, runner contract) are `[vars]` in `docker/soma.toml.tmpl`, and most can be overridden per
 season through its `rules` document (`season_rule_spec()` in

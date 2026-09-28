@@ -1,6 +1,6 @@
 {
   "package": {
     "name": "soma",
-    "requires": { "orion": ">=1.11.0, <2" }
+    "requires": { "orion": ">=1.11.1, <2" }
   }
 }

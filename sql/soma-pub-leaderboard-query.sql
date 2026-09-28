@@ -15,7 +15,7 @@ page AS (
                 ev.sigma_after) - (ev.mu_before - 3 * ev.sigma_before)
         FROM rating_events ev
         WHERE ev.version_id = v.id
-        AND ev.ladder = r.ladder
+        AND ev.ladder = 'open'
         AND ev.seq > 0
         ORDER BY ev.seq DESC
         LIMIT 1) AS trend, (SELECT coalesce(json_agg(round(h.c::numeric, 2)
@@ -23,14 +23,17 @@ page AS (
         FROM (SELECT ev.seq, (ev.mu_after - 3 * ev.sigma_after) AS c
             FROM rating_events ev
             WHERE ev.version_id = v.id
-            AND ev.ladder = r.ladder
+            AND ev.ladder = 'open'
             ORDER BY ev.seq DESC
             LIMIT 12) h) AS history
     FROM field
     JOIN model_versions v ON v.id = field.version_id
     JOIN models e ON e.id = v.model_id
+    -- One rated ladder: the rating, trend and history are the Open row whatever field ($2) names.
+    -- `field` (ladder_field) already restricted membership to the class, so row_number() over
+    -- Open's conservative is the class rank -- consistent with the Open board by construction.
     JOIN ratings r ON r.version_id = v.id
-    AND r.ladder = ($2)::ladder
+    AND r.ladder = 'open'
     JOIN users u ON u.id = e.owner_id
     ORDER BY r.conservative DESC, v.id
     OFFSET ($4)::int

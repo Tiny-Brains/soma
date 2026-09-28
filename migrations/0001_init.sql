@@ -23,7 +23,10 @@ BEGIN;
 
 CREATE TYPE user_role AS ENUM ('competitor', 'admin', 'baseline');
 
--- 'open' is a ladder, not a weight class: every model competes in its own class and in open.
+-- There is ONE rated ladder, 'open'; a weight class is a VIEW of it, filtered to same-size versions,
+-- never its own rating. The class values remain because a class is still how a version is addressed
+-- (model_versions.weight_class), how a leaderboard is filtered (ladder_field, the ?ladder= param),
+-- and how a podium and a snapshot are labelled -- but ratings and rating_events carry 'open' alone.
 CREATE TYPE ladder AS ENUM ('nano', 'micro', 'mini', 'small', 'large', 'open');
 
 -- 'verified' sits between 'testing' and 'active': admission has passed and the version is waiting
@@ -2462,7 +2465,9 @@ LANGUAGE sql STABLE AS $$
                                   ORDER BY r.conservative DESC, v.id) AS per_owner
           FROM model_versions v
           JOIN models e   ON e.id = v.model_id
-          JOIN ratings r  ON r.version_id = v.id AND r.ladder = p_ladder
+          -- One rated ladder: every field, a weight class among them, ranks by the OPEN rating.
+          -- A class ladder is Open filtered to that class, so the two can never disagree about order.
+          JOIN ratings r  ON r.version_id = v.id AND r.ladder = 'open'
          WHERE v.season_id = p_season AND v.status = 'active'
            AND (p_ladder = 'open' OR v.weight_class = p_ladder))
     SELECT eligible.id, eligible.owner_id, eligible.conservative
@@ -2610,13 +2615,18 @@ $$;
 -- versions playing now.
 CREATE FUNCTION model_ratings(p_version uuid, p_settled_sigma float8)
 RETURNS json LANGUAGE sql STABLE AS $$
-    SELECT coalesce(json_object_agg(r.ladder, json_build_object(
+    -- ONE RATING, RANKED TWO WAYS. A version has a single rated row, on Open. Its class standing is
+    -- its place on the Open ladder among same-size versions: the SAME mu/sigma/conservative with a
+    -- class-filtered rank -- so the two keys can never disagree about which of two same-size models
+    -- is ahead. The keys are 'open' and the version's own weight_class (never equal: weight_class is
+    -- never 'open'), each ranked through ladder_field(), the one definition of a field.
+    SELECT coalesce(json_object_agg(x.ladder, json_build_object(
         'rating',      r.conservative,
         'mu',          r.mu,
         'sigma',       r.sigma,
         'provisional', r.sigma > p_settled_sigma,
         'matches',     r.matches_played,
-        'rank',  (SELECT count(*) + 1 FROM ladder_field(v.season_id, r.ladder) f
+        'rank',  (SELECT count(*) + 1 FROM ladder_field(v.season_id, x.ladder) f
                   WHERE f.conservative > r.conservative
                      OR (f.conservative = r.conservative AND f.version_id < v.id)),
         -- The version itself counts, whether or not it is ON the ladder. Without the second term a
@@ -2624,12 +2634,14 @@ RETURNS json LANGUAGE sql STABLE AS $$
         -- one of it. Dropped into the five playing now, it would be sixth of six. The test is
         -- membership and not `status = 'active'`, because standings.ranked_per_user_max can leave
         -- an active version off the ladder its own page still ranks it against.
-        'field', (SELECT count(*) FROM ladder_field(v.season_id, r.ladder) f)
-                 + (CASE WHEN EXISTS (SELECT 1 FROM ladder_field(v.season_id, r.ladder) f2
+        'field', (SELECT count(*) FROM ladder_field(v.season_id, x.ladder) f)
+                 + (CASE WHEN EXISTS (SELECT 1 FROM ladder_field(v.season_id, x.ladder) f2
                                        WHERE f2.version_id = v.id) THEN 0 ELSE 1 END)
     )), '{}'::json)
-    FROM ratings r JOIN model_versions v ON v.id = r.version_id
-    WHERE r.version_id = p_version;
+    FROM ratings r
+    JOIN model_versions v ON v.id = r.version_id
+    CROSS JOIN LATERAL (VALUES ('open'::ladder), (v.weight_class)) AS x (ladder)
+    WHERE r.version_id = p_version AND r.ladder = 'open' AND x.ladder IS NOT NULL;
 $$;
 
 -- A match's seats, resolved: who sat there, in which class, and how it went for them. The three
@@ -3038,9 +3050,11 @@ LANGUAGE sql STABLE AS $$
                               WHERE b.version_id = s.id AND b.action <> 'upload' AND b.at <= p_t
                               ORDER BY b.at DESC, b.id DESC LIMIT 1), false))),
     rated AS (
+        -- The rating is the OPEN event, whatever field p_ladder names: a class standing is Open
+        -- filtered by `standing` above, ranked by the same conservative number.
         SELECT st.id, st.model_id, st.owner_id,
                (SELECT ev.mu_after - 3 * ev.sigma_after FROM rating_events ev
-                 WHERE ev.version_id = st.id AND ev.ladder = p_ladder AND ev.created_at <= p_t
+                 WHERE ev.version_id = st.id AND ev.ladder = 'open' AND ev.created_at <= p_t
                  ORDER BY ev.created_at DESC, ev.seq DESC LIMIT 1) AS c
           FROM standing st),
     capped AS (
@@ -3067,13 +3081,18 @@ RETURNS json LANGUAGE sql STABLE AS $$
                i = span.n - 1 AS last
           FROM span, generate_series(0, span.n - 1) AS i),
     at AS (
-        SELECT ed.i, u.version_id, u.c, u.rank
+        -- Non-last edges read the hour's OPEN snapshot (the only one written); a class series
+        -- filters it to same-size versions and re-ranks within them, so a class line is the Open
+        -- line restricted to a class. The last edge is ladder_at(), which class-filters the same way.
+        SELECT ed.i, u.version_id, u.c,
+               row_number() OVER (PARTITION BY ed.i ORDER BY u.c DESC, u.version_id) AS rank
           FROM edges ed
          CROSS JOIN LATERAL (SELECT sn.version_ids, sn.ratings FROM ladder_snapshots sn
-                              WHERE sn.season_id = p_season AND sn.ladder = p_ladder AND sn.at <= ed.t
+                              WHERE sn.season_id = p_season AND sn.ladder = 'open' AND sn.at <= ed.t
                               ORDER BY sn.at DESC LIMIT 1) sn
-         CROSS JOIN LATERAL unnest(sn.version_ids, sn.ratings) WITH ORDINALITY AS u (version_id, c, rank)
-         WHERE NOT ed.last
+         CROSS JOIN LATERAL unnest(sn.version_ids, sn.ratings) AS u (version_id, c)
+          JOIN model_versions v ON v.id = u.version_id
+         WHERE NOT ed.last AND (p_ladder = 'open' OR v.weight_class = p_ladder)
         UNION ALL
         SELECT ed.i, l.version_id, l.conservative, l.rank
           FROM edges ed, ladder_at(p_season, p_ladder, ed.t) l

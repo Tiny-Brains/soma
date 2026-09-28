@@ -25,11 +25,12 @@ flipped AS (
     WHERE v.id = target.id
     RETURNING v.id, v.weight_class, target.rules ),
 rated AS (
+    -- One rated row, on Open (a class is a view of Open, not its own rating). A re-enabled baseline
+    -- that kept its Open row hits ON CONFLICT DO NOTHING and keeps the rating it had.
     INSERT INTO ratings (version_id, ladder, mu, sigma)
-    SELECT f.id, l.ladder, coalesce((f.rules -> 'rating' ->> 'prior_mu')::float8, ($6)::float8), coalesce((f.rules
+    SELECT f.id, 'open'::ladder, coalesce((f.rules -> 'rating' ->> 'prior_mu')::float8, ($6)::float8), coalesce((f.rules
                 -> 'rating' ->> 'prior_sigma')::float8, ($7)::float8)
     FROM flipped f
-    CROSS JOIN LATERAL (VALUES (f.weight_class), ('open'::ladder)) AS l (ladder)
     WHERE ($4)::boolean
     ON CONFLICT (version_id, ladder) DO NOTHING
     RETURNING version_id, ladder, mu, sigma ),

@@ -57,8 +57,10 @@ echo "==> offline test cases"
 # and a `model_infer` deadline `[models]` would silently clamp. Without -c they are SKIPPED, which
 # reads as a pass -- so they are run again here against the template the image ships.
 #
-# STAND-IN VALUES FOR WHAT THE TEMPLATE REQUIRES: the two `${NAME:?message}` placeholders and the
-# two `env://` references the config itself resolves. `${NAME:?message}` stops a boot when the
+# STAND-IN VALUES FOR WHAT THE TEMPLATE REQUIRES: the `${VAR:?message}`/bare `${VAR}` placeholders
+# and the `env://` references the config itself resolves -- the admit/trust keys, the two state
+# stores, and the identity block (the node NAME, the first provider's GOOGLE_CLIENT_ID, the
+# OAUTH_REDIRECT_URI and the SOMA_AUTH_PROVIDERS list). A required placeholder stops a boot when the
 # variable is unset or empty, which is what it is for -- and this is a static check, not a boot, so
 # it supplies something shaped right and obviously fake. Everything else in the template has a
 # default. Note that a variable named only in a COMMENT is NOT required: Orion skips the file's
@@ -68,6 +70,10 @@ ORION_ADMIN_KEY=check-defs-not-a-key \
 TB_TRUST_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI= \
 ORION_STATE_DB_URL=postgres://check-defs/orion_state \
 REDIS_URL=redis://check-defs:6379/0 \
+NAME=check-defs \
+GOOGLE_CLIENT_ID=check-defs.apps.googleusercontent.com \
+OAUTH_REDIRECT_URI=http://check-defs/auth/callback \
+SOMA_AUTH_PROVIDERS=github \
   orion-server clippy . -c docker/soma.toml.tmpl --deny-warnings
 
 echo "==> Soma's definitions are clean"

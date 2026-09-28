@@ -25,9 +25,11 @@ WITH season AS (
     INSERT INTO matches (game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders,
                          trial_version_id, pairing_id, strike_ceiling)
     SELECT season.game_id, season.id, season.engine_digest, ($3)::bigint, board.id, board.players,
+           -- ONE RATED LADDER. Every rated match feeds Open and nothing else; a weight class is a
+           -- view of Open, not a rating, so a same-class match is not credited twice. A trial still
+           -- feeds nothing. (Same-class-preferred matchmaking, with a cross-class fraction to keep
+           -- Open one connected graph, is the pairing plugin's and demand's job, not this array's.)
            CASE WHEN ($6)::uuid IS NOT NULL THEN '{}'::ladder[]
-                WHEN (SELECT count(DISTINCT weight_class) FROM seated) = 1
-                     THEN ARRAY[(SELECT weight_class FROM seated LIMIT 1), 'open']::ladder[]
                 ELSE ARRAY['open']::ladder[]
            END,
            ($6)::uuid, ($7)::uuid,
@@ -56,7 +58,9 @@ WITH season AS (
 )
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, paired_ratings)
 SELECT m.id, s.seat, s.version_id, s.weights_hash, s.manifest_hash,
+       -- The rating snapshot at pairing time: the one Open row (kept as a one-element array so the
+       -- column shape and every reader stay unchanged).
        (SELECT jsonb_agg(jsonb_build_object('ladder', r.ladder, 'mu', r.mu, 'sigma', r.sigma)
                          ORDER BY r.ladder)
-          FROM ratings r WHERE r.version_id = s.version_id)
+          FROM ratings r WHERE r.version_id = s.version_id AND r.ladder = 'open')
   FROM m, seated s

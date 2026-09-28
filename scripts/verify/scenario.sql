@@ -36,10 +36,9 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
   ('20000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-0000000000a1',
    '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 2, 'verified', 'nano',
    'sha256:wa2', 'sha256:ma2', '1.8.1');
+-- One rated ladder: a version has a single 'open' row (a class is a view of Open).
 INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
-  ('10000000-0000-0000-0000-000000000001', 'nano', 25, 8.333),
   ('10000000-0000-0000-0000-000000000001', 'open', 25, 8.333),
-  ('20000000-0000-0000-0000-000000000001', 'nano', 30, 4),
   ('20000000-0000-0000-0000-000000000001', 'open', 31, 3.5);
 
 \echo '--- runners: one admin key, two machines self-registered on it, one revoked (expect mini-1, mini-2)'
@@ -211,12 +210,12 @@ EXECUTE c_fence ('2026-09-07 10:00:00+00', 2);
 \echo '--- count: batch document (expect n 3: two folds, then the verdict on alice v2 -- decision pass, trials 1); priors for the ranked row'
 EXECUTE c_batch_doc (10, 3);
 EXECUTE c_priors (:'m43', 4.1667, 0.0833, 0.10);
-\echo '--- count: fold under the stale fence (expect 0, row still finished); under the live fence (expect 4); again (expect 0); on the trial row (expect 0, row untouched)'
+\echo '--- count: fold under the stale fence (expect 0, row still finished); under the live fence (expect 2 -- one posterior per seat on the one Open ladder); again (expect 0); on the trial row (expect 0, row untouched)'
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 1, :'m43',
-  '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"nano","mu":29.2,"sigma":3.8},{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"nano","mu":27.9,"sigma":6.1},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
+  '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
 SELECT seed, status FROM matches WHERE seed = 43;
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m43',
-  '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"nano","mu":29.2,"sigma":3.8},{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"nano","mu":27.9,"sigma":6.1},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
+  '[{"seat":0,"model_id":"20000000-0000-0000-0000-000000000001","ladder":"open","mu":30.3,"sigma":3.4},{"seat":1,"model_id":"10000000-0000-0000-0000-000000000001","ladder":"open","mu":27.4,"sigma":6.2}]');
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m43', '[]');
 EXECUTE c_fold ('2026-09-07 10:00:00+00', 2, :'m42', '[]');
 \echo '--- count: why a fold moved nothing -- under the stale fence (expect mine f); under the live fence on the rated row (expect mine t, unfoldable f); on a row still finished (expect mine t, unfoldable t)'
@@ -227,13 +226,13 @@ SELECT seed, status, rated_seq FROM matches WHERE seed IN (42, 43) ORDER BY seed
 EXECUTE s_match_change (:'m43');
 \echo '--- rating events: a duplicate seq is refused by the chain key (expect unique violation); the chain audit finds no break (expect 0 rows)'
 INSERT INTO rating_events (version_id, ladder, seq, match_id, seat, mu_before, sigma_before, mu_after, sigma_after)
-VALUES ('20000000-0000-0000-0000-000000000001', 'nano', 1, :'m43', 0, 30, 4, 29.2, 3.8);
+VALUES ('20000000-0000-0000-0000-000000000001', 'open', 1, :'m43', 0, 31, 3.5, 30.3, 3.4);
 EXECUTE a_chain;
 SELECT version_id, ladder, mu, sigma, matches_played FROM ratings ORDER BY version_id, ladder;
 
 \echo '--- count: batch document after the fold (expect n 2: the fold still waiting, then the verdict on alice v2 -- decision pass, reason null, trials 1)'
 EXECUTE c_batch_doc (10, 3);
-\echo '--- count: pass under the live fence (expect INSERT 0 2); model_versions_one_active_excl must not fire'
+\echo '--- count: pass under the live fence (expect INSERT 0 1 -- one Open rating_events seed); model_versions_one_active_excl must not fire'
 EXECUTE c_pass ('2026-09-07 10:00:00+00', 2, :'m42', '20000000-0000-0000-0000-000000000002', 25, 8.333, 2.0);
 SELECT v.version, v.status FROM model_versions v JOIN models e ON e.id = v.model_id
  WHERE e.owner_id = '00000000-0000-0000-0000-0000000000a1' ORDER BY v.version;
@@ -335,9 +334,9 @@ SELECT key, epoch FROM clocks WHERE key = 'roster';
 EXECUTE n_results (:'m43');
 EXECUTE n_results (:'m43');
 EXECUTE n_results (:'m42');
-\echo '--- the ranks of row 43: alice stayed first on both ladders, so nothing moved (expect INSERT 0 0)'
+\echo '--- the ranks of row 43: alice stayed first on Open and in her class, so nothing moved (expect INSERT 0 0)'
 EXECUTE n_ranks (:'m43', 5.0);
-\echo '--- a fold that FLIPS the open ladder, rolled back: alice v2 from 2nd to 1st. Unsettled (settled_sigma 1.0) says nothing (expect INSERT 0 0); settled, alice is told and the baseline is not (expect INSERT 0 1); again (expect INSERT 0 0)'
+\echo '--- a fold that FLIPS the open ladder, rolled back: alice v2 from 2nd to 1st. Unsettled (settled_sigma 1.0) says nothing (expect INSERT 0 0); settled, alice is told on Open and in her class and the baseline is not (expect INSERT 0 2); again (expect INSERT 0 0)'
 BEGIN;
 INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, season_map_id, seat_count, ladders,
                      claim_token, replay_key, engine_digest_played, orion_version, played_at, rated_at, rated_seq)
@@ -410,8 +409,8 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, w
   ('20000000-0000-0000-0000-0000000000a2', 'e0000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 'sha256:wl1', 'sha256:ml1', '1.8.1'),
   ('20000000-0000-0000-0000-0000000000c1', 'e0000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 'sha256:wc1', 'sha256:mc1', '1.8.1');
 INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
-  ('20000000-0000-0000-0000-0000000000a2', 'nano', 40, 2), ('20000000-0000-0000-0000-0000000000a2', 'open', 40, 2),
-  ('20000000-0000-0000-0000-0000000000c1', 'nano', 28, 2), ('20000000-0000-0000-0000-0000000000c1', 'open', 28, 2);
+  ('20000000-0000-0000-0000-0000000000a2', 'open', 40, 2),
+  ('20000000-0000-0000-0000-0000000000c1', 'open', 28, 2);
 UPDATE seasons SET close_requested_at = now() WHERE id = '50000000-0000-0000-0000-000000000001';
 EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 2.0, 3);
 SELECT sp.ladder, sp.place, u.handle, e.name, sp.rating FROM season_podium sp
@@ -431,7 +430,7 @@ SELECT text_hold_tag('this ladder is a SCAM', true) AS word, text_hold_tag('plea
 \echo '    and a word is one line of letters, digits and single separators (expect check violation)'
 INSERT INTO comment_words (word, added_by) VALUES ('sc.m', '00000000-0000-0000-0000-0000000000ad');
 ROLLBACK;
-\echo '--- the field at an instant: a version stands from its seq-0 row on Open until a later version of its entry has one (expect on 1 Feb x v1 18.00 #1 and colony 10.00 #2; on 1 Mar x v2 22.00 #1 and colony 10.00 #2); the hour''s snapshots, written once (expect INSERT 0 6, INSERT 0 6, then INSERT 0 0); the series reads them for each edge but the last (expect 3 edges; x v1 then null, x v2 null then a rating)'
+\echo '--- the field at an instant: a version stands from its seq-0 row on Open until a later version of its entry has one (expect on 1 Feb x v1 18.00 #1 and colony 10.00 #2; on 1 Mar x v2 22.00 #1 and colony 10.00 #2); the hour''s snapshot, one Open row per season, written once (expect INSERT 0 1, INSERT 0 1, then INSERT 0 0); the series reads it for each edge but the last (expect 3 edges; x v1 then null, x v2 null then a rating)'
 BEGIN;
 INSERT INTO users (id, handle) VALUES ('00000000-0000-0000-0000-0000000000c1', 'carol');
 INSERT INTO models (id, owner_id, game_id, name) VALUES
@@ -767,7 +766,7 @@ SELECT (SELECT status FROM model_versions WHERE id = :'scout_v') AS scout, (SELE
 \echo '--- a testing baseline cannot be enabled (expect INSERT 0 0, twin still testing)'
 EXECUTE b_flip ('ants', 'summer-2026', 'twin', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
 SELECT v.status FROM model_versions v JOIN models e ON e.id = v.model_id WHERE e.name = 'Twin';
-\echo '--- enabling seeds two ratings at the prior with their seq-0 events and moves the roster epoch (expect INSERT 0 1, active, 2 ratings at 25, 2 events, epoch moved, season_json enabled 2 -- random and scout -- admitting 1)'
+\echo '--- enabling seeds one Open rating at the prior with its seq-0 event and moves the roster epoch (expect INSERT 0 1, active, 1 rating at 25, 1 event, epoch moved, season_json enabled 2 -- random and scout -- admitting 1)'
 SELECT epoch AS ep0 FROM clocks WHERE key = 'roster' \gset
 EXECUTE b_flip ('ants', 'summer-2026', 'scout', true, '00000000-0000-0000-0000-0000000000ad', 25.0, 8.333333333333334);
 SELECT v.status, (SELECT count(*) FROM ratings r WHERE r.version_id = v.id AND r.mu = 25) AS ratings,
@@ -1276,8 +1275,8 @@ INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, w
   ('20000000-0000-0000-0000-0000000000f8', 'e0000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 1, 'active', 'nano', 500, 'sha256:wf8', 'sha256:mf8', '1.8.1'),
   ('20000000-0000-0000-0000-0000000000f9', 'e0000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000f1', 2, 'active', 'nano', 500, 'sha256:wf9', 'sha256:mf9', '1.8.1');
 INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, listed, played_at, rated_at, rated_seq) VALUES
-  ('11111111-1111-1111-1111-1111111111f8', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 'sha256:e1', 1, '5a000000-0000-0000-0000-000000000001', 2, ARRAY['nano','open']::ladder[], 'rated', true, now(), now(), 1),
-  ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000f1', 'sha256:e1', 2, '5a000000-0000-0000-0000-0000000000f1', 2, ARRAY['nano','open']::ladder[], 'rated', true, now(), now(), 2);
+  ('11111111-1111-1111-1111-1111111111f8', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-000000000001', 'sha256:e1', 1, '5a000000-0000-0000-0000-000000000001', 2, ARRAY['open']::ladder[], 'rated', true, now(), now(), 1),
+  ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000f1', 'sha256:e1', 2, '5a000000-0000-0000-0000-0000000000f1', 2, ARRAY['open']::ladder[], 'rated', true, now(), now(), 2);
 INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating) VALUES
   ('50000000-0000-0000-0000-000000000001', 'nano', 3, '20000000-0000-0000-0000-0000000000f8', '00000000-0000-0000-0000-0000000000a1', 22),
   ('50000000-0000-0000-0000-0000000000f1', 'open', 1, '20000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-0000000000a1', 22);

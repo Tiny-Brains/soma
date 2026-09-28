@@ -13,7 +13,8 @@
 --   4. Run this file, once, as the owner, BEFORE the runners and the clocks come back:
 --        psql "$SOMA_DB_URL" -v ON_ERROR_STOP=1 -f scripts/backfill-redesign.sql
 --   5. Read what it prints: the rating chain (ratings.matches_played against rating_events' last
---      seq, which a restore must keep) must list no rows, and the row counts must match the dump.
+--      seq, which a restore must keep) must list no rows. Open row counts match the dump; the
+--      per-class ratings, events and snapshots are dropped above -- there is one rated ladder now.
 --
 -- Every statement is idempotent: a second run writes the same values. It sends no notification --
 -- a medal for a season that closed weeks ago is news to nobody -- and past matches have no last
@@ -23,6 +24,19 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
+
+-- ONE RATED LADDER (this release). Production was dumped from the dual-ladder schema, so the restore
+-- brings per-class `ratings`, `rating_events` and `ladder_snapshots`, and matches whose `ladders`
+-- array still carries a class. A weight class is now a filtered VIEW of Open, so those class rows are
+-- dead weight the new reads never touch: normalise every rated match's array to {open} (trials keep
+-- {}), and drop the class ratings, events and snapshots. The Open rows -- the real ladder -- and the
+-- frozen per-class `season_podium` (a view label, still wanted) are left untouched. Idempotent: a
+-- second run finds nothing left to change.
+UPDATE matches SET ladders = ARRAY['open']::ladder[]
+ WHERE 'open' = ANY (ladders) AND ladders <> ARRAY['open']::ladder[];
+DELETE FROM rating_events    WHERE ladder <> 'open';
+DELETE FROM ratings          WHERE ladder <> 'open';
+DELETE FROM ladder_snapshots WHERE ladder <> 'open';
 
 -- Who may see a match: what finish and a trial's pass would have set. A trial is public when its
 -- candidate went public.
@@ -99,19 +113,18 @@ SELECT s.id, l.ladder, p.place, p.version_id, p.owner_id, p.rating
  WHERE s.closed_at IS NOT NULL
 ON CONFLICT (season_id, ladder, place) DO NOTHING;
 
--- Every hour of every season's ladders, as the withdraw clock would have written them live: from
--- the first hour after it opened to its close, or now. ladder_at() per hour and ladder, so this is
--- the slow statement -- about 6 x 24 calls a day of season, each a few ms at today's field.
+-- Every hour of every season's Open ladder, as the withdraw clock would have written it live: from
+-- the first hour after it opened to its close, or now. One rated ladder, so one row per hour (a class
+-- series filters this Open row); ladder_at() per hour, about 24 calls a day of season, each a few ms.
 INSERT INTO ladder_snapshots (season_id, ladder, at, version_ids, ratings)
-SELECT s.id, l.ladder, h.at, coalesce(f.version_ids, '{}'), coalesce(f.ratings, '{}')
+SELECT s.id, 'open'::ladder, h.at, coalesce(f.version_ids, '{}'), coalesce(f.ratings, '{}')
   FROM seasons s
  CROSS JOIN LATERAL generate_series(date_trunc('hour', s.submissions_open_at) + interval '1 hour',
                                     date_trunc('hour', coalesce(s.closed_at, now())),
                                     interval '1 hour') AS h (at)
- CROSS JOIN unnest(enum_range(NULL::ladder)) AS l (ladder)
  CROSS JOIN LATERAL (SELECT array_agg(a.version_id ORDER BY a.rank) AS version_ids,
                             array_agg(a.conservative::real ORDER BY a.rank) AS ratings
-                       FROM ladder_at(s.id, l.ladder, h.at) a) f
+                       FROM ladder_at(s.id, 'open'::ladder, h.at) a) f
 ON CONFLICT (season_id, ladder, at) DO NOTHING;
 
 COMMIT;
