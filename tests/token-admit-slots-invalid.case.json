@@ -1,0 +1,19 @@
+{
+  "name": "token-admit-slots-invalid: a lane that is not a whole number Orion allows is 400, before anything is registered",
+  "workflow": "../workflows/soma-gate-token.json",
+  "input": {
+    "key": "k-1",
+    "label": "admitter",
+    "arch": "arm64",
+    "engine_digest": "sha256:e1",
+    "orion_version": "1.11.1",
+    "node_version": "dev",
+    "admit_slots": 0
+  },
+  "metadata": { "auth": { "claims": { "sub": "x", "sid": "s1" } }, "params": {}, "vars": {} },
+  "expect": {
+    "data._orion.response.status": 400,
+    "data.body.error": "admit_slots_invalid"
+  },
+  "expect_calls": { "db_write": [] }
+}

@@ -77,7 +77,7 @@ channels add a per-principal quota.
 | GET | `/v1/sessions` | Session | Live sessions |
 | DELETE | `/v1/sessions/{sid}` · `/v1/session` | Session | Revoke one (`others` = all but this one) · sign out |
 | GET | `/v1/admin-check` | Session | **204** admin, **401** no or revoked session, **403** signed-in non-admin; no body |
-| GET | `/v1/status` | Public | Queue, throughput and how far each clock is behind |
+| GET | `/v1/status` | Public | Queue, throughput, how far each clock is behind, and `admitters`: how many machines could serve the admission queue |
 | GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes with their memory numbers |
 | GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor` |
 | GET | `/v1/private/...` | Session | The member's copy of every season-scoped public read -- seasons, leaderboard and series, podium, maps, playing, matches (list, one, frame, related), a match's thread (`/v1/private/threads`), versions, models -- with the same shapes: the same statement with the session's claims, so a private season answers to whoever `season_visible()` lets see it. Uncached |
@@ -95,7 +95,7 @@ channels add a per-principal quota.
 | GET · POST · DELETE | `.../seasons/{slug}/participants` | Season admin | Participants (resolved and waiting) · add in bulk (`logins`, `provider?` default github, a null login is a provider wildcard) · remove one |
 | GET | `.../seasons/{slug}/admins` | Season admin | The season's admins by platform handle |
 | POST · DELETE | `.../seasons/{slug}/admins` | Admin | Assign · remove a season admin by handle (bumps that account's session) |
-| GET · POST | `.../seasons/{slug}/runner-keys` | Season admin | The season's keys, whoever minted them, each with its runners (`live` is `live_runners`') · mint a key bound to this season |
+| GET · POST | `.../seasons/{slug}/runner-keys` | Season admin | `{admissions, keys}`: whether anything can admit for this season (`queued`, `admitters`, `reach`), and its keys whoever minted them, each with its runners (`live` is `live_runners`') · mint a key bound to this season |
 | DELETE | `.../seasons/{slug}/runner-keys/{key}` · `.../runners/{runner}` | Season admin | Revoke one of the season's keys · stop one of its runners; 404 outside the season |
 | GET | `.../seasons/{slug}/audit` | Season admin | The season's audit lines (`audit_log.season_id`, derived by a trigger), `action` prefix, `cursor` |
 | GET · POST | `.../seasons/{slug}/notify` | Season admin | `{recipients, sends}` · `{subject, link?}` to the season's people (entrants, pinned participants, its admins); 422 `no_recipients` |
@@ -202,7 +202,11 @@ and the runner's bytes, picks the class, prices the declared memory against it a
 verdict. A report that decided nothing (the
 runner could not fetch, ran out of time, or measured the probe over `max_probe_ms`) goes back to the
 queue with its attempt spent; a submission waiting for a runner spends none. Nothing is admitted
-while no admitting runner is up. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
+while no admitting runner is up, and `admitters_up(season)` -- the admission claim's own reach
+predicate, so the two cannot disagree -- is what says so: it is on `/v1/status` (`admitters`,
+platform-wide) and on each season's runner-keys document, which a season desk draws its alarm from.
+A machine counts when it reported an admission lane (`runners.admits`, from kalam's `admit_slots`)
+and was last seen inside ninety seconds. A baseline goes `testing` → `disabled` ⇄ `active`. **Plugins:**
 `tb.rating.trueskill` is the TrueSkill update on the one rated ladder (Open), pure; `tb.pairing.pair` picks opponents and
 boards, pure and seeded by the occurrence id. `tb.ants` is the engine, loaded so a map upload can be
 judged by `worldgen`.
@@ -565,8 +569,8 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   operator set, opset, parameter count and probe tally are the runner's word. A runner key is a
   platform admin's or a season admin's (bound to its season), and a runner key can already report a
   match result.
-- Nothing tells an admin that no admitting runner is up. Submissions wait in `testing` (phase
-  `queued`) for as long as there is none, spending no attempt.
+- A session does not record which provider it was signed in with, so the sessions page cannot say
+  (BRD I8). `identities` holds it; `sessions` does not.
 - The OAuth callback cannot say which failure happened: `oauth2_login` answers a fixed 401.
 - No API tokens for an SDK or CLI.
 - `finish` has no `turns <= max_turns` gate (`max_turns` is a season rule, so it needs the claim's coalesce).

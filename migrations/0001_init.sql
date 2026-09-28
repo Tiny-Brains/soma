@@ -906,6 +906,20 @@ CREATE TABLE runners (
     -- counts the lanes of these runners alone, rather than queueing work for slots nobody polls.
     plays_matches boolean     NOT NULL DEFAULT false,
 
+    -- WHETHER IT ADMITS: the same fact for the other role, reported the same way (kalam's
+    -- `admit_slots`, which RUNNER_ROLE=admit sets to one and a match runner leaves at zero). It is
+    -- NOT `NOT plays_matches`: a runner that has reported neither is a runner from before either was
+    -- reported, and reading silence as "this machine admits" is how an admin is told a queue is
+    -- being served by a machine that has never claimed an admission. Both are sticky, because a
+    -- token exchange that omits one says nothing about it rather than denying it.
+    --
+    -- WHAT IT IS FOR. Nothing admits while no admitting runner is up, and a season whose
+    -- `fleet.admissions` is `own` has its own fleet to keep up; until this column existed the
+    -- platform had no way to say so, and a submission sat in `testing` spending no attempt with
+    -- nothing anywhere naming the reason. `admitters_up()` is the reader, and the runner is counted
+    -- live on `last_seen_at` inside the same 90 seconds pair's idle fill counts a match lane on.
+    admits        boolean     NOT NULL DEFAULT false,
+
     first_seen_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at  timestamptz NOT NULL DEFAULT now(),
     revoked_at    timestamptz,
@@ -955,6 +969,36 @@ CREATE VIEW live_runner_keys AS
          OR (k.season_id IS NOT NULL AND (u.role = 'admin' OR EXISTS (
                 SELECT 1 FROM season_admins sa
                  WHERE sa.season_id = k.season_id AND sa.user_id = k.user_id AND sa.removed_at IS NULL))));
+
+-- HOW MANY ADMITTING RUNNERS COULD CLAIM THIS SEASON'S ADMISSIONS RIGHT NOW. Zero and a queue is
+-- the one platform state that looks exactly like nothing being wrong: the admit clock prepares the
+-- rows, no runner claims them, they spend no attempt, and the submission sits in `testing` (phase
+-- `queued`) until it expires. `/v1/status`, the platform's Runners page and a season's own desk all
+-- ask this, and the answer is the same predicate the admission claim itself runs
+-- (soma-gate-admissions-claim-claim.sql), so the count can never disagree with what would be
+-- claimed. Keep the two together: a change to the fleet reach there is a change here.
+--
+-- LIVE IS `last_seen_at` INSIDE 90 SECONDS, the window pair's idle fill counts a match lane on. An
+-- admitting runner exchanges its token every ten minutes but claims every ten seconds, and
+-- `live_runners` alone answers "not revoked", not "still breathing" -- a stopped container keeps
+-- its row for ever. Nine missed ticks is down.
+--
+-- NULL SEASON MEANS THE WHOLE PLATFORM: how many admitting runners could claim ANY season's
+-- admissions, which is what a platform-wide status line needs.
+CREATE FUNCTION admitters_up(p_season uuid DEFAULT NULL) RETURNS integer
+LANGUAGE sql STABLE AS $$
+    -- DISTINCT because the join fans out: with no season named, one platform runner reaches every
+    -- season whose policy allows it, and the answer is machines, not (machine, season) pairs.
+    SELECT count(DISTINCT lr.id)::integer
+      FROM live_runners lr
+      JOIN runners r  ON r.id = lr.id
+      JOIN seasons se ON se.closed_at IS NULL AND (p_season IS NULL OR se.id = p_season)
+     WHERE r.admits
+       AND r.last_seen_at > now() - interval '90 seconds'
+       AND CASE WHEN lr.season_id IS NOT NULL
+                THEN lr.season_id = se.id AND (se.fleet ->> 'admissions') IN ('own', 'both')
+                ELSE (se.fleet ->> 'admissions') IN ('platform', 'both') END
+$$;
 
 -- --------------------------------------------------------------------- models
 

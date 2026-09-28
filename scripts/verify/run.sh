@@ -64,6 +64,8 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("x_frame", "soma-pub-matches-frame", "query"),
          ("x_events", "soma-pub-events", "record"),
          ("x_podium", "soma-pub-podium", "query"),
+         ("x_status", "soma-pub-status", "query"),
+         ("sk_keys", "soma-user-season-runner-keys-list", "answer.read"),
          ("cm_thread", "soma-user-comments-create", "thread"),
          ("cm_post", "soma-user-comments-create", "post"),
          ("cm_why", "soma-user-comments-create", "why"),

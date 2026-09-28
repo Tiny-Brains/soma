@@ -15,6 +15,11 @@ SELECT json_build_object( 'checked_at', now(), 'arena', json_build_object( 'matc
             FROM matches), 'last_rated_at', (SELECT max(rated_at)
             FROM matches), 'admission_queue', (SELECT count(*)
             FROM model_versions
-            WHERE status = 'testing'), 'awaiting_trial', (SELECT count(*)
+            WHERE status = 'testing'),
+            -- HOW MANY MACHINES COULD SERVE THAT QUEUE. A queue with no admitter is the one state
+            -- that looks like nothing being wrong: the rows spend no attempt and the submissions
+            -- sit in `testing` until they expire, so the number has to be beside the queue rather
+            -- than inferred from it. Platform-wide, over every live season's fleet policy.
+            'admitters', admitters_up(), 'awaiting_trial', (SELECT count(*)
             FROM model_versions
             WHERE status = 'verified'))) AS body

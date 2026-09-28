@@ -1,0 +1,38 @@
+{
+  "name": "token-admitter: an admitting runner reports its lane and no match slots, and the register binds both",
+  "workflow": "../workflows/soma-gate-token.json",
+  "input": {
+    "key": "k-1",
+    "label": "admitter",
+    "arch": "arm64",
+    "engine_digest": "sha256:e1",
+    "orion_version": "1.11.1",
+    "node_version": "dev",
+    "admit_slots": 1,
+    "ops_budget": 1000000
+  },
+  "metadata": { "auth": { "claims": { "sub": "x", "sid": "s1" } }, "params": {}, "vars": {} },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "runner_id": "r1",
+            "key_id": "k1",
+            "label": "admitter",
+            "ops_budget": 1000000,
+            "ops_required": 1000000,
+            "max_in_flight": 4
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.expires_in": 600,
+    "calls.db_write[0].task_id": "register"
+  },
+  "expect_tasks": ["parse", "digest", "register", "identify", "notify_engine", "token", "respond"]
+}

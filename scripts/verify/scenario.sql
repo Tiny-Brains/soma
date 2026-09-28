@@ -1375,16 +1375,22 @@ SELECT (:'body')::json -> 'spare' IS NOT NULL AS spare_read;
 \echo '    ... a fill without games, or with a key it does not know, writes nothing (expect INSERT 0 0 twice)'
 EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": true}', '00000000-0000-0000-0000-0000000000ad');
 EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": false, "gmaes": 3}', '00000000-0000-0000-0000-0000000000ad');
-\echo '    ... and a token exchange that reports slots marks a runner as one that plays; one that reports none does not (expect t, f)'
-EXECUTE g_register ('sha256:not-a-real-digest', 'rd-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 3, 2400000, 1);
-EXECUTE g_register ('sha256:not-a-real-digest', 'rd-admit', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1);
-SELECT label, plays_matches FROM runners WHERE label IN ('rd-match', 'rd-admit') ORDER BY label DESC;
+\echo '    ... and a token exchange marks the role it reported, and NEITHER is the other''s negation (expect rd-match t/f, rd-admit f/t, rd-quiet f/f)'
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 3, 2400000, 1, NULL);
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-admit', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1, 1);
+-- A runner that reports NEITHER lane is one from before either was reported. It must not be read as
+-- an admitter, or an admin is told a queue is served by a machine that has never claimed anything.
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-quiet', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1, NULL);
+SELECT label, plays_matches, admits FROM runners WHERE label LIKE 'rd-%' ORDER BY label;
+\echo '    ... and both stick: an exchange that omits one says nothing about it rather than denying it (expect t, t)'
+EXECUTE g_register ('sha256:not-a-real-digest', 'rd-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1, 1);
+SELECT plays_matches, admits FROM runners WHERE label = 'rd-match';
 \echo '    ... a season key registers a runner for an admin of its season, and not for anyone else (expect INSERT 0 1, then INSERT 0 0)'
 INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix, season_id) VALUES
   ('6b000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000f1', 'cohort lab', 'sha256:season-key-of-its-admin', 'tbr_sk01', '50000000-0000-0000-0000-0000000000f1'),
   ('6b000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-0000000000f2', 'not theirs', 'sha256:season-key-of-a-stranger', 'tbr_sk02', '50000000-0000-0000-0000-0000000000f1');
-EXECUTE g_register ('sha256:season-key-of-its-admin', 'cohort-1', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1);
-EXECUTE g_register ('sha256:season-key-of-a-stranger', 'cohort-2', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1);
+EXECUTE g_register ('sha256:season-key-of-its-admin', 'cohort-1', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1, NULL);
+EXECUTE g_register ('sha256:season-key-of-a-stranger', 'cohort-2', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1, NULL);
 
 \echo '--- the countdown: round 2 moved to ten minutes from now is inside its fifteen-minute warning (expect UPDATE 1; one live public line naming the season, at = the start; then two bell rows, dora and eve, none for the wall)'
 UPDATE season_rounds SET starts_at = now() + interval '10 minutes'
@@ -1611,4 +1617,153 @@ SELECT (:'nd_body')::json ->> 'recipients' AS recipients;
 EXECUTE n_season_send ('00000000-0000-0000-0000-00000000aa0e', '5e000000-0000-0000-0000-00000000aa0e', 'b0000000-0000-0000-0000-00000000aa01', 'Boards are up', '/maps', '50000000-0000-0000-0000-00000000aa02', 'ants', 'import-dst');
 EXECUTE n_season_doc ('50000000-0000-0000-0000-00000000aa02', 'ants', 'import-dst') \gset nd2_
 SELECT json_array_length((:'nd2_body')::json -> 'sends') AS sends;
+ROLLBACK;
+
+\echo '===== the fleet fence: which runner may claim which season, and whether anything can admit ====='
+-- S10. The fleet policy decides who plays and who admits, and until now it was proven only against a
+-- running stack with real runner containers -- so nothing offline caught a regression in it.
+-- check-sql.sh proves GRANTS, not PREDICATES: `runner_gate` holding SELECT on seasons.fleet says
+-- nothing about the CASE that reads it. Every assertion below is the shipped claim, executed as the
+-- role the gate connects as, and each negative must stay negative.
+--
+-- The matrix (BRD R4), for one season, by its fleet policy:
+--        own       -> its own runners claim it;  a platform runner claims nothing of it
+--        platform  -> its own runners claim it NOT; a platform runner does
+--        both      -> either
+-- and, whatever any season says, A SEASON RUNNER NEVER REACHES ANOTHER SEASON.
+BEGIN;
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, fleet) VALUES
+  ('5f000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 901, 'Fleet A', 'fleet-a', 'sha256:e1',
+   now() - interval '1 hour', now() + interval '1 day', '{"matches": "own", "admissions": "own"}'),
+  ('5f000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-00000000000a', 902, 'Fleet B', 'fleet-b', 'sha256:e1',
+   now() - interval '1 hour', now() + interval '1 day', '{"matches": "platform", "admissions": "platform"}');
+INSERT INTO season_maps (id, season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
+  ('7f000000-0000-0000-0000-000000000001', '5f000000-0000-0000-0000-000000000001', 'fa', 2, 24, 24, 'sha256:fa', '{"id": "fa"}', true, '00000000-0000-0000-0000-0000000000ad'),
+  ('7f000000-0000-0000-0000-000000000002', '5f000000-0000-0000-0000-000000000002', 'fb', 2, 24, 24, 'sha256:fb', '{"id": "fb"}', true, '00000000-0000-0000-0000-0000000000ad');
+-- A key bound to Fleet A, owned by the platform admin (live_runner_keys passes a season key of a
+-- platform admin as well as of a season admin), and the platform key the seed already made.
+INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix, season_id)
+VALUES ('6f000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000ad', 'fleet A lab',
+        'sha256:fleet-a-season-key', 'tbr_fa01', '5f000000-0000-0000-0000-000000000001');
+\echo '--- four machines register themselves, two per fleet, one of each role (expect INSERT 0 1 x4)'
+EXECUTE g_register ('sha256:not-a-real-digest',    'fl-plat-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 4,    2400000, 2, NULL);
+EXECUTE g_register ('sha256:not-a-real-digest',    'fl-plat-admit', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1, 1);
+EXECUTE g_register ('sha256:fleet-a-season-key',   'fl-own-match',  'sha256:e1', 'x', '1.11.1', 1, 'arm64', 4,    2400000, 2, NULL);
+EXECUTE g_register ('sha256:fleet-a-season-key',   'fl-own-admit',  'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1, 1);
+SELECT id AS fl_pm FROM runners WHERE label = 'fl-plat-match' \gset
+SELECT id AS fl_pa FROM runners WHERE label = 'fl-plat-admit' \gset
+SELECT id AS fl_om FROM runners WHERE label = 'fl-own-match' \gset
+SELECT id AS fl_oa FROM runners WHERE label = 'fl-own-admit' \gset
+-- One pending match in each season, re-pended before every claim so each assertion is independent.
+INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, season_map_id, seat_count, ladders) VALUES
+  ('1f000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', '5f000000-0000-0000-0000-000000000001', 'pending', 'sha256:e1', 1, '7f000000-0000-0000-0000-000000000001', 2, ARRAY['open']::ladder[]),
+  ('1f000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-00000000000a', '5f000000-0000-0000-0000-000000000002', 'pending', 'sha256:e1', 2, '7f000000-0000-0000-0000-000000000002', 2, ARRAY['open']::ladder[]);
+
+\echo '--- MATCHES, Fleet A = own: its own runner takes its row, the platform runner takes nothing (expect UPDATE 1, UPDATE 0)'
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000001', 60, 4, :'fl_om', 1000, 1000, 5);
+RESET ROLE;
+UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
+-- Fleet B is 'platform', so the platform runner WOULD reach it: park B's row on another engine
+-- (the claim matches m.engine_digest against what the runner reported) so an answer of 1 below can
+-- only have come from A. Parking by status would have to satisfy matches_status_shape.
+UPDATE matches SET engine_digest = 'sha256:parked' WHERE id = '1f000000-0000-0000-0000-000000000002';
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000002', 60, 4, :'fl_pm', 1000, 1000, 5);
+RESET ROLE;
+
+\echo '--- MATCHES, Fleet A = platform: the same two the other way round (expect UPDATE 0, UPDATE 1)'
+UPDATE seasons SET fleet = '{"matches": "platform", "admissions": "platform"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
+UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000003', 60, 4, :'fl_om', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000004', 60, 4, :'fl_pm', 1000, 1000, 5);
+RESET ROLE;
+
+\echo '--- MATCHES, Fleet A = both: either machine, whichever asks first (expect UPDATE 1, then UPDATE 0 -- the row is gone, not refused)'
+UPDATE seasons SET fleet = '{"matches": "both", "admissions": "both"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
+UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000005', 60, 4, :'fl_om', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000006', 60, 4, :'fl_pm', 1000, 1000, 5);
+RESET ROLE;
+
+\echo '--- MATCHES: a season runner never reaches ANOTHER season, whatever that season says (expect UPDATE 0 on both `platform` and `both`)'
+-- Fleet A's runner, offered only Fleet B's row. This is the property the BRD's trust argument rests
+-- on: it is what makes handing a runner key to a university acceptable.
+UPDATE matches SET engine_digest = 'sha256:parked' WHERE id = '1f000000-0000-0000-0000-000000000001';
+UPDATE matches SET engine_digest = 'sha256:e1', status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000002';
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000007', 60, 4, :'fl_om', 1000, 1000, 5);
+RESET ROLE;
+UPDATE seasons SET fleet = '{"matches": "both", "admissions": "both"}' WHERE id = '5f000000-0000-0000-0000-000000000002';
+SET ROLE runner_gate;
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000008', 60, 4, :'fl_om', 1000, 1000, 5);
+RESET ROLE;
+UPDATE seasons SET fleet = '{"matches": "platform", "admissions": "platform"}' WHERE id = '5f000000-0000-0000-0000-000000000002';
+
+\echo '--- ADMISSIONS take the same predicate on the VERSION''s season: one queued in each (expect INSERT 0 2)'
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, weights_hash, manifest_hash, orion_version) VALUES
+  ('2f000000-0000-0000-0000-000000000001', 'e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', '5f000000-0000-0000-0000-000000000001', 901, 'testing', 'nano', 'sha256:wfa', 'sha256:mfa', '1.11.1'),
+  ('2f000000-0000-0000-0000-000000000002', 'e0000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000000a', '5f000000-0000-0000-0000-000000000002', 902, 'testing', 'nano', 'sha256:wfb', 'sha256:mfb', '1.11.1');
+INSERT INTO admissions (version_id, registration, manifest, artifact_bytes, budget_ops) VALUES
+  ('2f000000-0000-0000-0000-000000000001', '{}', '{}', 1024, 1000000),
+  ('2f000000-0000-0000-0000-000000000002', '{}', '{}', 1024, 1000000);
+\echo '    Fleet A = own (B stays platform): its own admitter takes A''s row, the platform admitter takes only B''s (expect UPDATE 1, UPDATE 1, and the seasons they took)'
+UPDATE seasons SET fleet = '{"matches": "own", "admissions": "own"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
+SET ROLE runner_gate;
+EXECUTE g_admit_claim (:'fl_oa', '0f000000-0000-0000-0000-000000000001', 300, 3);
+EXECUTE g_admit_claim (:'fl_pa', '0f000000-0000-0000-0000-000000000002', 300, 3);
+RESET ROLE;
+SELECT v.season_id = '5f000000-0000-0000-0000-000000000001' AS own_took_a
+  FROM admissions a JOIN model_versions v ON v.id = a.version_id WHERE a.claim_token = '0f000000-0000-0000-0000-000000000001';
+SELECT v.season_id = '5f000000-0000-0000-0000-000000000002' AS platform_took_b
+  FROM admissions a JOIN model_versions v ON v.id = a.version_id WHERE a.claim_token = '0f000000-0000-0000-0000-000000000002';
+\echo '    the platform admitter is refused A''s row even with nothing else waiting (expect UPDATE 0)'
+UPDATE admissions SET runner_id = NULL, claim_token = NULL, lease_expires_at = NULL, attempts = 0 WHERE version_id = '2f000000-0000-0000-0000-000000000001';
+DELETE FROM admissions WHERE version_id = '2f000000-0000-0000-0000-000000000002';
+SET ROLE runner_gate;
+EXECUTE g_admit_claim (:'fl_pa', '0f000000-0000-0000-0000-000000000003', 300, 3);
+RESET ROLE;
+
+\echo '--- S9: admitters_up() is the SAME reach, so the count and the claim cannot disagree (expect A 1/own, then 0 when its machine goes quiet, then 1 again under `both`)'
+SELECT admitters_up('5f000000-0000-0000-0000-000000000001') AS a_own,
+       admitters_up('5f000000-0000-0000-0000-000000000002') AS b_platform;
+\echo '    a machine silent for two minutes is down, whatever live_runners says about its key (expect 0, and live still t)'
+UPDATE runners SET last_seen_at = now() - interval '2 minutes' WHERE id = :'fl_oa';
+SELECT admitters_up('5f000000-0000-0000-0000-000000000001') AS a_quiet,
+       EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = :'fl_oa') AS still_authorised;
+\echo '    and the claim agrees with the count it disagreed with before: nothing (expect UPDATE 0)'
+SET ROLE runner_gate;
+EXECUTE g_admit_claim (:'fl_pa', '0f000000-0000-0000-0000-000000000004', 300, 3);
+RESET ROLE;
+\echo '    under `both` the platform''s machine serves A, so the queue is not stuck after all (expect 1)'
+UPDATE seasons SET fleet = '{"matches": "both", "admissions": "both"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
+SELECT admitters_up('5f000000-0000-0000-0000-000000000001') AS a_both;
+\echo '    a MATCH runner is not an admitter, and a machine that reported neither lane is neither (expect 1, not 3)'
+SELECT admitters_up('5f000000-0000-0000-0000-000000000001') AS still_one;
+\echo '    platform-wide, one machine reaching two seasons is one machine (expect 1)'
+SELECT admitters_up() AS platform_wide;
+\echo '    a revoked key takes its machines out of the count with no other change (expect 0)'
+UPDATE runner_keys SET revoked_at = now() WHERE id = 'c0000000-0000-0000-0000-000000000001';
+SELECT admitters_up('5f000000-0000-0000-0000-000000000001') AS after_revoke;
+
+\echo '--- W8: the two documents that draw the alarm say the same thing (expect the season stuck: queued 1, admitters 0, reach both; and the platform queue with no admitter)'
+-- The season desk reads its own document; /v1/status reads the platform's. Both take the number
+-- from admitters_up(), so neither can tell an admin a queue is served when the claim would refuse.
+EXECUTE sk_keys ('5f000000-0000-0000-0000-000000000001') \gset sk_
+SELECT (:'sk_body')::json -> 'admissions' ->> 'queued'    AS queued,
+       (:'sk_body')::json -> 'admissions' ->> 'admitters' AS admitters,
+       (:'sk_body')::json -> 'admissions' ->> 'reach'     AS reach,
+       json_array_length((:'sk_body')::json -> 'keys')    AS keys;
+EXECUTE x_status \gset st_
+SELECT (:'st_body')::json -> 'arena' ->> 'admission_queue' AS platform_queue,
+       (:'st_body')::json -> 'arena' ->> 'admitters'       AS platform_admitters;
+\echo '    and a machine calling in again clears both (expect admitters 1, platform 1)'
+UPDATE runner_keys SET revoked_at = NULL WHERE id = 'c0000000-0000-0000-0000-000000000001';
+UPDATE runners SET last_seen_at = now() WHERE label = 'fl-plat-admit';
+EXECUTE sk_keys ('5f000000-0000-0000-0000-000000000001') \gset sk2_
+SELECT (:'sk2_body')::json -> 'admissions' ->> 'admitters' AS admitters;
+EXECUTE x_status \gset st2_
+SELECT (:'st2_body')::json -> 'arena' ->> 'admitters' AS platform_admitters;
 ROLLBACK;

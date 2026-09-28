@@ -57,6 +57,42 @@
       }
     },
     {
+      "id": "admit_slots",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!==": [{ "var": "data.req.admit_slots" }, null] },
+            {
+              "!": {
+                "and": [
+                  { "===": [{ "type": { "var": "data.req.admit_slots" } }, "number"] },
+                  { ">=": [{ "var": "data.req.admit_slots" }, 1] },
+                  { "<=": [{ "var": "data.req.admit_slots" }, 64] },
+                  {
+                    "===": [
+                      { "%": [{ "var": "data.req.admit_slots" }, 1] },
+                      0
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "admit_slots_invalid",
+          "detail": {
+            "reported": { "var": "data.req.admit_slots" },
+            "allowed": "a whole number from 1 to 64"
+          }
+        },
+        "name": "An admitting runner names its lane",
+        "description": "admit_slots is the admission lane this node opened, and it is what marks the row `admits`: the machines admitters_up() counts, and so what tells an admin that a queue has nobody to serve it. Absent is fine -- a match runner opens none, and a runner from before this was reported says nothing -- and keeps what the row holds. kalam reports 1 under RUNNER_ROLE=admit; the bound is Orion's own on a channel's slots, as max_in_flight's is, so a node that ever runs more than one admission at a time needs no change here."
+      }
+    },
+    {
       "id": "digest",
       "name": "Hash the presented key",
       "function": {
@@ -89,7 +125,8 @@
             { "var": "data.req.arch" },
             { "var": "data.req.max_in_flight" },
             { "var": "data.req.match_timeout_ms" },
-            { "var": "data.req.seat_concurrency" }
+            { "var": "data.req.seat_concurrency" },
+            { "var": "data.req.admit_slots" }
           ],
           "output": "temp_data.registered"
         }
