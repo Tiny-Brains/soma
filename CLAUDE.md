@@ -5,6 +5,9 @@ as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour
 workflow definitions whose statements live in `sql/*.sql`, connectors and two
 Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares
 the Orion it needs in `shared/package.json`, and every offline command checks the binary against it.
+**The package ships two plugins and the node loads three**: `tb.ants` comes from the ants release
+the image is built against, and `soma-user-maps-add`/`-update` call `tb.ants.worldgen` to judge a
+board — so a map route names a function nothing in this repo builds.
 
 `README.md` is the human guide: routes, clocks, configuration, operating a season, production requirements, invariants and
 known gaps. The parent `tinybrains/CLAUDE.md` holds the contracts that cross into kalam, ants, web and
@@ -13,7 +16,8 @@ the cli. When you close a gap or find one, update README's **Known gaps**.
 ## Checks
 
 ```sh
-./scripts/check-defs.sh                          # every change: clippy, fmt, names/tags, clippy -c; no stack
+./scripts/check-defs.sh                          # every change: clippy, fmt, names/tags/var://, the offline cases, clippy -c; no stack
+./scripts/check-tests.sh                         # the offline cases alone (check-defs.sh runs it too); no database, no stack
 cargo test --manifest-path plugins/Cargo.toml    # after touching plugins/ (clippy there is clean; the allows are deliberate)
 ./scripts/check-sql.sh                           # after any SQL or schema change; starts its own postgres
 ./scripts/verify/run.sh                          # after a gate, clock, notification or schema change; needs a postgres container (DB_CONTAINER)
@@ -36,6 +40,13 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A plugin's digest moves only when its source does. When it moves, web's
   `scripts/setup/sign-plugins.sh` must run again, or `[packages] apply` stops the node on a
   quarantined channel — which is the point: it will not serve the site without its plugins.
+- **`scripts/cutover/` is a release's one-time database migration, not a check**, and the order is
+  the whole of it: `cutover.sh` (the schema, in one transaction, the old one kept as `legacy`, with
+  every node stopped), then `retire.sh` against Orion's state **before the new node boots**, then
+  `backfill-frames.sh` once it serves. `retire.sh` cannot wait for `load-package.sh --prune`: a
+  release that RENAMES a channel onto a route an active one still claims stops the new node's boot
+  apply, and once a boot apply has succeeded the receipt's current version is already the new one,
+  so `--prune` then finds nothing. Both scripts dry-run without `--commit`.
 
 ## Rules
 
@@ -46,11 +57,25 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `principal_rate_limit` (keyed on `auth.sub`, after) and `response.mode: "shaped"`. The workflow is
   a flat task list whose last `map` writes `data.body` and `data._orion.response`.
 - Constants and fragments live in `shared/soma.json`, referenced with `$from`/`use`/`$use`: `refuse`,
-  `deny-revoked`, `admin-only` (every admin route opens with it), `require-claim-token` (every fenced
-  gate route), `invalidate`, `too-long` and `not-bool` (a refusal on a field's length or shape),
+  `deny-revoked`, `admin-only` (a platform admin's route), `season-admin-only` (a season's route),
+  `require-claim-token` (every fenced gate route), `invalidate`, `bump` and `generation` (the cache
+  generations), `too-long` and `not-bool` (a refusal on a field's length or shape), `season-not-closed`,
   `sign-uploads` (the two presigned PUTs a submission and a baseline upload share), `notify-comments`,
-  and the value `none_written` (the zero-rows condition every refuse-after-write tests). A refusal
+  the answers several routes end on (`match-answer`, `season-runner-keys-answer`,
+  `submission-refusals`), and the value `none_written` (the zero-rows condition every
+  refuse-after-write tests). A refusal
   shape that appears twice is a fragment, since clippy's duplication rules see only exact copies. So the set must be **compiled** before it is applied, which `load-package.sh` does.
+- **A season-scoped route is a season admin's, not a platform admin's.** `season-admin-only`
+  (with the `season_admin_identity` constant) resolves a platform admin OR a live `season_admins`
+  member from the route's `{game}`/`{slug}`, off the row on every call, so a removal takes effect at
+  the next request. `admin-only` is now the narrower case: creating a season, featuring one, the
+  fleet policy, rounds, the fill, and assigning season admins. Both surfaces still tag `admin`.
+- **Every season-scoped public read has a `/v1/private/...` twin, and the two share one statement.**
+  `channels/soma-user-private-*.json` sits beside `channels/soma-pub-*.json` (fourteen pairs) and
+  both workflows name the same `sql/soma-pub-shared-*.sql`: the same SQL with the session's claims,
+  so `season_visible()` decides what a private season answers and to whom. A change to a public
+  season read is a change to both channels and one file. The private twin declares no `cache` — its
+  answer is the caller's.
 - **A workflow's `description` is where a route's reasoning lives.** Read it before changing the
   route. Orion refuses one over 2048 characters, and `check-sql.sh` fails first.
 - **SQL builds the response and the workflow moves it**: queries end `json_build_object(...) AS
@@ -108,8 +133,13 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   there is no generator and nothing to regenerate.
   A statement keeps the comments and alignment it is written with — Orion's `$sql` normal form
   collapses both when `compile` inlines the file, so a comment costs nothing and a comment edit
-  moves neither the statement nor the package's content hash. A statement two tasks share is ONE
-  file (`sql/tb-shared-<task>.sql`) named from each.
+  moves neither the statement nor the package's content hash.
+- **A statement's file is named from the task that ships it**: `sql/<workflow_id>-<task_id>.sql`.
+  A statement two or more tasks share is ONE file carrying `-shared-` instead
+  (`sql/soma-pub-shared-matches-list.sql`). `check-names.sh` fails all four ways: a `-shared-` file
+  only one task names, a plain file two tasks name, a file on disk nothing names, and a name no file
+  backs. A fragment in `shared/soma.json` may ship a statement too (`notify-comments`), and its
+  `$sql` counts once per use site, which is what lets a shared statement live in a fragment.
 - **A run of tasks that differ only by an index is `$each`, not a copy.** `{"$each": {"n": {"$from":
   "constants.<list>"}}, "do": …}` writes the element once; `{{n}}` interpolates into a string and
   `{"$param": "n"}` inserts it typed. A repeated condition or shape is a value fragment in
@@ -128,6 +158,16 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   empty batch runs no sweep, and a halting `filter` (`fenced`, `boards`, `held`) ends the run.
   Anything that walks a clock (`scripts/verify/run.sh`, `scripts/check-names.sh`) walks
   `loop.setup` first.
+- **Seasons overlap, so every clock is a sweep over seasons and never over "the" season.** A game
+  runs any number of live seasons at once. Pair rotates its pick among tied seasons, so a settled
+  season cannot starve another, and stamps each match's round; count starts each round that is due
+  (the reset, and the old round's queue cancelled `ROUND_ENDED`) before it folds; withdraw keeps a
+  season played in rounds one reset ahead, posts each round's countdown, and closes each live season
+  whose finals are done. A new clock read that names one season is a bug the local stack's single
+  season hides.
+- **Demand is the round's, not the ladder's.** Pair reads a round's quota, else the settling rule,
+  plus the idle fill (`PATCH .../fill`) into lanes no season is asking for. The fill is what keeps a
+  runner busy between rounds, so a change to pair's demand read is a change to both paths.
 - **Correctness rests on SQL fences, never on the singleton.** Count claims a run fence on
   `clocks.count` and every ladder write re-reads it `FOR SHARE`. Pair checks the roster epoch in
   every insert. Admission writes only under its row's `admit_token`. Withdraw is idempotent. Anything
@@ -150,8 +190,10 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `gen:admissions` on admit's queue and requeue. A generation carries no TTL (the cache Redis runs
   volatile-lru); a marker never outlives one. Admit and pair keep their ticks: admit cannot tell
   "nothing waiting" from "waiting but leased" without a read, and pair's demand moves with time.
-- **Three Orion features are left unused on purpose.** Channel `dedup` on the gate's `finish` and
-  the admission report: a replayed key would answer 409, the opposite of the `applied: false`
+- **Three Orion features are left off where they would do harm.** Channel `dedup` ships on the four
+  admin creates that must not double-fire (`runner-keys-create`, `posts-create`, `notify-send`,
+  `announcements-create`, through the `dedup` constant) and is kept OFF the gate's `finish` and the
+  admission report: there a replayed key would answer 409, the opposite of the `applied: false`
   read-back those routes give a duplicate. The `validation` function for refusals: it cannot
   choose 404, 409 or 422, and every refusal here is the `refuse` fragment with its own status.
   Response caching of a signed-in route through `key_logic`: a hit would skip the session JOIN
@@ -202,9 +244,17 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - **`bootstrap` hashes every byte of the migrations, comments included**, and refuses a database
   with a different digest. Any edit, even a comment, means rebuilding the local database, so never
   touch them for cosmetics.
-- A shape several routes return is a function in the migration (`season_json`, `current_season`,
-  `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`, the `season_admits*`
-  predicates). Never copy one into a workflow.
+- A shape several routes return is a function in the migration (`season_json`, `season_state`,
+  `current_season`, `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`). Never copy
+  one into a workflow.
+- **Who may see or enter a season is a predicate in the migration, never a WHERE in a workflow**:
+  `season_visible` (the public/private twins both call it), `viewable_season`, `season_is_admin`,
+  the seven `season_admits*`, and the shape rules a write is validated by (`season_rules_ok`,
+  `season_rule_spec`, `season_fleet_ok`, `season_fill_ok`, `season_round_numbers_ok`,
+  `weight_classes_ok`). A route that decides visibility for itself is a second policy.
+- **`audit_log.season_id` is derived by the trigger `audit_log_season`**, from the row the admin
+  write touched. The writer still inserts its audit line in the same statement; which season it
+  belongs to is the schema's business, and a writer that sets it by hand can disagree with the row.
 - **A text rule is one IMMUTABLE function** (`line_ok`, `site_path_ok`, `link_ok`, `slug_ok`,
   `comment_word_ok`) that the table's CHECK, the write's WHERE and its `why` all call. Never restate
   one as a literal predicate: a write and its diagnosis then disagree about why a request failed.
@@ -243,6 +293,25 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   listed against several tasks (`n_version` ships from three) asserts they are the same statement.
 - A negative fixture must reach the predicate it names: stage the row into the state the statement
   requires, and keep a positive case beside it.
+
+### Tests
+
+- **Every route and clock has offline cases**, `tests/<name>.case.json`, run by `orion-server test
+  tests --definitions .`. No database and no stack: a case names its `workflow`, its `metadata`
+  (`auth.claims`, `params`, `vars`), and **stubs one value per connector per task type** — so a case
+  shapes the one row that has to satisfy every read on the branch it walks.
+- What a case asserts is the branch, not just the answer: `expect` (dotted paths into `data`),
+  `expect_calls` (an EMPTY list is the assertion — that the branch made no `db_read`, no
+  `cache_write`), and `expect_tasks`, the path through the workflow. A cached route's case is worth
+  more than its answer: it proves the statement did not run.
+- **The set carries its own two plugins**, so `tb.rating` and `tb.pairing` run for real. Naming
+  either again with `--plugin-dir` declares it twice and is refused.
+- **`tests/with-ants/` is a second run.** Those cases name `tb.ants`, which this package does not
+  ship, so they need its directory: `TB_ANTS_PLUGIN_DIR`, else `../kalam/plugins/tb-ants`, else
+  `../ants/dist`. `test` does not recurse, so the main run never sees them, and with no plugin they
+  are skipped and say so — a skip reads like a pass in CI on a machine with no sibling checkout.
+- A case runs at a node's cost (no trace, no capture), so a clock's whole loop is affordable: cover
+  the halt, the fence lost, and the sweep, not only the happy path.
 
 ### Runner gate
 
@@ -339,7 +408,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   reads as a routing miss.
 - Twenty tensor operators are live on every expression surface. A single-key object keyed `shape`,
   `full`, `cast`, `pad`, `crop`, `concat` or `stack` is a call, and the escape is `{"$shape": ...}`.
-  Kalam's soma-clock-admit probe relies on `{"length": [{"shape": ...}]}` being a call.
+  A data key of one of those names is read as an operator wherever an expression touches it; a TASK
+  named `shape` (admit's registration rebuild) is not an expression and is unaffected.
 - Archive and delete are not refused for a model an active workflow names by a computed id. Model
   `stats` are written at admission and never recomputed.
 - **Orion activates only a `draft` version.** An archived model 404s on `status: active` and 409s on

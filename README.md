@@ -230,8 +230,9 @@ judged by `worldgen`.
 
 | Command | What it does | Needs |
 |---|---|---|
-| `./scripts/check-defs.sh` | `orion-server lint`, `clippy`, `fmt --check`, `check-names.sh`, and `clippy -c docker/soma.toml.tmpl` for the three rules that need the serving config (all `--deny-warnings`) | `orion-server` in `shared/package.json`'s range |
-| `./scripts/check-names.sh` | The ids, the three tags and the `sql/` filenames. Derives each channel's surface from its protocol, route and role guard, and fails if the tag or the id's second segment disagrees | nothing; it reads the set |
+| `./scripts/check-defs.sh` | `orion-server clippy` (which runs lint's gate first), `fmt --check`, `check-names.sh`, `check-tests.sh`, and `clippy -c docker/soma.toml.tmpl` for the three rules that need the serving config (all `--deny-warnings`) | `orion-server` in `shared/package.json`'s range |
+| `./scripts/check-names.sh` | The ids, the three tags, the `sql/` filenames and every `var://` name against `[vars]`. Derives each channel's surface from its protocol, route and role guard, and fails if the tag or the id's second segment disagrees | nothing; it reads the set |
+| `./scripts/check-tests.sh` | Every `tests/*.case.json` through `orion-server test`: the branch each route and clock takes, the answer it gives and the calls it makes, with stubbed connectors and the package's own plugins. `tests/with-ants/` is a second run and needs `TB_ANTS_PLUGIN_DIR` (else a kalam or ants checkout beside this one), or it is skipped and says so | nothing; `check-defs.sh` runs it |
 | `cargo test --manifest-path plugins/Cargo.toml` | Rating and pairing host tests | stable Rust |
 | `plugins/build.sh tb-rating` (or `tb-pairing`) | Tests, then the wasm component and `plugin.json` beside the source (gitignored) | `wasm32-unknown-unknown`, `wasm-tools`, Python 3.11+ |
 | `./scripts/check-sql.sh` | `orion-server sql check`: prepare every shipped statement against a scratch schema built from `migrations/`, each as its connector's role, and plan it to prove that role's grants | docker, or `SQLCHECK_DATABASE` |
@@ -242,7 +243,17 @@ judged by `worldgen`.
 
 Script env: `DB_CONTAINER` (default `tinybrains-db-1`), `DB_USER`, `BASE`,
 `SMOKE_HANDLE`, `SOMA_ENV_FILE` (smoke; default `../web/.env`), `ORION_ADMIN`,
-`ORION_ADMIN_API_KEY` (load-package).
+`ORION_ADMIN_API_KEY` (load-package), `TB_ANTS_PLUGIN_DIR` (check-tests).
+
+**The cutover** (`scripts/cutover/`) is not a check but this release's one-time migration of an
+existing database, and its order is the whole of it: `cutover.sh` builds the new schema beside the
+old one, copies every row across, swaps the names and commits or rolls back whole, keeping the old
+schema as `legacy`; `retire.sh` archives, in Orion's state, the definitions this release renamed;
+`backfill-frames.sh` fills in the last frame of every older match once the new node serves. The
+first two run **with every node stopped**, and `retire.sh` before the new node boots: a boot apply
+never prunes, and Orion refuses a channel on a route another active channel still claims, so a
+renamed channel stops the node in a loop — and once a boot apply has succeeded, `--prune` finds
+nothing left to remove. Both scripts dry-run until `--commit`.
 
 ## Configuration
 
