@@ -10,5 +10,5 @@ WITH revoked AS (
 )
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($3)::uuid, 'runner.revoke', 'runner', revoked.id::text,
-       jsonb_build_object('label', revoked.label, 'season', ($4)::text)
+       jsonb_build_object('label', revoked.label, 'game', ($5)::text, 'season', ($4)::text)
   FROM revoked

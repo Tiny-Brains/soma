@@ -564,6 +564,24 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - Retention beyond traces is unbuilt: `watch_events`, `audit_log` and `match_frames` grow for ever (a
   frame is a few KB, about 4 MB a day at today's rate). So is the TinyBrain Index (`standings.lambda`
   is accepted and unread).
+- Five season rules are accepted by `season_rule_spec()` and read by no statement: `entries.max_per_class`
+  (its predicate `season_admits_class_slot()` exists and is called from nowhere -- the admit clock's
+  `classify` asks `season_admits_class` and stops), `standings.basis`, `standings.k`, `standings.headline`
+  and `graph.size_metric`. A season may set any of them and nothing changes. The spec table guards the
+  other direction only -- a rule that is not in it cannot be misspelt into silence -- so closing this
+  means either enforcing each rule or giving the table a `reader` column a check can assert against.
+- `audit_log_season()` resolves a line's season by slug, and a slug is unique only per game, so a line
+  whose `detail` names no `game` is stamped to the newest season of that slug across every game. Every
+  season-scoped writer now names one; nothing stops the next one from forgetting, because the trigger
+  still falls back to `ORDER BY number DESC` rather than refusing an ambiguous match. The durable fix is
+  in the trigger, which is a schema rewrite.
+- The `in_flight` list in a submission's refusal detail (`soma-user-shared-submission-why.sql`) counts
+  across the game, while the rule it explains (`season_admits_in_flight`) and the preflight both count
+  per season, so a 409 can name versions that do not count toward the cap it just refused.
+- `sign-uploads` builds its object key from the version id, while `model_versions.artifact_key` is
+  `coalesce(bytes_of, id)`. Re-POSTing a submission whose in-flight row came from `/v1/submissions/reenter`
+  re-mints presigned PUTs for a key the admit clock never reads; admission still succeeds off the real
+  key, and any bytes uploaded to the minted one are unreferenced.
 - A model's memory is priced, not measured. `memory_price()` trusts that a named axis binds to the
   board's rows and columns or to the ant count, and nothing at admission compares what a memory
   actually holds with its price.

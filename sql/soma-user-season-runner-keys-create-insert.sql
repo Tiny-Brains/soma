@@ -13,5 +13,6 @@ WITH made AS (
     RETURNING id, label, key_prefix)
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($1)::uuid, 'runner_key.create', 'runner_key', made.id::text,
-       jsonb_build_object('label', made.label, 'prefix', made.key_prefix, 'season', ($7)::text)
+       jsonb_build_object('label', made.label, 'prefix', made.key_prefix,
+                          'game', ($8)::text, 'season', ($7)::text)
 FROM made

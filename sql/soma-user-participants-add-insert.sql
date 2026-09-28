@@ -37,7 +37,9 @@ WITH given AS (
 )
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($4)::uuid, 'participant.add', 'season', (SELECT slug FROM seasons WHERE id = ($1)::uuid),
-       jsonb_build_object('provider', (SELECT provider FROM prov),
+       jsonb_build_object('game', (SELECT g.slug FROM seasons s JOIN games g ON g.id = s.game_id
+                                    WHERE s.id = ($1)::uuid),
+                          'provider', (SELECT provider FROM prov),
                           'added', (SELECT count(*) FROM ins),
                           'logins', (SELECT jsonb_agg(login ORDER BY login) FROM given))
 WHERE EXISTS (SELECT 1 FROM given)

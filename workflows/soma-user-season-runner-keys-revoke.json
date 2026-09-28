@@ -20,7 +20,8 @@
             { "var": "metadata.params.key" },
             { "var": "temp_data.who.0.body.season_id" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.params.slug" }
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.params.game" }
           ],
           "output": "temp_data.revoked"
         }

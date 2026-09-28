@@ -17,5 +17,6 @@ WITH se AS (
 )
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($4)::uuid, 'season_admin.add', 'season', (SELECT slug FROM se),
-       jsonb_build_object('handle', (SELECT handle FROM usr WHERE usr.id = ins.user_id), 'user_id', ins.user_id)
+       jsonb_build_object('game', ($1)::text,
+                          'handle', (SELECT handle FROM usr WHERE usr.id = ins.user_id), 'user_id', ins.user_id)
   FROM ins

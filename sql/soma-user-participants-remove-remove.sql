@@ -11,5 +11,7 @@ WITH upd AS (
 )
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($3)::uuid, 'participant.remove', 'season', (SELECT slug FROM seasons WHERE id = ($1)::uuid),
-       jsonb_build_object('provider', upd.provider, 'login', upd.login)
+       jsonb_build_object('game', (SELECT g.slug FROM seasons s JOIN games g ON g.id = s.game_id
+                                    WHERE s.id = ($1)::uuid),
+                          'provider', upd.provider, 'login', upd.login)
 FROM upd

@@ -13,5 +13,5 @@ upd AS (
     RETURNING sa.id, sa.user_id )
 INSERT INTO audit_log (admin_id, action, target_kind, target_id, detail)
 SELECT ($4)::uuid, 'season_admin.remove', 'season', (SELECT slug FROM se),
-       jsonb_build_object('handle', ($3)::text, 'user_id', upd.user_id)
+       jsonb_build_object('game', ($1)::text, 'handle', ($3)::text, 'user_id', upd.user_id)
 FROM upd
