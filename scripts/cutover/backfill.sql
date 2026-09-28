@@ -1,32 +1,16 @@
--- THE REDESIGN'S PRODUCTION CUTOVER. `bootstrap` refuses a database built from other migration
--- bytes, and this release rewrites them, so production is rebuilt once and its data restored:
---
---   0. Before anything stops, on production:
---        CREATE TEMP TABLE lz4_check (j jsonb COMPRESSION lz4);   -- must succeed, or bootstrap fails
---        SELECT map_id FROM season_maps WHERE map_id !~ '^[a-z]+-[a-z]+-[0-9]+p-[0-9]+h$';
---        SELECT slug FROM seasons WHERE closed_at IS NOT NULL;
---      The first list is the boards that keep null size, terrain and hills; the second is what the
---      podium backfill covers. Take `gcloud sql backups create --instance tinybrains-pg`.
---   1. Close the season, or stop the runners and the clocks. A season boundary is cheapest.
---   2. `pg_dump --data-only` every existing table.
---   3. Rebuild from the new migrations and restore. The new tables start empty.
---   4. Run this file, once, as the owner, BEFORE the runners and the clocks come back:
---        psql "$SOMA_DB_URL" -v ON_ERROR_STOP=1 -f scripts/backfill-redesign.sql
---   5. Read what it prints: the rating chain (ratings.matches_played against rating_events' last
---      seq, which a restore must keep) must list no rows. Open row counts match the dump; the
---      per-class ratings, events and snapshots are dropped above -- there is one rated ladder now.
+-- THE VALUES THE NEW SCHEMA DERIVES, FOR ROWS THAT PREDATE IT. Run by cutover.sql inside its one
+-- transaction, after transfer.sql has copied the data and the schemas have swapped (so `public` is
+-- the new schema), and before verify.sql. It is not a step of its own: run cutover.sh.
 --
 -- Every statement is idempotent: a second run writes the same values. It sends no notification --
--- a medal for a season that closed weeks ago is news to nobody -- and past matches have no last
--- frame, so their cards rest on turn zero. Each value is computed by the function the live path
+-- a medal for a season that closed weeks ago is news to nobody. Past matches' last frames are not
+-- here: they need each replay decoded, which backfill-frames.sh does once the new node serves. Each value is computed by the function the live path
 -- uses (match_sort_keys, season_map_name, podium_of, ladder_at, memory_price), so a backfilled row
--- and a row written tomorrow cannot disagree. This file goes once production has been cut over.
+-- and a row written tomorrow cannot disagree. This directory goes once production has been cut over.
 
-\set ON_ERROR_STOP on
-BEGIN;
 
--- ONE RATED LADDER (this release). Production was dumped from the dual-ladder schema, so the restore
--- brings per-class `ratings`, `rating_events` and `ladder_snapshots`, and matches whose `ladders`
+-- ONE RATED LADDER (this release). Production was copied from the dual-ladder schema, so transfer.sql
+-- brought per-class `ratings`, `rating_events` and `ladder_snapshots`, and matches whose `ladders`
 -- array still carries a class. A weight class is now a filtered VIEW of Open, so those class rows are
 -- dead weight the new reads never touch: normalise every rated match's array to {open} (trials keep
 -- {}), and drop the class ratings, events and snapshots. The Open rows -- the real ladder -- and the
@@ -126,8 +110,6 @@ SELECT s.id, 'open'::ladder, h.at, coalesce(f.version_ids, '{}'), coalesce(f.rat
                             array_agg(a.conservative::real ORDER BY a.rank) AS ratings
                        FROM ladder_at(s.id, 'open'::ladder, h.at) a) f
 ON CONFLICT (season_id, ladder, at) DO NOTHING;
-
-COMMIT;
 
 \echo '--- what the backfill wrote'
 SELECT count(*) FILTER (WHERE margin IS NOT NULL) AS with_margin,
