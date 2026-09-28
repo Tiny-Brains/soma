@@ -1,0 +1,160 @@
+{
+  "workflow_id": "soma-admin-seasons-entry",
+  "name": "Narrow a season's entry",
+  "description": "Platform admin only (admin-only): entry is set at creation beside visibility and is the platform's, not a season admin's. This is the ONE change either of them may take afterwards, and it goes one way only -- `open` to `restricted`, before the season opens (BRD Q4). Restricted to open would publish a cohort's season to everyone who can already see it, and narrowing after the open would refuse competitors who were admitted under the entry they read. Both halves are predicates in the write rather than guards, so a caller arriving in the second a season opens cannot race them; `why` then tells 404 from 409 (closed, already open, already restricted) from 422 (a destination that is not `restricted`). A PRIVATE season never reaches the write: the table CHECK holds private to restricted, so its entry is not `open` and nothing is written -- which is how \"visibility is fixed at creation\" holds here without a clause of its own. `restricted` means the participants table (P1): a season with an empty roster admits nobody, so narrowing before adding the roster is allowed and is the ordinary order. The submission preflight and the insert read `season_admits()` live, so the change takes effect at once; the season document is cached, so the write invalidates it.",
+  "tags": ["soma", "admin", "seasons"],
+  "tasks": [
+    {
+      "id": "admin",
+      "use": "admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.entry" } },
+        "status": 400,
+        "body": {
+          "error": "entry_required",
+          "detail": "Give the entry in `entry`. The only change there is is \"restricted\"."
+        },
+        "name": "An entry, declared"
+      }
+    },
+    {
+      "id": "set",
+      "name": "Narrow the entry",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-entry-set.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.entry" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.set"
+        }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why not",
+      "condition": { "$use": "none_written", "with": { "slot": "set" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": "SELECT json_build_object('found', s.id IS NOT NULL, 'closed', s.closed_at IS NOT NULL, 'opened', s.submissions_open_at <= now(), 'entry', s.entry, 'wanted', ($3)::text = 'restricted') AS body FROM games g LEFT JOIN seasons s ON s.game_id = g.id AND s.slug = ($2)::text WHERE g.slug = ($1)::text",
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.entry" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!": { "var": "temp_data.why.0.body.found" } }
+          ]
+        },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such game or season"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!": { "var": "temp_data.why.0.body.wanted" } }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "entry_invalid",
+          "detail": "Entry narrows one way only: \"restricted\". A restricted season cannot be reopened, and visibility is fixed at creation."
+        },
+        "name": "The one destination there is"
+      }
+    },
+    {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "!!": { "var": "temp_data.why.0.body.closed" } }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "A closed season's entry cannot change: nothing may be submitted to it."
+        },
+        "name": "It has closed"
+      }
+    },
+    {
+      "id": "already",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "set" } },
+            { "===": [{ "var": "temp_data.why.0.body.entry" }, "restricted"] }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "entry_already_restricted",
+          "detail": "Its entry is restricted already. A private season is always restricted, and a restricted one is never reopened."
+        },
+        "name": "It is already restricted"
+      }
+    },
+    {
+      "id": "opened",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "set" } },
+        "status": 409,
+        "body": {
+          "error": "season_not_scheduled",
+          "detail": "Entry narrows before a season opens only: once it is open, competitors have submitted under the entry they read."
+        },
+        "name": "It has opened"
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.set.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "answer",
+      "use": "season-answer"
+    }
+  ]
+}

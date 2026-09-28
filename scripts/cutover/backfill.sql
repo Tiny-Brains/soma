@@ -111,6 +111,16 @@ SELECT s.id, 'open'::ladder, h.at, coalesce(f.version_ids, '{}'), coalesce(f.rat
                        FROM ladder_at(s.id, 'open'::ladder, h.at) a) f
 ON CONFLICT (season_id, ladder, at) DO NOTHING;
 
+-- THE REFUSALS OF A FLEET THAT NO LONGER EXISTS. `refusal_grace_secs` is the fleet's allowance to
+-- register a version it has not seen, counted from a row's first refusal. Every runner is replaced
+-- by this cutover and comes up with an empty roster, so a pending row that carries refusals from
+-- the old fleet would start the new one's first refusal already inside a spent window and fail it
+-- MODEL_UNAVAILABLE within seconds of the runners coming back. The count and the window are about
+-- a fleet, so they go with it; nothing else about the row is touched, and a row that has actually
+-- failed keeps its history.
+UPDATE matches SET refusals = 0, first_refused_at = NULL
+ WHERE status = 'pending' AND (refusals > 0 OR first_refused_at IS NOT NULL);
+
 \echo '--- what the backfill wrote'
 SELECT count(*) FILTER (WHERE margin IS NOT NULL) AS with_margin,
        count(*) FILTER (WHERE upset IS NOT NULL)  AS with_upset,
@@ -121,6 +131,8 @@ SELECT se.slug AS season, se.matches_played, (SELECT count(*) FROM ladder_snapsh
   FROM seasons se ORDER BY se.slug;
 SELECT se.slug AS season, count(*) AS podium_places
   FROM season_podium sp JOIN seasons se ON se.id = sp.season_id GROUP BY se.slug ORDER BY se.slug;
+\echo '--- pending rows still carrying the old fleet''s refusals (expect no rows)'
+SELECT count(*) AS still_refused FROM matches WHERE status = 'pending' AND refusals > 0;
 \echo '--- boards that keep null fields: off the name pattern, or disagreeing with their file'
 SELECT se.slug AS season, sm.map_id FROM season_maps sm JOIN seasons se ON se.id = sm.season_id
  WHERE sm.size IS NULL ORDER BY se.slug, sm.map_id;

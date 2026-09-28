@@ -201,6 +201,37 @@
         }
       ]
     },
+    "season-answer": {
+      "tasks": [
+        {
+          "id": "read",
+          "name": "Read the season back",
+          "description": "THE ANSWER EVERY SEASON WRITE ENDS ON: the season as season_json() renders it, read back from the row rather than echoed from the request, so what the caller is told is what was stored. It is a fragment because three routes -- the featured season, the window/rules edit and the entry narrowing -- ended on the same two steps, and clippy's duplication rules see only exact copies. A write whose answer carries MORE than the season document (the fleet PATCH adds `fleet`) reads it back itself; this is for the ones whose answer is the document.",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": "SELECT season_json(s) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+              "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+              "output": "temp_data.rows"
+            }
+          }
+        },
+        {
+          "id": "respond",
+          "name": "Respond",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+                { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+              ]
+            }
+          }
+        }
+      ]
+    },
     "season-admin-only": {
       "tasks": [
         {

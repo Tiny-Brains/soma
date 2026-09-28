@@ -1483,6 +1483,23 @@ CREATE TABLE matches (
     lapses               smallint     NOT NULL DEFAULT 0,   -- leases that expired mid-play
     refusals             smallint     NOT NULL DEFAULT 0,   -- loader refusals for want of memory
 
+    -- WHEN THE REFUSALS STARTED, and it is what `refusal_grace_secs` is measured from. The grace
+    -- used to run from `created_at`, which made it the ROW's age rather than the FLEET's allowance
+    -- to catch up -- so a runner coming up cold against a queue paired an hour ago refused each row
+    -- and, the grace having long passed, failed it MODEL_UNAVAILABLE on the very first refusal.
+    -- That is not a corner: it is every deployment where the fleet is replaced while work is
+    -- queued, the release runbook's own step included. Anchored here, a fleet that has just
+    -- arrived always gets the full window whatever the row's age, and a model that is genuinely
+    -- gone still fails at the ceiling a grace later.
+    --
+    -- Null until the first refusal, which is the release statement's own coalesce, so the first
+    -- refusal can never be the one that fails a row. Nothing clears it: a row that is refused, then
+    -- played, is finished, and one that is refused in two bursts an hour apart is a fleet that
+    -- could not serve it either time. A deployment that replaces its whole fleet clears the
+    -- refusal state of what is still pending instead (scripts/cutover/backfill.sql), because those
+    -- refusals were a fleet that no longer exists.
+    first_refused_at     timestamptz,
+
     -- WHICH MACHINE HOLDS IT, written at claim. Not a security control -- a runner is operated by
     -- an admin -- but without it every operational question about the fleet is unanswerable: which
     -- machine played this match, and which machine is wedged. Null until a runner claims the
@@ -3511,7 +3528,7 @@ GRANT SELECT (id, slug, manifest) ON games TO runner_gate;
 -- writes. The runner decides no part of `listed`: finish sets it to `trial_version_id IS NULL`,
 -- read off the row inside the statement, so a runner can publish an ordinary match it finished
 -- and no trial.
-GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals,
+GRANT UPDATE (status, claim_token, lease_expires_at, lapses, refusals, first_refused_at,
               reason, turns, played_ms, engine_digest_played, orion_version,
               replay_key, played_at, fault_reason, closed_at, played_by, listed)
     ON matches TO runner_gate;

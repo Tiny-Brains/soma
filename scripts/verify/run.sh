@@ -65,6 +65,7 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("x_events", "soma-pub-events", "record"),
          ("x_podium", "soma-pub-podium", "query"),
          ("x_status", "soma-pub-status", "query"),
+         ("se_entry", "soma-admin-seasons-entry", "set"),
          ("sk_keys", "soma-user-season-runner-keys-list", "answer.read"),
          ("cm_thread", "soma-user-comments-create", "thread"),
          ("cm_post", "soma-user-comments-create", "post"),
@@ -289,7 +290,8 @@ BEGIN
       WHERE grantee = 'runner_gate' AND privilege_type = 'UPDATE'
         AND (table_name, column_name) NOT IN (
             ('matches','status'), ('matches','claim_token'), ('matches','lease_expires_at'),
-            ('matches','lapses'), ('matches','refusals'), ('matches','reason'),
+            ('matches','lapses'), ('matches','refusals'), ('matches','first_refused_at'),
+            ('matches','reason'),
             ('matches','turns'), ('matches','played_ms'), ('matches','engine_digest_played'),
             ('matches','orion_version'), ('matches','replay_key'), ('matches','played_at'),
             ('matches','fault_reason'), ('matches','closed_at'), ('matches','played_by'),

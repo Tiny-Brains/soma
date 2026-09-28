@@ -88,6 +88,7 @@ channels add a per-principal quota.
 | PATCH | `/v1/games/{game}/seasons/{slug}` | Season admin | Edit window, rules, weight classes before open; name and slug are refused |
 | POST | `/v1/games/{game}/seasons/{slug}/featured` | Admin | Make a public season the game's featured one; a private season is refused |
 | PATCH | `/v1/games/{game}/seasons/{slug}/fleet` | Admin | Change the fleet policy `{matches, admissions}` (each `own`\|`platform`\|`both`) while live |
+| PATCH | `/v1/games/{game}/seasons/{slug}/entry` | Admin | Narrow a scheduled season's entry, `open` → `restricted`, and nothing else: visibility is fixed at creation and entry never widens |
 | POST | `/v1/games/{game}/seasons/{slug}/close` | Season admin | Request a close; 202, consumed by the withdraw clock. Creating a season stays a platform admin's |
 | GET · POST | `/v1/games/{game}/seasons/{slug}/rounds` | Admin | The rounds document (every round, the finals' progress, each version's games in the current round, the fill, the capacity) · schedule `{kind: round\|finals, games, starts_at?, sigma_floor?, mu_shrink?, warn_minutes?}`; 409 `round_waiting`, `finals_scheduled`, `window_open`, `admitting`; 422 `round_invalid` |
 | PATCH | `/v1/games/{game}/seasons/{slug}/rounds/{n}` | Admin | A waiting round's numbers, start or `cancel: true`; a started one's `games` alone (409 `round_started`) |
@@ -500,9 +501,11 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - **A trial is live until count decides it**, `finished` included, in pair's read exactly as in
   `matches_one_live_trial_uniq`. A pair run that offered a second trial would die on the index.
 - **A refusal is the fleet's, never the candidate's.** The gate fails a row `MODEL_UNAVAILABLE` only
-  once the ceiling is spent and the row has waited `refusal_grace_secs` since it was paired, and a
-  refused trial spends no repair: it has a ceiling of its own, which rejects `RUNNER_UNAVAILABLE`,
-  never `UNPLAYABLE`.
+  once the ceiling is spent and the refusals have been going on longer than `refusal_grace_secs`,
+  counted from the row's own first refusal (`matches.first_refused_at`) and not from when it was
+  paired -- so a fleet that comes up cold against an old queue gets its allowance whatever the rows'
+  age, which is what replacing a fleet with work queued looks like. A refused trial spends no
+  repair: it has a ceiling of its own, which rejects `RUNNER_UNAVAILABLE`, never `UNPLAYABLE`.
 - **A shape many routes return is defined once, in the migration** (`season_json`, `season_state`,
   `current_season`, `model_phase`, `model_ratings`, `ladder_field`, `match_seat_rows`, the
   `season_admits*` predicates). A second copy is two pages that disagree.
@@ -551,10 +554,8 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
 - Push notification settings are stored, but nothing delivers them.
-- The refusal grace runs from when a row was paired, not from when a runner arrived: a runner that
-  starts cold against rows older than `refusal_grace_secs` can still fail them `MODEL_UNAVAILABLE`
-  before its roster catches up. A refused row is claimed after the fresh rows of its kind, which
-  spreads the refusals; trials still come before every ranked match.
+- A refused row is claimed after the fresh rows of its kind, which spreads the refusals; trials
+  still come before every ranked match.
 - A `failed` match notifies nobody. The gate writes it as `runner_gate`, which must not gain the grant.
 - A broken adapter is not rejected as one. An inference that fails outright on the admitting runner
   is reported as a probe that errored, which cannot be told from a runner's own failure, so the

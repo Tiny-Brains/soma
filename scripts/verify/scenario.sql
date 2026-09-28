@@ -487,6 +487,31 @@ EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 4, 'c1
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000c', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 
+\echo '--- THE COLD FLEET: a row paired an hour ago, never refused, meets runners with an empty roster.'
+\echo '    The grace is the FLEET''s allowance, not the row''s age, so the first refusal starts it and'
+\echo '    cannot be the one that fails the row -- however old the row is (expect pending, refusals 1,'
+\echo '    no fault, the window opened now). Anchored to created_at this failed on the first refusal,'
+\echo '    which is what replacing a fleet with work queued looks like: the release runbook''s step 10.'
+BEGIN;
+EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 71, '70000000-0000-0000-0000-000000000001',
+  '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
+SELECT id AS m71 FROM matches WHERE seed = 71 \gset
+UPDATE matches SET created_at = now() - interval '1 hour' WHERE seed = 71;
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000071', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_release ('30000000-0000-0000-0000-000000000071', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
+SELECT seed, status, refusals, fault_reason, first_refused_at > now() - interval '1 minute' AS window_opened_now
+  FROM matches WHERE seed = 71;
+\echo '    ... and the fleet that never catches up still loses it, a grace after the refusals began,'
+\echo '        at the ceiling and not before (expect pending at the ceiling inside the window, then failed)'
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000072', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_release ('30000000-0000-0000-0000-000000000072', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
+SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 71;
+UPDATE matches SET first_refused_at = now() - interval '5 minutes' WHERE seed = 71;
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000073', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_release ('30000000-0000-0000-0000-000000000073', true, 3, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
+SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 71;
+ROLLBACK;
+
 \echo '--- soma: a version''s history is one join (expect the rated row 43 for alice v1; the cancelled row 46 is not listed)'
 EXECUTE s_history ('20000000-0000-0000-0000-000000000001', 10);
 
@@ -1766,4 +1791,43 @@ EXECUTE sk_keys ('5f000000-0000-0000-0000-000000000001') \gset sk2_
 SELECT (:'sk2_body')::json -> 'admissions' ->> 'admitters' AS admitters;
 EXECUTE x_status \gset st2_
 SELECT (:'st2_body')::json -> 'arena' ->> 'admitters' AS platform_admitters;
+ROLLBACK;
+
+\echo '===== entry narrows one way, before the open, and never on a private season (BRD Q4) ====='
+-- S11. Entry and visibility are set at creation and this is the one change either may take
+-- afterwards. Every half of the rule is a predicate in the write, not a guard, so none of it can be
+-- raced by a caller arriving as a season opens -- and a private season needs no clause of its own:
+-- the table CHECK holds private to restricted, so `entry = 'open'` is false for it and the write
+-- finds nothing. Each refusal below must stay a refusal.
+BEGIN;
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, visibility, entry) VALUES
+  ('5e100000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 911, 'Entry Sched', 'entry-sched', 'sha256:e1',
+   now() + interval '1 day', now() + interval '8 days', 'public', 'open'),
+  ('5e100000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-00000000000a', 912, 'Entry Open', 'entry-open', 'sha256:e1',
+   now() - interval '1 hour', now() + interval '8 days', 'public', 'open'),
+  ('5e100000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-00000000000a', 913, 'Entry Priv', 'entry-priv', 'sha256:e1',
+   now() + interval '1 day', now() + interval '8 days', 'private', 'restricted');
+\echo '--- a scheduled public season narrows, once, and the audit line is the same statement (expect INSERT 0 1; restricted; 1 line)'
+EXECUTE se_entry ('ants', 'entry-sched', 'restricted', '00000000-0000-0000-0000-0000000000ad');
+SELECT entry FROM seasons WHERE slug = 'entry-sched';
+SELECT count(*) AS audit_lines FROM audit_log WHERE action = 'season.entry' AND target_id = 'entry-sched';
+\echo '    ... and not twice: restricted is where it stops (expect INSERT 0 0)'
+EXECUTE se_entry ('ants', 'entry-sched', 'restricted', '00000000-0000-0000-0000-0000000000ad');
+\echo '    ... nor back to open, which would publish a cohort''s season (expect INSERT 0 0; still restricted)'
+EXECUTE se_entry ('ants', 'entry-sched', 'open', '00000000-0000-0000-0000-0000000000ad');
+SELECT entry FROM seasons WHERE slug = 'entry-sched';
+\echo '--- an OPEN season does not narrow: competitors have submitted under the entry they read (expect INSERT 0 0; still open)'
+EXECUTE se_entry ('ants', 'entry-open', 'restricted', '00000000-0000-0000-0000-0000000000ad');
+SELECT entry FROM seasons WHERE slug = 'entry-open';
+\echo '--- a PRIVATE season is already restricted, so there is nothing to narrow and visibility stays fixed (expect INSERT 0 0; private/restricted)'
+EXECUTE se_entry ('ants', 'entry-priv', 'restricted', '00000000-0000-0000-0000-0000000000ad');
+SELECT visibility, entry FROM seasons WHERE slug = 'entry-priv';
+\echo '--- an unknown season and a value that is not `restricted` write nothing (expect INSERT 0 0 twice)'
+EXECUTE se_entry ('ants', 'no-such-season', 'restricted', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE se_entry ('ants', 'entry-sched', 'public', '00000000-0000-0000-0000-0000000000ad');
+\echo '--- what narrowing MEANS: an empty roster admits nobody, which is the point of narrowing before filling it (expect f, then t once listed)'
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS alice_admitted FROM seasons s WHERE s.slug = 'entry-sched';
+INSERT INTO season_participants (season_id, provider, login, user_id, added_by)
+VALUES ('5e100000-0000-0000-0000-000000000001', 'github', 'alice', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000ad');
+SELECT season_admits(s, '00000000-0000-0000-0000-0000000000a1') AS alice_admitted FROM seasons s WHERE s.slug = 'entry-sched';
 ROLLBACK;

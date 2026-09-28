@@ -1,0 +1,19 @@
+{
+  "name": "seasons-entry-narrowed: a scheduled public season narrows to restricted, and the season document is the answer",
+  "workflow": "../workflows/soma-admin-seasons-entry.json",
+  "input": { "entry": "restricted" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 1 } },
+    "db_read": { "soma-db": [{ "body": { "role": "admin", "slug": "s1", "entry": "restricted" } }] }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.entry": "restricted"
+  },
+  "expect_tasks": ["admin.who", "parse", "set", "invalidate.bump", "answer.read", "answer.respond"]
+}

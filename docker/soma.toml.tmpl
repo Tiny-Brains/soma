@@ -308,13 +308,19 @@ max_turns = 1000
 # a row, so unlike turn_ms and max_turns this falls straight from the season to here.
 refusal_ceiling = 5
 
-# HOW LONG A ROW MUST HAVE WAITED, SINCE IT WAS PAIRED, BEFORE ITS REFUSALS CAN FAIL IT. The ceiling
-# alone counts claims, and claims are cheap: a runner's lanes, each polling every five seconds,
-# spend five refusals on a new trial in seconds, long before a roster has registered and activated
-# its model (two roster ticks at best). The row keeps counting refusals inside the grace and fails
-# at the first refusal after it, so this is the fleet's allowance for catching up with a new
-# version, not a retry budget. A deployment fact, like the lease: it is about the fleet, not the
-# season.
+# HOW LONG THE REFUSALS MUST HAVE BEEN GOING ON BEFORE THEY CAN FAIL A ROW. The ceiling alone
+# counts claims, and claims are cheap: a runner's lanes, each polling every five seconds, spend
+# five refusals on a new trial in seconds, long before a roster has registered and activated its
+# model (two roster ticks at best). The row keeps counting refusals inside the grace and fails at
+# the first refusal after it, so this is the fleet's allowance for catching up with a new version,
+# not a retry budget. A deployment fact, like the lease: it is about the fleet, not the season.
+#
+# MEASURED FROM THE ROW'S FIRST REFUSAL, NOT FROM WHEN IT WAS PAIRED (matches.first_refused_at).
+# From the pairing it was the ROW's age, which meant a fleet coming up cold against a queue paired
+# an hour ago had no allowance at all: it refused each row and failed it MODEL_UNAVAILABLE on the
+# very first refusal, the grace having passed while nothing was running. Replacing a fleet with
+# work queued is ordinary -- it is a step in the release runbook -- so the allowance has to start
+# when the refusals do.
 refusal_grace_secs = 120
 
 # THE LEASE IS A DEPLOYMENT FACT AND NOT A SEASON'S, because it is about the network between the

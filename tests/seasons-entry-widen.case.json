@@ -1,0 +1,31 @@
+{
+  "name": "seasons-entry-widen: restricted back to open is 422, and nothing is invalidated",
+  "workflow": "../workflows/soma-admin-seasons-entry.json",
+  "input": { "entry": "open" },
+  "metadata": {
+    "auth": { "claims": { "sub": "u1", "sid": "s1" } },
+    "params": { "game": "ants", "slug": "s1" },
+    "vars": {}
+  },
+  "stubs": {
+    "db_write": { "soma-db": { "rows_affected": 0 } },
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "role": "admin",
+            "found": true,
+            "closed": false,
+            "opened": false,
+            "entry": "restricted",
+            "wanted": false
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 422,
+    "data.body.error": "entry_invalid"
+  }
+}
