@@ -80,6 +80,7 @@ channels add a per-principal quota.
 | GET | `/v1/status` | Public | Queue, throughput and how far each clock is behind |
 | GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes with their memory numbers |
 | GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor` |
+| GET | `/v1/private/...` | Session | The member's copy of every season-scoped public read -- seasons, leaderboard and series, podium, maps, playing, matches (list, one, frame, related), a match's thread (`/v1/private/threads`), versions, models -- with the same shapes: the same statement with the session's claims, so a private season answers to whoever `season_visible()` lets see it. Uncached |
 | GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
 | GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |
 | GET | `.../seasons/{slug}/podium` | Public | The frozen podium per ladder, each place with its owner's latest match |
@@ -87,14 +88,18 @@ channels add a per-principal quota.
 | PATCH | `/v1/games/{game}/seasons/{slug}` | Season admin | Edit window, rules, weight classes before open; name and slug are refused |
 | POST | `/v1/games/{game}/seasons/{slug}/featured` | Admin | Make a public season the game's featured one; a private season is refused |
 | PATCH | `/v1/games/{game}/seasons/{slug}/fleet` | Admin | Change the fleet policy `{matches, admissions}` (each `own`\|`platform`\|`both`) while live |
-| POST | `/v1/games/{game}/seasons/{slug}/close` | Admin | Request a close; 202, consumed by the withdraw clock |
+| POST | `/v1/games/{game}/seasons/{slug}/close` | Season admin | Request a close; 202, consumed by the withdraw clock. Creating a season stays a platform admin's |
 | GET · POST | `/v1/games/{game}/seasons/{slug}/rounds` | Admin | The rounds document (every round, the finals' progress, each version's games in the current round, the fill, the capacity) · schedule `{kind: round\|finals, games, starts_at?, sigma_floor?, mu_shrink?, warn_minutes?}`; 409 `round_waiting`, `finals_scheduled`, `window_open`, `admitting`; 422 `round_invalid` |
 | PATCH | `/v1/games/{game}/seasons/{slug}/rounds/{n}` | Admin | A waiting round's numbers, start or `cancel: true`; a started one's `games` alone (409 `round_started`) |
 | PATCH | `/v1/games/{game}/seasons/{slug}/fill` | Admin | The idle fill `{enabled, games?, headroom?}` while live; 422 `fill_invalid` |
 | GET · POST · DELETE | `.../seasons/{slug}/participants` | Season admin | Participants (resolved and waiting) · add in bulk (`logins`, `provider?` default github, a null login is a provider wildcard) · remove one |
 | GET | `.../seasons/{slug}/admins` | Season admin | The season's admins by platform handle |
 | POST · DELETE | `.../seasons/{slug}/admins` | Admin | Assign · remove a season admin by handle (bumps that account's session) |
-| POST | `.../seasons/{slug}/runner-keys` | Season admin | Mint a runner key bound to this season |
+| GET · POST | `.../seasons/{slug}/runner-keys` | Season admin | The season's keys, whoever minted them, each with its runners (`live` is `live_runners`') · mint a key bound to this season |
+| DELETE | `.../seasons/{slug}/runner-keys/{key}` · `.../runners/{runner}` | Season admin | Revoke one of the season's keys · stop one of its runners; 404 outside the season |
+| GET | `.../seasons/{slug}/audit` | Season admin | The season's audit lines (`audit_log.season_id`, derived by a trigger), `action` prefix, `cursor` |
+| GET · POST | `.../seasons/{slug}/notify` | Season admin | `{recipients, sends}` · `{subject, link?}` to the season's people (entrants, pinned participants, its admins); 422 `no_recipients` |
+| POST | `.../seasons/{slug}/maps/import` · `.../baselines/import` | Season admin | `{from, maps? \| baselines?}`: copy another season's boards (switched off) or baselines (new versions over the same bytes, re-admitted, landing switched off); `{imported}`; 404 `unknown_source` |
 | GET | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Public | A season's boards, enabled or not (`?enabled=`, `?boards=`) · one board and its history |
 | POST · PATCH | `.../seasons/{slug}/maps` · `.../maps/{map_id}` | Season admin | Upload one map file named `size-terrain-Np-Hh`, stored disabled (422 `map_name_pattern`, `map_name_players`, `map_name_hills`) · `{"enabled": bool}` |
 | GET · POST | `.../seasons/{slug}/baselines` | Season admin | Baselines and refused uploads · `{name, weights_hash, manifest_hash}`, answered with two presigned PUTs |
@@ -109,6 +114,7 @@ channels add a per-principal quota.
 | GET | `/v1/versions/{id}` | Public | One version once public (`active`, `disabled`, `superseded`), else 404: status, ladders with rank and field, trial, note |
 | GET | `/v1/me/versions/{id}` | Session | One of the caller's versions in any status (an admin's for a baseline too), the same shape |
 | GET | `/v1/games/{game}/submission` | Session | Whether the caller may submit, and why not; `?model=` |
+| POST | `/v1/submissions/reenter` | Session | `{game, model, season, from}`: the entry's standing in `from` entered into `season` over the same bytes (`bytes_of`), no upload; the submission's refusals, plus 404 `nothing_to_reenter` |
 | POST | `/v1/submissions` | Session | `{game, model, weights_hash, manifest_hash, note?}`: a `testing` version and two presigned PUTs; the same hashes again re-sign them; 422 `note_word_listed` |
 | GET | `/v1/matches` · `/v1/matches/{id}` | Public | `season`, `model`, `version`, `owner`, `map`, `class`, `ladder`, `outcome`, `players_min/max`, `sort` (newest, closest, upset, longest, discussed, each with its own cursor), `since`, `top=true`, `vs=<model>` beside `model=` (400 `vs_needs_model`, `sort_invalid`), `cursor`, `limit` ≤ 60; `total` counts to 10,000 and `total_capped` says it stopped; each row a card with `margin`, `upset`, `comments`, `frame` · the card with each seat's `rating_change`, and a signed replay URL; a trial only once its candidate is public, else 404 |
 | GET | `/v1/games/{game}/seasons/{slug}/playing` | Public | `{playing}`: matches on a board right now, trials excluded; uncached, because it moves at every claim |
@@ -124,8 +130,8 @@ channels add a per-principal quota.
 | GET | `/v1/stories` | Public | `kind` = all, team or model; `cursor`, `limit` ≤ 60: published posts and featured stories as cards, newest first |
 | GET | `/v1/posts/{slug}` | Public | One published post |
 | GET | `/v1/announcements` | Public | Live announcements, newest first |
-| POST · GET | `/v1/runner-keys` | Admin | Mint a key (the only response that carries it) · the caller's keys |
-| DELETE | `/v1/runner-keys/{id}` | Admin | Revoke a key and every runner started from it |
+| POST · GET | `/v1/runner-keys` | Admin | Mint a key (the only response that carries it) · every key, each with `owner`, `mine` and `season` |
+| DELETE | `/v1/runner-keys/{id}` | Admin | Revoke any key, a season admin's included, and every runner started from it |
 | GET · DELETE | `/v1/runners` · `/v1/runners/{id}` | Admin | The fleet · stop one machine, key untouched |
 | GET | `/v1/admin/users` | Admin | Every admin, and up to 50 competitors matching `?q=` (handle or display name), each with held, reported and removed comment counts and the commenting switch |
 | GET · PATCH | `/v1/admin/users/{id}` | Admin | A user's desk, by id or handle: account, counts, sign-ins, models, comments, reports, audit · `{"role": "admin" \| "competitor"}`; 409 `not_yourself`, `not_a_person` |
@@ -336,6 +342,14 @@ season through its `rules` document (`season_rule_spec()` in
    cancel a reset on the season's Rounds and finals page. The **idle fill** (`seasons.fill`, live)
    queues matches into the free lanes of the runners that may play the season, toward `fill.games`
    in the window; it reads the fleet's capacity to size demand and never the reverse.
+4b. **Carry a season into the next** (Q7). A new season starts with no boards, baselines,
+   participants or versions. `POST .../maps/import {from}` copies a season's boards into it, switched
+   off (switching one on re-runs the engine's check); `POST .../baselines/import {from}` makes each
+   admitted baseline a new version over the same bytes (`bytes_of`), admitted again under the new
+   season's rules and landing switched off. A competitor carries an entry over with
+   `POST /v1/submissions/reenter {game, model, season, from}`: the entry's standing, same bytes, a
+   fresh `testing` version that admission and a trial judge again. Nothing is uploaded or copied in
+   the bucket.
 5. **Close it.** With `closure.policy` `finals`, the season waits after its window for an admin to
    start the **finals** (`POST .../rounds` `{kind: "finals", games, ...}`, refused while the window is
    open or a submission is still being admitted): a reset, then exactly `games` matches for every
@@ -347,9 +361,9 @@ season through its `rules` document (`season_rule_spec()` in
    finals that cannot finish are ended); within the minute the close rejects versions still waiting
    (`SEASON_CLOSED`), cancels the queue and any round still waiting, and lets running matches count.
 6. **Change the engine.** `bootstrap` from an image on a new ants release declares a **patch** by
-   default: the game and the live season take the new digest, pending rows are re-stamped and the
-   roster epoch bumps. `ENGINE_RELEASE=1` declares a **release**, refused while a season is live: a
-   rules change waits for the next season. A runner on any other digest claims nothing.
+   default: the game and every season not yet closed (live or scheduled) take the new digest,
+   pending rows are re-stamped and the roster epoch bumps. `ENGINE_RELEASE=1` declares a **release**,
+   refused while any season is unclosed: a rules change waits for the next season. A runner on any other digest claims nothing.
 7. **After the close**, push the season's boards and recipes from `tinybrains/maps/` to the backup
    repository. They are in no repository or release while the season runs.
 
@@ -537,8 +551,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   `http_call` writes nothing on a 4xx, so the runner cannot tell a refusal from an outage. It costs
   an attempt each time and expires `TIMED_OUT` rather than being refused with a reason.
 - An admitting runner's report is judged, not re-derived. The size is measured here too, but the
-  operator set, opset, parameter count and probe tally are the runner's word. Every runner key is an
-  admin's, and a runner key can already report a match result.
+  operator set, opset, parameter count and probe tally are the runner's word. A runner key is a
+  platform admin's or a season admin's (bound to its season), and a runner key can already report a
+  match result.
 - Nothing tells an admin that no admitting runner is up. Submissions wait in `testing` (phase
   `queued`) for as long as there is none, spending no attempt.
 - The OAuth callback cannot say which failure happened: `oauth2_login` answers a fixed 401.
@@ -549,7 +564,6 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - Retention beyond traces is unbuilt: `watch_events`, `audit_log` and `match_frames` grow for ever (a
   frame is a few KB, about 4 MB a day at today's rate). So is the TinyBrain Index (`standings.lambda`
   is accepted and unread).
-- A season cannot be scheduled ahead: create is refused while one is live.
 - A model's memory is priced, not measured. `memory_price()` trusts that a named axis binds to the
   board's rows and columns or to the ant count, and nothing at admission compares what a memory
   actually holds with its price.
@@ -558,6 +572,10 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - The comment limits (15 s apart, 100 a day) are predicates in the insert, so two posts at the same
   instant can both pass; the per-user write rate is the backstop.
 - The admin comment search (`q`) scans: there is no trigram index on `comments.body`.
+- A list field sent as a bare string fails Orion's bind (`400 VALIDATION_ERROR`, naming the
+  parameter) before the statement can refuse it by name on `comments/decide` (`ids`), `notify` and
+  `notify/count` (`audience`), `picks` (`ids`) and `me/notifications/read` (`ids`). The routes that
+  promise a named refusal bind the whole request instead (season create, the two imports).
 - A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
 - The admit and pair clocks still tick against Postgres when idle: admit cannot tell nothing
   waiting from waiting but leased without a read, and pair's demand moves with time.
@@ -571,6 +589,11 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   `rating.settled_sigma`.
 - Retiring an entry (`models.retired_at`) leaves its active version paired: the demand read does not
   filter on it.
+- A season admin's notify reaches entrants, pinned participants and the season's admins; an invite
+  still waiting for its account's first sign-in reaches nobody until then.
+- The season audit (`audit_log.season_id`) is derived by a trigger from each line's slug or target;
+  a line written before the column existed, or one naming a season only in free text, has none.
+- The finals and the idle fill are a platform admin's; a season admin cannot start or change them.
 - An off-site runner must hold a GET key for the models bucket. The fix is an Orion ask, not yet
   filed: a URL-valued artifact reference on the `models` entity.
 

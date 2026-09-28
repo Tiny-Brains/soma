@@ -75,7 +75,7 @@
     },
     "season_admin_identity": {
       "connector": "soma-db",
-      "query": "SELECT json_build_object('id', u.id, 'role', u.role, 'season_id', se.id, 'scope', CASE WHEN u.role = 'admin' THEN 'platform' WHEN sa.user_id IS NOT NULL THEN 'season' END) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid LEFT JOIN games g ON g.slug = ($3)::text LEFT JOIN seasons se ON se.game_id = g.id AND se.slug = ($4)::text LEFT JOIN season_admins sa ON sa.season_id = se.id AND sa.user_id = u.id AND sa.removed_at IS NULL WHERE u.id = ($1)::uuid",
+      "query": "SELECT json_build_object('id', u.id, 'role', u.role, 'season_id', se.id, 'scope', CASE WHEN u.role = 'admin' THEN 'platform' WHEN sa.user_id IS NOT NULL THEN 'season' END, 'closed', se.closed_at IS NOT NULL, 'slug', se.slug) AS body FROM users u JOIN live_sessions s ON s.user_id = u.id AND s.sid = ($2)::uuid LEFT JOIN games g ON g.slug = ($3)::text LEFT JOIN seasons se ON se.game_id = g.id AND se.slug = ($4)::text AND season_visible(se, u.id) LEFT JOIN season_admins sa ON sa.season_id = se.id AND sa.user_id = u.id AND sa.removed_at IS NULL WHERE u.id = ($1)::uuid",
       "params": [
         { "var": "metadata.auth.claims.sub" },
         { "var": "metadata.auth.claims.sid" },
@@ -87,6 +87,10 @@
     "clock_tracing": { "errors_only": true, "task_details": true },
     "loop_clock_tracing": { "errors_only": true, "task_details": false },
     "gate_tracing": { "errors_only": true, "task_details": false },
+    "host_required": {
+      "error": "host_required",
+      "detail": "Name exactly one host: `match` or `model`."
+    },
     "payload_body": { "body_mode": "payload" },
     "dedup": { "header": "Idempotency-Key", "window_secs": 300, "connector": "soma-cache" }
   },
@@ -227,7 +231,7 @@
         {
           "id": "unknown_season",
           "name": "Reject an unknown game or season",
-          "description": "A live session but no such {game}/{slug}: 404, told apart from a 403 so a stranger cannot map which seasons exist by the status code, since a private season a non-member names answers 404 here too (Phase 4 keeps that true across the public reads).",
+          "description": "A live session but no such {game}/{slug} -- or a private season the caller may not see (season_visible, in season_admin_identity's join) -- is 404, told apart from the 403 below only for a season the caller can already see, so nobody maps which private seasons exist by the status code.",
           "condition": {
             "and": [
               { "!!": { "var": "temp_data.who.0.body" } },
@@ -508,6 +512,229 @@
           "function": {
             "name": "cache_incr",
             "input": { "connector": "soma-cache", "key": { "$param": "key" } }
+          }
+        }
+      ]
+    },
+    "season-not-closed": {
+      "tasks": [
+        {
+          "id": "closed",
+          "name": "Not once the season has closed",
+          "description": "After season-admin-only: a season admin's writes to the season's roster and runners stop at its close, whose standings are final. Reads go on.",
+          "condition": { "var": "temp_data.who.0.body.closed" },
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "data.body",
+                  "logic": {
+                    "error": "season_closed",
+                    "detail": "The season has closed: its participants, admins and runners are fixed."
+                  }
+                },
+                {
+                  "path": "data._orion.response",
+                  "logic": { "status": 409, "body_path": "data.body" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "season-runner-keys-answer": {
+      "tasks": [
+        {
+          "id": "read",
+          "name": "Read the season's keys",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-user-shared-season-runner-keys.sql" },
+              "params": [{ "var": "temp_data.who.0.body.season_id" }],
+              "output": "temp_data.rows"
+            }
+          }
+        },
+        {
+          "id": "respond",
+          "name": "Respond",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+                { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "match-answer": {
+      "tasks": [
+        {
+          "id": "presign",
+          "name": "Sign the replay URL",
+          "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-blobs",
+              "method": "GET",
+              "key": { "var": "temp_data.rows.0.replay_key" },
+              "expires_in": "1h",
+              "output": "temp_data.replay_url"
+            }
+          }
+        },
+        {
+          "id": "respond",
+          "name": "Respond",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+                { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
+                { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "submission-refusals": {
+      "tasks": [
+        {
+          "id": "revoked",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "and": [
+                { "$use": "none_written", "with": { "slot": "insert" } },
+                { "===": [{ "var": "temp_data.why.0.session_ok" }, false] }
+              ]
+            },
+            "status": 401,
+            "body": { "error": "session_revoked" },
+            "name": "A live session first",
+            "description": "The write joined live_sessions and wrote nothing, and the why says the session is gone: 401, before any reason the same absence could be mistaken for. `===` false, so a why that returned no row (an unknown game) answers its own refusal instead."
+          }
+        },
+        {
+          "id": "note_refused",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "and": [
+                { "$use": "none_written", "with": { "slot": "insert" } },
+                { "!!": { "var": "temp_data.why.0.body.note_word" } }
+              ]
+            },
+            "status": 422,
+            "body": {
+              "error": "note_word_listed",
+              "word": { "var": "temp_data.why.0.body.note_word" },
+              "detail": "The note uses a word the site does not allow. Nothing was submitted."
+            },
+            "name": "Refuse a listed word",
+            "description": "The insert refuses a note carrying a listed word (text_hold_tag) in its own predicate, and `why` names the word. Refused rather than held: a note is public text beside the version, so the competitor rewrites one line. A URL is allowed."
+          }
+        },
+        {
+          "id": "unknown_model",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "and": [
+                { "$use": "none_written", "with": { "slot": "insert" } },
+                { "!": { "var": "temp_data.why.0.body.model" } },
+                { "!!": { "var": "temp_data.why.0.body" } }
+              ]
+            },
+            "status": 404,
+            "body": { "error": "unknown_model", "detail": { "var": "data.req.model" } },
+            "name": "No such model",
+            "description": "A submission names a model the caller does not own, or does not have: 404 and not 409, because nothing about the season refused it. Entries are created explicitly -- a repository with no entry behind it is not silently adopted, or a typo in a repo path would quietly start a second lineage with its own version numbers."
+          }
+        },
+        {
+          "id": "refused",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "and": [
+                { "$use": "none_written", "with": { "slot": "insert" } },
+                { "!!": { "var": "temp_data.why.0.body.model" } },
+                {
+                  "or": [
+                    { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
+                    { "!": { "var": "temp_data.why.0.body.participant" } },
+                    { "!": { "var": "temp_data.why.0.body.entry_room" } },
+                    { "!!": { "var": "temp_data.why.0.body.model.retired" } },
+                    {
+                      "and": [
+                        { "!!": { "var": "temp_data.why.0.body.entry_in_flight" } },
+                        { "!": { "var": "temp_data.why.0.body.same_submission" } }
+                      ]
+                    },
+                    { "!": { "var": "temp_data.why.0.body.in_flight_ok" } },
+                    { "!": { "var": "temp_data.why.0.body.versions_ok" } },
+                    {
+                      "and": [
+                        { "!!": { "var": "temp_data.why.0.body.cooldown_until" } },
+                        { ">": [{ "var": "temp_data.why.0.body.cooldown_until" }, { "now": [] }] }
+                      ]
+                    },
+                    { "!": { "var": "temp_data.why.0.body.unique_weights" } }
+                  ]
+                }
+              ]
+            },
+            "status": 409,
+            "body": {
+              "error": {
+                "if": [
+                  { "!=": [{ "var": "temp_data.why.0.body.state" }, "open"] },
+                  "season_not_open",
+                  { "!!": { "var": "temp_data.why.0.body.season_admin" } },
+                  "season_admin_cannot_enter",
+                  { "!": { "var": "temp_data.why.0.body.participant" } },
+                  "not_a_participant",
+                  { "!": { "var": "temp_data.why.0.body.entry_room" } },
+                  "entries_max",
+                  { "!!": { "var": "temp_data.why.0.body.model.retired" } },
+                  "model_retired",
+                  {
+                    "and": [
+                      { "!!": { "var": "temp_data.why.0.body.entry_in_flight" } },
+                      { "!": { "var": "temp_data.why.0.body.same_submission" } }
+                    ]
+                  },
+                  "version_in_flight",
+                  { "!": { "var": "temp_data.why.0.body.in_flight_ok" } },
+                  "too_many_in_flight",
+                  { "!": { "var": "temp_data.why.0.body.versions_ok" } },
+                  "too_many_versions",
+                  {
+                    "and": [
+                      { "!!": { "var": "temp_data.why.0.body.cooldown_until" } },
+                      { ">": [{ "var": "temp_data.why.0.body.cooldown_until" }, { "now": [] }] }
+                    ]
+                  },
+                  "cooling_down",
+                  "weights_already_entered"
+                ]
+              },
+              "detail": { "var": "temp_data.why.0.body" }
+            },
+            "name": "Refused by the season",
+            "description": "`entry_in_flight` refuses only a DIFFERENT submission. Re-POSTing the SAME two hashes for the row already in flight falls through to fetch + sign and answers with fresh upload URLs, good for what is left of the version's upload window, so a competitor who lost the first pair can still finish the version. Past the window `same_submission` is false and the same hashes are `version_in_flight`: the admit clock is about to reject the empty version, and the POST after that is a new one."
           }
         }
       ]

@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-season-runners-revoke",
+  "name": "soma-user-season-runners-revoke",
+  "description": "Stops one of this season's runners. Season admins and platform admins.",
+  "tags": ["soma", "user", "runners"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["DELETE"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/runners/{runner}",
+  "workflow_id": "soma-user-season-runners-revoke",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

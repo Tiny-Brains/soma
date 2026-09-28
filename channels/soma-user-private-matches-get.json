@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-matches-get",
+  "name": "soma-user-private-matches-get",
+  "description": "The member's read of one match and its replay reference. hot_cache -- a finished match is immutable, so the only staleness is how soon a new one appears. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "matches"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/matches/{id}",
+  "workflow_id": "soma-user-private-matches-get",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

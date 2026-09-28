@@ -1,0 +1,42 @@
+{
+  "workflow_id": "soma-user-season-notify",
+  "name": "A season's sends",
+  "description": "How many of the season's people (everyone who entered it, its pinned participants and its admins; baselines never) a send would reach now, counting only those who want season notifications, and every send made to the season, newest first, with how many read it.",
+  "tags": ["soma", "user", "notifications"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "read",
+      "name": "Read the season's sends",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-season-notify.sql" },
+          "params": [
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

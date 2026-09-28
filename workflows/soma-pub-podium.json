@@ -11,8 +11,13 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-podium-query.sql" },
-          "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+          "query": { "$sql": "../sql/soma-pub-shared-podium.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            null,
+            null
+          ],
           "output": "temp_data.rows"
         }
       }

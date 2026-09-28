@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-versions-get",
+  "name": "soma-user-private-versions-get",
+  "description": "The member's read of one version, its admission verdict and its rating. hot_cache. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "models"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/versions/{id}",
+  "workflow_id": "soma-user-private-versions-get",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

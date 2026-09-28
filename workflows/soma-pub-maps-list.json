@@ -11,12 +11,14 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-maps-list-query.sql" },
+          "query": { "$sql": "../sql/soma-pub-shared-maps-list.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.params.slug" },
             { "var": "metadata.query.enabled" },
-            { "var": "metadata.query.boards" }
+            { "var": "metadata.query.boards" },
+            null,
+            null
           ],
           "output": "temp_data.rows"
         }

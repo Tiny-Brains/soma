@@ -11,13 +11,15 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-leaderboard-series-query.sql" },
+          "query": { "$sql": "../sql/soma-pub-shared-leaderboard-series.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "metadata.query.ladder" },
             { "var": "metadata.query.since" },
             { "var": "metadata.query.points" },
-            { "var": "metadata.query.season" }
+            { "var": "metadata.query.season" },
+            null,
+            null
           ],
           "output": "temp_data.rows"
         }

@@ -1,0 +1,132 @@
+{
+  "workflow_id": "soma-user-maps-import",
+  "name": "Import maps from another season",
+  "description": "THE MIGRATION'S BOARDS (Q7). `{from, maps?}`: every board of the season `from` -- or the ids `maps` names -- copied into this season as an upload would land it: the same file and digest, SWITCHED OFF. Switching one on re-runs the engine's check under this season's engine, so a board the new engine refuses never plays. A board already here (by id or digest) is skipped. `imported` is how many came. 400 maps_invalid when `maps` is there and not an array; 404 unknown_source for a season the caller may not see (or this one); 409 season_closed.",
+  "tags": ["soma", "user", "maps"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "open",
+      "use": "season-not-closed"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.from" } },
+        "status": 400,
+        "body": {
+          "error": "from_required",
+          "detail": "Name the season to import from in `from` (its slug); `maps` narrows it."
+        },
+        "name": "A source season"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Import",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-maps-import-insert.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.from" },
+            { "var": "data.req" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.imported"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.imported.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "not_written",
+      "condition": { "$use": "none_written", "with": { "slot": "imported" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why nothing came",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-user-shared-import-why.sql" },
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.from" },
+                { "var": "metadata.auth.claims.sub" },
+                { "var": "data.req" },
+                "maps"
+              ],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "list",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.list_ok" } },
+            "status": 400,
+            "body": {
+              "error": "maps_invalid",
+              "detail": "maps is an array of map ids, or absent for every board."
+            },
+            "name": "The list is a list"
+          }
+        },
+        {
+          "id": "unknown",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.source" } },
+            "status": 404,
+            "body": {
+              "error": "unknown_source",
+              "detail": "No other season of this game that you may see has that slug."
+            },
+            "name": "A season to import from"
+          }
+        }
+      ]
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "imported": { "var": "temp_data.imported.rows_affected" },
+                "from": { "var": "data.req.from" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

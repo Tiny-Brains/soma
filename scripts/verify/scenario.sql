@@ -255,9 +255,9 @@ SELECT sm.matches, se.matches_played, sm.latest_match_id = :'m43' AS latest
   FROM matches m JOIN season_maps sm ON sm.id = m.season_map_id JOIN seasons se ON se.id = m.season_id
  WHERE m.seed = 43;
 \echo '--- the last frame of a public match: m42''s trial went public with its frame, m43 sent none (expect 120 t, then null f)'
-EXECUTE x_frame (:'m42') \gset f42_
+EXECUTE x_frame (:'m42', NULL, NULL) \gset f42_
 SELECT (:'f42_body'::json)->>'turn' AS turn, :'f42_has_frame' AS has_frame;
-EXECUTE x_frame (:'m43') \gset f43_
+EXECUTE x_frame (:'m43', NULL, NULL) \gset f43_
 SELECT (:'f43_body'::json)->>'turn' AS turn, :'f43_has_frame' AS has_frame;
 \echo '--- watch events: a visit, an opened public match, and a random id that writes nothing (expect INSERT 0 1, INSERT 0 1, INSERT 0 0; then opened tv 1, visit 1), rolled back'
 BEGIN;
@@ -267,14 +267,14 @@ EXECUTE x_events ('opened', '30000000-0000-0000-0000-999999999999', 'tv');
 SELECT event, via, sum(n) FROM watch_events GROUP BY 1, 2 ORDER BY 1, 2;
 ROLLBACK;
 \echo '--- a live season''s podium is empty; an unknown season answers no row (expect {}, then 0 rows)'
-EXECUTE x_podium ('ants', 'summer-2026') \gset po_
+EXECUTE x_podium ('ants', 'summer-2026', NULL, NULL) \gset po_
 SELECT (:'po_body'::json)->'ladders' AS ladders;
-EXECUTE x_podium ('ants', 'no-such-season');
+EXECUTE x_podium ('ants', 'no-such-season', NULL, NULL);
 \echo '--- who may see a trial: alice v2''s, now that v2 is active (expect t); an ordinary match (expect t)'
 SELECT m.seed, match_public(m) FROM matches m WHERE m.seed IN (42, 43) ORDER BY m.seed;
 \echo '--- a version is public once it is: v2 active answers, v1 superseded answers (expect 2 rows, versions 1 and 2)'
-EXECUTE v_public ('20000000-0000-0000-0000-000000000002', 2.0);
-EXECUTE v_public ('20000000-0000-0000-0000-000000000001', 2.0);
+EXECUTE v_public ('20000000-0000-0000-0000-000000000002', 2.0, NULL, NULL);
+EXECUTE v_public ('20000000-0000-0000-0000-000000000001', 2.0, NULL, NULL);
 \echo '--- promotion statement 2: withdraw the pending rows naming v1 (expect 1: the other-board row, successor v2)'
 EXECUTE c_withdraw_pred ('20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
 SELECT seed, status, withdrawn_reason, successor_version_id FROM matches WHERE seed = 46;
@@ -315,7 +315,7 @@ EXECUTE c_batch_doc (10, 1);
 EXECUTE c_reject ('2026-09-07 10:00:00+00', 2, :'m50', '20000000-0000-0000-0000-000000000003', 'UNPLAYABLE');
 SELECT version, status, reject_reason FROM model_versions WHERE version = 3;
 \echo '--- a rejected candidate stays private: its version answers nothing publicly, and its trial is no public match (expect 0 rows, then 50 f)'
-EXECUTE v_public ('20000000-0000-0000-0000-000000000003', 2.0);
+EXECUTE v_public ('20000000-0000-0000-0000-000000000003', 2.0, NULL, NULL);
 SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 50;
 \echo '    ... but its owner watches it: alice''s session reads the trial whole, a session of someone with no seat reads nothing, and a missing session no row at all (expect alice''s session and the failed trial''s body, then the admin''s session and a null body, then 0 rows), rolled back'
 BEGIN;
@@ -602,7 +602,7 @@ EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
 EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
 \echo '--- and it is nobody''s but its owner''s yet: a trial finished and not yet decided is no public match, and its verified candidate no public version (expect 60 f, then 0 rows)'
 SELECT m.seed, match_public(m) FROM matches m WHERE m.seed = 60;
-EXECUTE v_public ('20000000-0000-0000-0000-000000000004', 2.0);
+EXECUTE v_public ('20000000-0000-0000-0000-000000000004', 2.0, NULL, NULL);
 \echo '--- comments: a link holds a reply; approval audits it and tells the parent''s author once; too fast; a lock refuses (expect INSERT 0 1 x2, held link, INSERT 0 1, INSERT 0 1 then 0, INSERT 0 0 wait_s 15, INSERT 0 1, INSERT 0 0 locked t), rolled back'
 BEGIN;
 INSERT INTO sessions (sid, user_id, expires_at) VALUES
@@ -732,17 +732,17 @@ SELECT u.handle, e.name, v.version, v.status, (SELECT count(*) FROM baseline_eve
   FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout';
 SELECT v.id AS scout_v FROM model_versions v JOIN models e ON e.id = v.model_id JOIN users u ON u.id = e.owner_id WHERE u.handle = 'baseline.scout' \gset
 \echo '    a re-mint gets what is left of the upload window, the minutes rounded down, and none once it has passed (expect t 1800 30m, t 599 9m, then f)'
-EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, 'platform') \gset
 SELECT (:'body')::json -> 'existing' ->> 'same' AS same \gset
 EXECUTE b_fetch ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
 SELECT :'same' AS same, :upload_s AS upload_s, :'upload_expires_in' AS expires_in;
 UPDATE model_versions SET created_at = now() - interval '1201 seconds' WHERE id = :'scout_v';
-EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, 'platform') \gset
 SELECT (:'body')::json -> 'existing' ->> 'same' AS same \gset
 EXECUTE b_fetch ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
 SELECT :'same' AS same, :upload_s AS upload_s, :'upload_expires_in' AS expires_in;
 UPDATE model_versions SET created_at = now() - interval '2 hours' WHERE id = :'scout_v';
-EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800) \gset
+EXECUTE b_ctx ('ants', 'summer-2026', 'Scout', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a', 1800, 'platform') \gset
 SELECT (:'body')::json -> 'existing' ->> 'same' AS same;
 UPDATE model_versions SET created_at = now() WHERE id = :'scout_v';
 \echo '    one version a name a season: the same name in another case, other weights (expect INSERT 0 0)'
@@ -1379,6 +1379,12 @@ EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": false, "gmaes": 3}', '0000000
 EXECUTE g_register ('sha256:not-a-real-digest', 'rd-match', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 3, 2400000, 1);
 EXECUTE g_register ('sha256:not-a-real-digest', 'rd-admit', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', NULL, 2400000, 1);
 SELECT label, plays_matches FROM runners WHERE label IN ('rd-match', 'rd-admit') ORDER BY label DESC;
+\echo '    ... a season key registers a runner for an admin of its season, and not for anyone else (expect INSERT 0 1, then INSERT 0 0)'
+INSERT INTO runner_keys (id, user_id, label, key_hash, key_prefix, season_id) VALUES
+  ('6b000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000f1', 'cohort lab', 'sha256:season-key-of-its-admin', 'tbr_sk01', '50000000-0000-0000-0000-0000000000f1'),
+  ('6b000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-0000000000f2', 'not theirs', 'sha256:season-key-of-a-stranger', 'tbr_sk02', '50000000-0000-0000-0000-0000000000f1');
+EXECUTE g_register ('sha256:season-key-of-its-admin', 'cohort-1', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1);
+EXECUTE g_register ('sha256:season-key-of-a-stranger', 'cohort-2', 'sha256:e1', 'x', '1.11.1', 1, 'arm64', 2, 2400000, 1);
 
 \echo '--- the countdown: round 2 moved to ten minutes from now is inside its fifteen-minute warning (expect UPDATE 1; one live public line naming the season, at = the start; then two bell rows, dora and eve, none for the wall)'
 UPDATE season_rounds SET starts_at = now() + interval '10 minutes'
@@ -1449,7 +1455,7 @@ SELECT entries, complete, done FROM season_finals('50000000-0000-0000-0000-00000
 EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
 \echo '--- the leaderboard counts the round beside the season (expect round finals 2, each entry''s round_matches 1, the wall 0)'
-EXECUTE x_leaderboard ('ants', 'open', 10, 0, 3.0, 'rounds-2026') \gset lb_
+EXECUTE x_leaderboard ('ants', 'open', 10, 0, 3.0, 'rounds-2026', NULL, NULL) \gset lb_
 SELECT (:'lb_body')::json -> 'round' AS round;
 SELECT e ->> 'model' AS model, e ->> 'round_matches' AS round_matches, e ->> 'matches' AS matches
   FROM json_array_elements((:'lb_body')::json -> 'entries') e ORDER BY 1;
@@ -1482,4 +1488,127 @@ EXECUTE r_doc ('ants', 'rounds-2026') \gset rd_
 SELECT (:'rd_body')::json ->> 'state' AS state, (:'rd_body')::json ->> 'policy' AS policy,
        (:'rd_body')::json ->> 'current' AS current, json_array_length((:'rd_body')::json -> 'rounds') AS rounds,
        (:'rd_body')::json -> 'finals' ->> 'done' AS done, json_array_length((:'rd_body')::json -> 'versions') AS versions;
+ROLLBACK;
+
+\echo '===== private seasons: the public reads answer nothing, a viewer who may see one reads it ====='
+-- The private cohort 50..f1 holds fencer's rated, listed match f9 and version f9. A session for the
+-- platform admin (ops) and one for a stranger (dora of the rounds scenario is gone, so a new one).
+BEGIN;
+INSERT INTO users (id, handle, role) VALUES ('00000000-0000-0000-0000-0000000000e9', 'cohort-outsider', 'competitor');
+INSERT INTO sessions (sid, user_id, expires_at) VALUES
+  ('5e000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000ad', now() + interval '1 day'),
+  ('5e000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-0000000000e9', now() + interval '1 day');
+SELECT slug AS cohort_slug FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000f1' \gset
+\echo '--- a private match by id: the public (no session) and a stranger get 0 rows; the platform admin gets it (expect 0, 0, 1)'
+EXECUTE x_match ('11111111-1111-1111-1111-1111111111f9', NULL, NULL);
+EXECUTE x_match ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2');
+EXECUTE x_match ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1');
+\echo '--- a private version by id, the same three (expect 0, 0, 1)'
+EXECUTE v_public ('20000000-0000-0000-0000-0000000000f9', 2.0, NULL, NULL);
+EXECUTE v_public ('20000000-0000-0000-0000-0000000000f9', 2.0, '00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2');
+EXECUTE v_public ('20000000-0000-0000-0000-0000000000f9', 2.0, '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1');
+\echo '--- the season list: the private cohort is in the admin''s and nobody else''s (expect f, f, t)'
+EXECUTE x_seasons ('ants', NULL, NULL) \gset sl0_
+SELECT position(:'cohort_slug' in :'sl0_body') > 0 AS public_sees;
+EXECUTE x_seasons ('ants', '00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2') \gset sl1_
+SELECT position(:'cohort_slug' in :'sl1_body') > 0 AS stranger_sees;
+EXECUTE x_seasons ('ants', '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1') \gset sl2_
+SELECT position(:'cohort_slug' in :'sl2_body') > 0 AS admin_sees;
+\echo '--- playing on the private slug: the public gets no row, the admin a count (expect 0 rows, then 1 row)'
+EXECUTE x_playing ('ants', :'cohort_slug', NULL, NULL);
+EXECUTE x_playing ('ants', :'cohort_slug', '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1');
+\echo '--- the private match''s thread (BRD Q8): the public and a stranger find no host, the admin does (expect f, f, t)'
+EXECUTE cm_threads ('11111111-1111-1111-1111-1111111111f9', NULL, NULL, NULL, NULL) \gset th0_
+EXECUTE cm_threads ('11111111-1111-1111-1111-1111111111f9', NULL, NULL, '00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2') \gset th1_
+EXECUTE cm_threads ('11111111-1111-1111-1111-1111111111f9', NULL, NULL, '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1') \gset th2_
+SELECT :'th0_found' AS public_found, :'th1_found' AS stranger_found, :'th2_found' AS admin_found;
+\echo '--- a stranger makes no thread on it and posts nothing (expect INSERT 0 0 twice); the admin makes it and posts (expect INSERT 0 1 twice); then the stranger still posts nothing into the thread that now exists (expect INSERT 0 0)'
+EXECUTE cm_thread ('00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2', '11111111-1111-1111-1111-1111111111f9', NULL);
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2', '11111111-1111-1111-1111-1111111111f9', NULL, NULL, 'let me in', 'c0000000-0000-0000-0000-0000000000f1');
+EXECUTE cm_thread ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1', '11111111-1111-1111-1111-1111111111f9', NULL);
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1', '11111111-1111-1111-1111-1111111111f9', NULL, NULL, 'good game', 'c0000000-0000-0000-0000-0000000000f2');
+EXECUTE cm_post ('00000000-0000-0000-0000-0000000000e9', '5e000000-0000-0000-0000-0000000000f2', '11111111-1111-1111-1111-1111111111f9', NULL, NULL, 'let me in', 'c0000000-0000-0000-0000-0000000000f3');
+\echo '--- a revoked session reads as the public (expect 0)'
+UPDATE sessions SET revoked_at = now() WHERE sid = '5e000000-0000-0000-0000-0000000000f1';
+EXECUTE x_match ('11111111-1111-1111-1111-1111111111f9', '00000000-0000-0000-0000-0000000000ad', '5e000000-0000-0000-0000-0000000000f1');
+ROLLBACK;
+
+\echo '===== the migration: boards and baselines imported, an entry re-entered, and who may enter ====='
+BEGIN;
+-- A closed season with two boards, one baseline in play and dora's entry standing; a new open one.
+INSERT INTO seasons (id, game_id, number, name, slug, engine_digest, submissions_open_at, submissions_close_at, closed_at) VALUES
+  ('50000000-0000-0000-0000-00000000aa01', '00000000-0000-0000-0000-00000000000a', 21, 'Import Src', 'import-src', 'sha256:e1', now() - interval '20 days', now() - interval '10 days', now() - interval '9 days'),
+  ('50000000-0000-0000-0000-00000000aa02', '00000000-0000-0000-0000-00000000000a', 22, 'Import Dst', 'import-dst', 'sha256:e1', now() - interval '1 day', now() + interval '20 days', NULL);
+INSERT INTO users (id, handle, role) VALUES
+  ('00000000-0000-0000-0000-00000000aa0d', 'mig-dora', 'competitor'),
+  ('00000000-0000-0000-0000-00000000aa0e', 'mig-erin', 'competitor'),
+  ('00000000-0000-0000-0000-00000000aa0b', 'baseline.mig-wall', 'baseline');
+INSERT INTO identities (user_id, provider, subject, login) VALUES
+  ('00000000-0000-0000-0000-00000000aa0d', 'github', 'mig-d', 'mig-dora'),
+  ('00000000-0000-0000-0000-00000000aa0e', 'github', 'mig-e', 'mig-erin');
+INSERT INTO sessions (sid, user_id, expires_at) VALUES
+  ('5e000000-0000-0000-0000-00000000aa0d', '00000000-0000-0000-0000-00000000aa0d', now() + interval '1 day'),
+  ('5e000000-0000-0000-0000-00000000aa0e', '00000000-0000-0000-0000-00000000aa0e', now() + interval '1 day');
+INSERT INTO models (id, owner_id, game_id, name) VALUES
+  ('e0000000-0000-0000-0000-00000000aa0d', '00000000-0000-0000-0000-00000000aa0d', '00000000-0000-0000-0000-00000000000a', 'mig entry'),
+  ('e0000000-0000-0000-0000-00000000aa0e', '00000000-0000-0000-0000-00000000aa0e', '00000000-0000-0000-0000-00000000000a', 'erin entry'),
+  ('e0000000-0000-0000-0000-00000000aa0b', '00000000-0000-0000-0000-00000000aa0b', '00000000-0000-0000-0000-00000000000a', 'mig wall');
+INSERT INTO model_versions (id, model_id, game_id, season_id, version, status, weight_class, weights_hash, manifest_hash, orion_version) VALUES
+  ('20000000-0000-0000-0000-00000000aa0d', 'e0000000-0000-0000-0000-00000000aa0d', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-00000000aa01', 1, 'active', 'nano', 'sha256:' || repeat('d', 64), 'sha256:' || repeat('1', 64), '1.8.1'),
+  ('20000000-0000-0000-0000-00000000aa0e', 'e0000000-0000-0000-0000-00000000aa0e', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-00000000aa01', 1, 'active', 'nano', 'sha256:' || repeat('e', 64), 'sha256:' || repeat('2', 64), '1.8.1'),
+  ('10000000-0000-0000-0000-00000000aa0b', 'e0000000-0000-0000-0000-00000000aa0b', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-00000000aa01', 1, 'disabled', 'nano', 'sha256:' || repeat('b', 64), 'sha256:' || repeat('3', 64), '1.8.1');
+INSERT INTO season_maps (season_id, map_id, players, rows, cols, digest, board, enabled, added_by) VALUES
+  ('50000000-0000-0000-0000-00000000aa01', 'small-open-2p-1h', 2, 24, 24, 'sha256:m1', '{"id": "small-open-2p-1h"}', true, '00000000-0000-0000-0000-0000000000ad'),
+  ('50000000-0000-0000-0000-00000000aa01', 'small-cave-2p-1h', 2, 24, 24, 'sha256:m2', '{"id": "small-cave-2p-1h"}', true, '00000000-0000-0000-0000-0000000000ad');
+\echo '--- a maps list that is not an array imports nothing (expect INSERT 0 0); a named board alone (expect INSERT 0 1)'
+EXECUTE m_import ('ants', 'import-dst', 'import-src', '{"maps": "small-open-2p-1h"}', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE m_import ('ants', 'import-dst', 'import-src', '{"maps": ["small-open-2p-1h"]}', '00000000-0000-0000-0000-0000000000ad');
+\echo '--- boards imported, switched off, once (expect INSERT 0 1, the other, then two rows enabled f, then INSERT 0 0); from an unknown season nothing (expect INSERT 0 0)'
+EXECUTE m_import ('ants', 'import-dst', 'import-src', NULL, '00000000-0000-0000-0000-0000000000ad');
+SELECT map_id, enabled FROM season_maps WHERE season_id = '50000000-0000-0000-0000-00000000aa02' ORDER BY map_id;
+EXECUTE m_import ('ants', 'import-dst', 'import-src', NULL, '00000000-0000-0000-0000-0000000000ad');
+EXECUTE m_import ('ants', 'import-dst', 'no-such', NULL, '00000000-0000-0000-0000-0000000000ad');
+\echo '--- a baselines list that is not an array imports nothing (expect INSERT 0 0)'
+EXECUTE b_import ('ants', 'import-dst', 'import-src', '{"baselines": {"mig wall": true}}', '00000000-0000-0000-0000-0000000000ad');
+\echo '--- the baseline imported over the same bytes, testing (expect INSERT 0 1, then testing | t), once (expect INSERT 0 0)'
+EXECUTE b_import ('ants', 'import-dst', 'import-src', NULL, '00000000-0000-0000-0000-0000000000ad');
+SELECT v.status, v.artifact_key = 'models/10000000-0000-0000-0000-00000000aa0b/model.onnx' AS same_bytes
+  FROM model_versions v WHERE v.model_id = 'e0000000-0000-0000-0000-00000000aa0b' AND v.season_id = '50000000-0000-0000-0000-00000000aa02';
+EXECUTE b_import ('ants', 'import-dst', 'import-src', NULL, '00000000-0000-0000-0000-00000000aa0d');
+\echo '--- the season audit carries the imports (expect 3 lines with the season stamped)'
+SELECT count(*) AS stamped FROM audit_log WHERE season_id = '50000000-0000-0000-0000-00000000aa02' AND action IN ('map.import', 'baseline.import');
+EXECUTE sa_audit ('50000000-0000-0000-0000-00000000aa02', 'map.', NULL) \gset au_
+SELECT json_array_length((:'au_body')::json -> 'entries') AS map_lines;
+\echo '--- re-entry: dora''s standing in import-src, entered into import-dst over its own bytes (expect the source, INSERT 0 1, same bytes t)'
+EXECUTE r_source ('ants', 'e0000000-0000-0000-0000-00000000aa0d', 'import-src', '00000000-0000-0000-0000-00000000aa0d', '5e000000-0000-0000-0000-00000000aa0d') \gset rs_
+SELECT (:'rs_body')::json ->> 'version_id' AS source_version;
+EXECUTE s_insert ('00000000-0000-0000-0000-00000000aa0d', 'ants', 'e0000000-0000-0000-0000-00000000aa0d', '5e000000-0000-0000-0000-00000000aa0d', 'sha256:' || repeat('d', 64), 'sha256:' || repeat('1', 64), NULL, 'import-dst', '20000000-0000-0000-0000-00000000aa0d');
+SELECT artifact_key = 'models/20000000-0000-0000-0000-00000000aa0d/model.onnx' AS same_bytes FROM model_versions
+ WHERE model_id = 'e0000000-0000-0000-0000-00000000aa0d' AND season_id = '50000000-0000-0000-0000-00000000aa02';
+\echo '    ... erin cannot borrow dora''s bytes, whatever id she names (expect INSERT 0 0)'
+EXECUTE s_insert ('00000000-0000-0000-0000-00000000aa0e', 'ants', 'e0000000-0000-0000-0000-00000000aa0e', '5e000000-0000-0000-0000-00000000aa0e', 'sha256:' || repeat('d', 64), 'sha256:' || repeat('1', 64), NULL, 'import-dst', '20000000-0000-0000-0000-00000000aa0d');
+\echo '--- S5: erin made a season admin of import-dst may not enter it (expect f, then INSERT 0 0)'
+INSERT INTO season_admins (season_id, user_id, added_by) VALUES ('50000000-0000-0000-0000-00000000aa02', '00000000-0000-0000-0000-00000000aa0e', '00000000-0000-0000-0000-0000000000ad');
+SELECT season_admits(s, '00000000-0000-0000-0000-00000000aa0e') AS erin_admitted FROM seasons s WHERE s.id = '50000000-0000-0000-0000-00000000aa02';
+EXECUTE s_insert ('00000000-0000-0000-0000-00000000aa0e', 'ants', 'e0000000-0000-0000-0000-00000000aa0e', '5e000000-0000-0000-0000-00000000aa0e', 'sha256:' || repeat('e', 64), 'sha256:' || repeat('2', 64), NULL, 'import-dst', NULL);
+\echo '--- S3: an invite for a login nobody has yet stays a login; its first sign-in pins it (expect INSERT 0 1 twice, null, UPDATE 1, pinned t); a second account later holding the login is not admitted by it (expect f)'
+UPDATE seasons SET entry = 'restricted' WHERE id = '50000000-0000-0000-0000-00000000aa02';
+EXECUTE p_add ('50000000-0000-0000-0000-00000000aa02', 'github', '["mig-newbie"]', '00000000-0000-0000-0000-0000000000ad');
+SELECT user_id FROM season_participants WHERE season_id = '50000000-0000-0000-0000-00000000aa02' AND login = 'mig-newbie';
+INSERT INTO users (id, handle) VALUES ('00000000-0000-0000-0000-00000000aa0f', 'mig-newbie');
+INSERT INTO identities (user_id, provider, subject, login) VALUES ('00000000-0000-0000-0000-00000000aa0f', 'github', 'mig-n', 'mig-newbie');
+EXECUTE a_pin ('github', 'mig-n', 'mig-newbie');
+SELECT user_id = '00000000-0000-0000-0000-00000000aa0f' AS pinned FROM season_participants WHERE season_id = '50000000-0000-0000-0000-00000000aa02' AND login = 'mig-newbie';
+INSERT INTO users (id, handle) VALUES ('00000000-0000-0000-0000-00000000aa10', 'mig-other');
+INSERT INTO identities (user_id, provider, subject, login) VALUES ('00000000-0000-0000-0000-00000000aa10', 'github', 'mig-o', 'MIG-NEWBIE');
+SELECT season_admits(s, '00000000-0000-0000-0000-00000000aa10') AS other_admitted FROM seasons s WHERE s.id = '50000000-0000-0000-0000-00000000aa02';
+\echo '--- S8: a participant added pinned is told (expect INSERT 0 1 for the add, then INSERT 0 2: mig-dora, and mig-newbie whose invite was pinned at sign-in this minute -- each once, keyed on the row)'
+EXECUTE p_add ('50000000-0000-0000-0000-00000000aa02', 'github', '["mig-dora"]', '00000000-0000-0000-0000-0000000000ad');
+EXECUTE p_notify ('50000000-0000-0000-0000-00000000aa02');
+\echo '--- S8: the season''s send reaches its people -- mig-dora (entered, and a pinned participant), mig-newbie (pinned), erin (its admin): 3 people, baselines never (expect recipients 3, INSERT 0 1, then 1 send)'
+EXECUTE n_season_doc ('50000000-0000-0000-0000-00000000aa02', 'ants', 'import-dst') \gset nd_
+SELECT (:'nd_body')::json ->> 'recipients' AS recipients;
+EXECUTE n_season_send ('00000000-0000-0000-0000-00000000aa0e', '5e000000-0000-0000-0000-00000000aa0e', 'b0000000-0000-0000-0000-00000000aa01', 'Boards are up', '/maps', '50000000-0000-0000-0000-00000000aa02', 'ants', 'import-dst');
+EXECUTE n_season_doc ('50000000-0000-0000-0000-00000000aa02', 'ants', 'import-dst') \gset nd2_
+SELECT json_array_length((:'nd2_body')::json -> 'sends') AS sends;
 ROLLBACK;

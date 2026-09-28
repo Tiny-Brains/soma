@@ -50,6 +50,25 @@
       }
     },
     {
+      "id": "pin",
+      "name": "Pin the invites waiting for this login",
+      "description": "Every live participant row of this provider and login that no account holds yet is pinned to the one signing in (S3). continue_on_error: an invite left unpinned still admits by login, and sign-in must not fail on it.",
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-auth-pin.sql" },
+          "params": [
+            { "var": "metadata.identity.provider" },
+            { "var": "metadata.identity.subject" },
+            { "var": "metadata.identity.login" }
+          ],
+          "output": "temp_data.pinned"
+        }
+      }
+    },
+    {
       "id": "promote",
       "name": "Promote a deployment admin",
       "description": "Own statement, not folded into the upsert: both write `users`, and two writes to one table in one statement race. Reads the same identity the upsert did, so a fresh admin account is created a competitor and promoted here in the same sign-in. Only ever promotes; PATCH /v1/admin/users/{id} is every other change.",

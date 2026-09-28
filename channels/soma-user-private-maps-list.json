@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-maps-list",
+  "name": "soma-user-private-maps-list",
+  "description": "The member's read of a season's enabled boards. Cached on the `season` namespace like the rest of the season's public reads: an admin enables and disables a board at any time before the close, and maps-add and maps-update bump `season` in the same run, so a reader sees the flip at once. The ladder never reads this route: pair reads the boards from Postgres. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "maps"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/games/{game}/seasons/{slug}/maps",
+  "workflow_id": "soma-user-private-maps-list",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

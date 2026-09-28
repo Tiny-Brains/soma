@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-pub-leaderboard",
   "name": "Game leaderboard",
-  "description": "A season's standings. `?season=<slug>` reads a closed season's, which are its active versions and their rating rows, kept for ever; absent, the live season, or the latest closed when none is live. Pagination is OFFSET on purpose, the cursor being that offset: the sort key is a live rating that every match rewrites, so a keyset position would drift exactly as an offset does, and `rank` is a position in the whole ladder either way. Query defaults are computed in a map task rather than inline in params, because db_read folds only {\"var\": ..} nodes and an `or` written in params would reach Postgres as a literal object. `trend` is the last move on this ladder and `history` the last twelve conservative ratings oldest first, seed row included, rounded to two places: enough for a sparkline in a row, and a row is a row, not a chart -- a version's full chain is rating_events and is not a public route. `limit` clamps at 200 in SQL.",
+  "description": "A season's standings. `?season=<slug>` reads a closed season's, which are its active versions and their rating rows, kept for ever; absent, the game's featured season (public_season: the featured one, else the newest live public, else the newest public). Pagination is OFFSET on purpose, the cursor being that offset: the sort key is a live rating that every match rewrites, so a keyset position would drift exactly as an offset does, and `rank` is a position in the whole ladder either way. Query defaults are computed in a map task rather than inline in params, because db_read folds only {\"var\": ..} nodes and an `or` written in params would reach Postgres as a literal object. `trend` is the last move on this ladder and `history` the last twelve conservative ratings oldest first, seed row included, rounded to two places: enough for a sparkline in a row, and a row is a row, not a chart -- a version's full chain is rating_events and is not a public route. `limit` clamps at 200 in SQL.",
   "tags": ["soma", "pub", "ladder"],
   "tasks": [
     {
@@ -35,14 +35,16 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-leaderboard-query.sql" },
+          "query": { "$sql": "../sql/soma-pub-shared-leaderboard.sql" },
           "params": [
             { "var": "metadata.params.game" },
             { "var": "temp_data.q.ladder" },
             { "var": "temp_data.q.limit" },
             { "var": "temp_data.q.cursor" },
             { "var": "metadata.vars.settled_sigma" },
-            { "var": "temp_data.q.season" }
+            { "var": "temp_data.q.season" },
+            null,
+            null
           ],
           "output": "temp_data.rows"
         }

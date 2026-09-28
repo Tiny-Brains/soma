@@ -15,11 +15,11 @@ INSERT INTO runners (key_id, label, engine_digest, node_version, orion_version, 
 SELECT k.id, btrim(($2)::text),
 ($3)::text, ($4)::text, ($5)::text, ($6)::bigint, ($7)::text, coalesce(($8)::smallint, 4),
 ($9)::bigint, ($10)::smallint, ($8)::smallint IS NOT NULL, now()
-FROM runner_keys k
-JOIN users u ON u.id = k.user_id
-AND u.role = 'admin'
+-- live_runner_keys is the one predicate for whose key may start a runner: a platform key of a
+-- platform admin, or a season key of an admin of its season (N30). Joining users for role = 'admin'
+-- here instead refused every season admin's key, so no season could run a fleet of its own.
+FROM live_runner_keys k
 WHERE k.key_hash = ($1)::text
-AND k.revoked_at IS NULL
 AND btrim(($2)::text) <> ''
 ON CONFLICT (key_id, label) DO
 UPDATE

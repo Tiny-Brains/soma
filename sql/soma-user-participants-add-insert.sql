@@ -1,6 +1,6 @@
 -- BULK ADD (N30). The logins arrive as a JSON array or one comma-separated string (a textarea), and
 -- each becomes a season_participants row for the season the fragment resolved ($1), under the given
--- provider ($2, any provider slug, 'github' by default). A login already matching an identity of that
+-- provider ($2, any provider slug, 'github' by default). A login already matching ONE identity of that
 -- provider is PINNED to its account now; one that is not is kept as a login and pinned at that
 -- identity's next sign-in -- so a member listed before they
 -- sign in is admitted the moment they do, without an edit. A login already live in the season is left
@@ -19,11 +19,14 @@ WITH given AS (
 ), prov AS (
     SELECT coalesce(nullif(($2)::text, ''), 'github') AS provider
 ), resolved AS (
+    -- Pinned now only when exactly ONE account holds the login on that provider: two (a login freed
+    -- and taken again, both identities still on file) is not a choice to make here, so the row stays
+    -- a login and the next sign-in of it pins it (soma-pub-auth-pin).
     SELECT given.login,
-           (SELECT i.user_id FROM identities i, prov
+           (SELECT min(i.user_id::text)::uuid FROM identities i, prov
              WHERE i.provider = prov.provider
                AND lower(i.login) = lower(given.login)
-             LIMIT 1) AS user_id
+            HAVING count(DISTINCT i.user_id) = 1) AS user_id
     FROM given
 ), ins AS (
     INSERT INTO season_participants (season_id, provider, login, user_id, added_by)

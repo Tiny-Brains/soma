@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-participants-add",
   "name": "Add participants",
-  "description": "Add logins to a season's roster in bulk -- a textarea, one per line or comma-separated, or a JSON array in `logins`. Each becomes a season_participants row, pinned to an account if that identity already exists and kept as a login until its first sign-in otherwise, so a cohort written before the term admits its members the moment they sign in. `provider` defaults to github (the only one today; §I adds more). A login already live in the season is left as it is; one previously removed is re-added. The response is the season's participants list, each row saying whether it has resolved or is still waiting. The season-admin-only fragment gates it and hands down the season id.",
+  "description": "Add logins to a season's roster in bulk -- a textarea, one per line or comma-separated, or a JSON array in `logins`. Each becomes a season_participants row, pinned to an account if that identity already exists and kept as a login until its first sign-in otherwise, so a cohort written before the term admits its members the moment they sign in. `provider` is any sign-in provider's slug, github by default. A login already live in the season is left as it is; one previously removed is re-added. The response is the season's participants list, each row saying whether it has resolved or is still waiting. The season-admin-only fragment gates it and hands down the season id.",
   "tags": ["soma", "user", "seasons"],
   "tasks": [
     {
@@ -12,6 +12,10 @@
     {
       "id": "gate",
       "use": "season-admin-only"
+    },
+    {
+      "id": "open",
+      "use": "season-not-closed"
     },
     {
       "id": "declared",
@@ -41,6 +45,22 @@
             { "var": "metadata.auth.claims.sub" }
           ],
           "output": "temp_data.added"
+        }
+      }
+    },
+    {
+      "id": "notify",
+      "name": "Tell each pinned participant they are in",
+      "description": "A notification is never part of the statement that decided the thing: its own continue_on_error write after it, reading the decision off the row.",
+      "condition": { ">": [{ "var": "temp_data.added.rows_affected" }, 0] },
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-participants-add-notify.sql" },
+          "params": [{ "var": "temp_data.who.0.body.season_id" }],
+          "output": "temp_data.notify"
         }
       }
     },

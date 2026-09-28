@@ -11,8 +11,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-matches-frame-query.sql" },
-          "params": [{ "var": "metadata.params.id" }],
+          "query": { "$sql": "../sql/soma-pub-shared-matches-frame.sql" },
+          "params": [{ "var": "metadata.params.id" }, null, null],
           "output": "temp_data.rows"
         }
       }

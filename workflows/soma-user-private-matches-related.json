@@ -1,0 +1,48 @@
+{
+  "workflow_id": "soma-user-private-matches-related",
+  "name": "Matches beside a match (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-matches-related: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. The watch rail: twelve cards beside one PUBLIC match, from its own season. Six of the latest matches of the models seated in it, taken in turns -- each model's newest, then each one's next -- the winner's model first in every round; three more on the same board; then the season's latest. Deduplicated -- a match keeps the first group it falls in -- and the match itself excluded. Every candidate is match_counted(), the season listing's own rule. A model's latest are read backwards off its versions' rating_events, and the board and season groups off the season's played index, each stopping at its LIMIT, so none sorts the season. 404 for a match that is not public.",
+  "tags": ["soma", "user", "matches"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-matches-related.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "No public match"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

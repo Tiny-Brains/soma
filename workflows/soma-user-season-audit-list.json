@@ -1,0 +1,42 @@
+{
+  "workflow_id": "soma-user-season-audit-list",
+  "name": "A season's audit log",
+  "description": "Every admin line about one season -- its creation and settings, rounds, boards, baselines, participants, admins, keys and runners -- whoever wrote it, newest first, fifty a page (`cursor`), narrowed by `action` prefix. audit_log.season_id is derived as each line is written (audit_log_season), so no writer has to remember it. Read-only.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "query",
+      "name": "Read the season's lines",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-season-audit-list-query.sql" },
+          "params": [
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.query.action" },
+            { "var": "metadata.query.cursor" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

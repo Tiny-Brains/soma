@@ -1,0 +1,47 @@
+{
+  "workflow_id": "soma-user-season-runners-revoke",
+  "name": "Stop a season runner",
+  "description": "A season admin stops one runner started from a key of their season: its next call fails and its current match does not, and its key keeps working for its other runners. A runner of another season or of the platform fleet is not reachable here (404). Answers the season's keys.",
+  "tags": ["soma", "user", "runners"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "revoke",
+      "name": "Stop it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-season-runners-revoke-revoke.sql" },
+          "params": [
+            { "var": "metadata.params.runner" },
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.revoked"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "revoked" } },
+        "status": 404,
+        "body": {
+          "error": "unknown_runner",
+          "detail": "No live runner of this season's keys has that id."
+        },
+        "name": "No such runner of this season"
+      }
+    },
+    {
+      "id": "answer",
+      "use": "season-runner-keys-answer"
+    }
+  ]
+}

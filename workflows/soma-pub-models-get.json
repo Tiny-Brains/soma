@@ -11,8 +11,13 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-models-get-query.sql" },
-          "params": [{ "var": "metadata.params.id" }, { "var": "metadata.vars.settled_sigma" }],
+          "query": { "$sql": "../sql/soma-pub-shared-models-get.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.settled_sigma" },
+            null,
+            null
+          ],
           "output": "temp_data.rows"
         }
       }

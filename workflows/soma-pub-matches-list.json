@@ -54,7 +54,7 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": { "$sql": "../sql/soma-pub-matches-list-query.sql" },
+          "query": { "$sql": "../sql/soma-pub-shared-matches-list.sql" },
           "params": [
             { "var": "metadata.query.game" },
             { "var": "metadata.query.season" },
@@ -72,7 +72,9 @@
             { "var": "metadata.query.sort" },
             { "var": "metadata.query.since" },
             { "var": "metadata.query.top" },
-            { "var": "metadata.query.vs" }
+            { "var": "metadata.query.vs" },
+            null,
+            null
           ],
           "output": "temp_data.rows"
         }

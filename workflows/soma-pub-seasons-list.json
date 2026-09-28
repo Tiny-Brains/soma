@@ -11,8 +11,8 @@
         "name": "db_read",
         "input": {
           "connector": "soma-db",
-          "query": "SELECT EXISTS (SELECT 1 FROM games WHERE slug = ($1)::text) AS found, coalesce((SELECT json_agg(season_json(s) ORDER BY s.number DESC) FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.visibility = 'public'), '[]'::json) AS body",
-          "params": [{ "var": "metadata.params.game" }],
+          "query": { "$sql": "../sql/soma-pub-shared-seasons-list.sql" },
+          "params": [{ "var": "metadata.params.game" }, null, null],
           "output": "temp_data.rows"
         }
       }

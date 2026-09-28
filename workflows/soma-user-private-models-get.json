@@ -1,0 +1,39 @@
+{
+  "workflow_id": "soma-user-private-models-get",
+  "name": "One model (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-models-get: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. One MODEL -- an entry -- and every version of it, addressed by its id, the shape /v1/matches/{id} and /v1/versions/{id} use. The entry's `name` is free text and display-only, which is what lets it stay free text: it never has to survive a URL. Public, like the version permalink under it, because a ladder nobody can audit is not a ladder. Every version is returned, newest first, with its own ratings: the entry is the lineage and the versions are its history, which is the shape the Model screen prints and the reason this route exists at all. ONLY PUBLIC VERSIONS are listed -- `active`, `disabled`, `superseded` -- each as version_json() shapes it; the owner's in-flight and rejected versions are GET /v1/models.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-models-get.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.settled_sigma" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

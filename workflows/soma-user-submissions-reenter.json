@@ -1,0 +1,170 @@
+{
+  "workflow_id": "soma-user-submissions-reenter",
+  "name": "Re-enter a model into a season",
+  "description": "THE ONE-CLICK RE-ENTRY (Q7). `{game, model, season, from}`: the caller's entry `model` enters `season` with its standing from the season `from` -- the same weights and manifest, reusing the bytes already in the bucket (bytes_of), so nothing is uploaded. It is an ordinary submission from there: every rule of the new season applies (entry, caps, cool-down, unique weights, the window), the version is `testing`, and admission and a trial judge it again under the new season's classes, memory and engine. The refusals are the submission's own (submission-refusals); 404 nothing_to_reenter when the entry has no version in play in `from`. 201 with the new version; 200 when it is already in flight.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "!": {
+            "and": [
+              { "var": "data.req.game" },
+              { "var": "data.req.model" },
+              { "var": "data.req.season" },
+              { "var": "data.req.from" }
+            ]
+          }
+        },
+        "status": 400,
+        "body": {
+          "error": "reenter_invalid",
+          "detail": "Give `game`, `model` (your entry's id), `season` (where it enters) and `from` (the season whose version it enters with)."
+        },
+        "name": "Four fields"
+      }
+    },
+    {
+      "id": "source",
+      "name": "The version it enters with",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-submissions-reenter-source.sql" },
+          "params": [
+            { "var": "data.req.game" },
+            { "var": "data.req.model" },
+            { "var": "data.req.from" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.source"
+        }
+      }
+    },
+    {
+      "id": "nothing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.source.0.body" } },
+        "status": 404,
+        "body": {
+          "error": "nothing_to_reenter",
+          "detail": "That entry of yours has no version in play in that season."
+        },
+        "name": "A version to re-enter"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Record the re-entry as a testing version",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-submission-insert.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.model" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.source.0.body.weights_hash" },
+            { "var": "temp_data.source.0.body.manifest_hash" },
+            null,
+            { "var": "data.req.season" },
+            { "var": "temp_data.source.0.body.bytes_of" }
+          ],
+          "output": "temp_data.insert"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season", "ladder"],
+        "when": { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "why",
+      "name": "Why nothing was inserted",
+      "condition": { "$use": "none_written", "with": { "slot": "insert" } },
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-submission-why.sql" },
+          "params": [
+            { "var": "data.req.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "temp_data.source.0.body.weights_hash" },
+            { "var": "data.req.model" },
+            { "var": "temp_data.source.0.body.manifest_hash" },
+            { "var": "metadata.vars.upload_window_s" },
+            null,
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "data.req.season" }
+          ],
+          "output": "temp_data.why"
+        }
+      }
+    },
+    {
+      "id": "refusals",
+      "use": "submission-refusals"
+    },
+    {
+      "id": "fetch",
+      "name": "Read the row back",
+      "description": "Keyed on the entry id and the declared weights hash rather than a release tag: model_versions_one_in_flight_uniq makes at most one 'testing' row per entry, so the pair is unique. It is also the read-back the 401 guard rides -- a revoked session must neither write nor read, and the read-back alone deciding 201 would fail open.",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-submission-fetch.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "data.req.game" },
+            { "var": "data.req.model" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.source.0.body.weights_hash" },
+            { "var": "metadata.vars.upload_window_s" },
+            { "var": "data.req.season" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data._orion.response",
+              "logic": {
+                "if": [
+                  { ">": [{ "var": "temp_data.insert.rows_affected" }, 0] },
+                  { "$from": "constants.created" },
+                  { "$from": "constants.ok" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

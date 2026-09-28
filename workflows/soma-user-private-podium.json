@@ -1,0 +1,49 @@
+{
+  "workflow_id": "soma-user-private-podium",
+  "name": "Season podium (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-podium: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. The podium the close froze (season_podium), first to third on each ladder: one place per owner, each owner's best version standing for them, baselines skipped. Each place carries its owner's newest counted match of that season to watch (match_ref_json), read backwards off the owner's versions' rating_events. season_cache: a closed podium never changes. Read, never re-ranked: the podium of a closed season is what it closed on. A live season answers with no ladders. 404 for an unknown game or season.",
+  "tags": ["soma", "user", "ladder"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-podium.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

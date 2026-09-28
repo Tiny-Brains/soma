@@ -1,0 +1,65 @@
+{
+  "workflow_id": "soma-user-private-threads",
+  "name": "A host's thread (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-threads: the same statement with the session's claims, so a private season's match carries a thread among the people who may see its season -- its participants, its season admins and platform admins (BRD Q8) -- and answers anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. `?match=` or `?model=`, exactly one; twenty top-level comments a page, newest first, each with its replies; live comments only (a held one is its author's, GET /v1/me/comments); a keyset cursor on (created_at, id). A match the viewer may not see answers 404 like one that does not exist.",
+  "tags": ["soma", "user", "community"],
+  "tasks": [
+    {
+      "id": "host",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "==": [
+            { "!!": { "var": "metadata.query.match" } },
+            { "!!": { "var": "metadata.query.model" } }
+          ]
+        },
+        "status": 400,
+        "body": { "$from": "constants.host_required" },
+        "name": "Exactly one host"
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-threads.sql" },
+          "params": [
+            { "var": "metadata.query.match" },
+            { "var": "metadata.query.model" },
+            { "var": "metadata.query.cursor" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.found" } },
+        "status": 404,
+        "body": { "error": "unknown_host" },
+        "name": "No such host"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

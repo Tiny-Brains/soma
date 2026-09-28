@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-baselines-import",
+  "name": "soma-user-baselines-import",
+  "description": "Imports a season's baselines from another season, switched off. Its season admins and platform admins.",
+  "tags": ["soma", "user", "baselines"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/baselines/import",
+  "workflow_id": "soma-user-baselines-import",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 30000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

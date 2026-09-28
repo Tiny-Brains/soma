@@ -1,6 +1,6 @@
 -- THE COMMENT, with every rule a PREDICATE, so a refusal is a row never written and `why` says
 -- which: a live session, commenting not switched off, comment_wait() clear, the thread not locked,
--- a parent that is a live comment of the same thread, and line_ok(body, 500). text_hold_tag() holds
+-- a host the poster may see, a parent that is a live comment of the same thread, and line_ok(body, 500). text_hold_tag() holds
 -- it on a listed word or a link. The thread's live count is the trigger's.
 WITH me AS (
     SELECT u.id
@@ -14,6 +14,9 @@ WITH me AS (
     SELECT t.id FROM threads t
      WHERE t.locked_at IS NULL
        AND (t.match_id = try_uuid(($3)::text) OR t.model_id = try_uuid(($4)::text))
+       -- The host, for THIS poster: a thread a private season's match already has takes no comment
+       -- from someone its season does not show to (BRD Q8).
+       AND thread_host_ok(t.match_id, t.model_id, ($1)::uuid)
 ), p AS (
     SELECT c.root_id, c.thread_id FROM comments c
      WHERE c.id = try_uuid(($5)::text) AND c.state = 'live'

@@ -1,0 +1,50 @@
+{
+  "workflow_id": "soma-user-private-versions-get",
+  "name": "One version (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-versions-get: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. One VERSION of one model, by id. A permalink, and public once the version is: `active`, `disabled` (a baseline switched off) or `superseded`. A version still being admitted, waiting for its trial or rejected is its owner's, read through GET /v1/me/versions/{id}, and answers 404 here -- the rejection reason and the trial in progress are not the world's to read. The shape is version_json(), which the model's list and the owner's route return too, so the three cannot disagree. The successor is THE SAME ENTRY'S next version, in the same season. `class_max_bytes` comes from the version's own season, because a cap is the season's and a closed season keeps its own.",
+  "tags": ["soma", "user", "models"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-versions-get.sql" },
+          "params": [
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.settled_sigma" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "not_found" },
+        "name": "No public version",
+        "description": "No such version, or one that is not public yet or never will be."
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

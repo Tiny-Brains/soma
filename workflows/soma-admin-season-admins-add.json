@@ -78,6 +78,24 @@
       }
     },
     {
+      "id": "closed",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "add" } },
+            { "var": "temp_data.why.0.body.closed" }
+          ]
+        },
+        "status": 409,
+        "body": {
+          "error": "season_closed",
+          "detail": "The season has closed: its admins are fixed."
+        },
+        "name": "Not once it has closed"
+      }
+    },
+    {
       "id": "unknown_handle",
       "use": "refuse",
       "with": {
@@ -136,6 +154,25 @@
           "with": {
             "key": { "cat": ["gen:sess:", { "var": "temp_data.assigned.0.user_id" }] },
             "soft": false
+          }
+        },
+        {
+          "id": "notify",
+          "name": "Tell the account it runs the season",
+          "description": "A notification is never part of the statement that decided the thing: its own continue_on_error write after it, reading the decision off the row.",
+          "continue_on_error": true,
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-admin-season-admins-add-notify.sql" },
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.handle" }
+              ],
+              "output": "temp_data.notify"
+            }
           }
         }
       ]

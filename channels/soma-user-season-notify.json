@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-season-notify",
+  "name": "soma-user-season-notify",
+  "description": "One season's sends and how many a send would reach now. Its season admins and platform admins.",
+  "tags": ["soma", "user", "notifications"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/notify",
+  "workflow_id": "soma-user-season-notify",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

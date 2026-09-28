@@ -1,0 +1,49 @@
+{
+  "workflow_id": "soma-user-private-seasons-list",
+  "name": "List a game's seasons (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-seasons-list: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. Every season of the game, newest first. The index of past seasons, whose standings GET /v1/games/{game}/leaderboard?season=<slug> reads and which are kept for ever.",
+  "tags": ["soma", "user", "seasons"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-seasons-list.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.found" } },
+        "status": 404,
+        "body": { "error": "unknown_game" },
+        "name": "No such game",
+        "description": "One answer for an unknown game on every public read: 404, as the podium, the series and the maps answer, rather than a 200 with an empty body that an unknown game and a game with nothing in it would share."
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

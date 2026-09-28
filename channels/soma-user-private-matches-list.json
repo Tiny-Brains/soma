@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-matches-list",
+  "name": "soma-user-private-matches-list",
+  "description": "The member's read of the recent matches feed. hot_cache: it is append-mostly and every visitor asks for it. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "matches"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/matches",
+  "workflow_id": "soma-user-private-matches-list",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

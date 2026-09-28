@@ -1,0 +1,16 @@
+{
+  "workflow_id": "soma-user-season-runner-keys-list",
+  "name": "A season's runner keys",
+  "description": "The season's own fleet, for its admins: every key bound to the season, whoever minted it, each with the runners started from it and whether each is live (live_runners' answer), how much it holds and has played. The platform fleet is the platform's, on the Runners page.",
+  "tags": ["soma", "user", "runners"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "answer",
+      "use": "season-runner-keys-answer"
+    }
+  ]
+}

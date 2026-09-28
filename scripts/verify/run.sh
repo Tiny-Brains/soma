@@ -112,7 +112,21 @@ PAIRS = [("k_reap", "soma-clock-reap-run", "reap"), ("k_in_flight", "soma-clock-
          ("r_doc", "soma-admin-seasons-rounds", "read"),
          ("f_set", "soma-admin-seasons-fill", "set"),
          ("x_leaderboard", "soma-pub-leaderboard", "query"),
-         ("g_register", "soma-gate-token", "register")]
+         ("g_register", "soma-gate-token", "register"),
+         ("x_match", "soma-pub-matches-get", "query"),
+         ("x_seasons", "soma-pub-seasons-list", "query"),
+         ("x_playing", "soma-pub-playing", "query"),
+         ("a_pin", "soma-pub-auth", "pin"),
+         ("s_insert", "soma-user-submissions-create", "insert"),
+         ("s_insert", "soma-user-submissions-reenter", "insert"),
+         ("r_source", "soma-user-submissions-reenter", "source"),
+         ("m_import", "soma-user-maps-import", "insert"),
+         ("b_import", "soma-user-baselines-import", "insert"),
+         ("n_season_send", "soma-user-season-notify-send", "write"),
+         ("n_season_doc", "soma-user-season-notify", "read"),
+         ("sa_audit", "soma-user-season-audit-list", "query"),
+         ("p_add", "soma-user-participants-add", "insert"),
+         ("p_notify", "soma-user-participants-add", "notify")]
 prepared = pathlib.Path("statements.sql").read_text()
 FRAGMENTS = (json.load(open("../../shared/soma.json")).get("fragments") or {})
 def tasks(ts, prefix=""):

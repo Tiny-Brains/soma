@@ -8,6 +8,8 @@
 #
 # --check decodes the matches that DO have a frame instead and compares: every one must be equal to
 # what the runner sent. That is the proof the backfill writes what a runner would have.
+# A private season's match is skipped (HTTP 404): the public route never shows one. Every match
+# played before the cutover is public, so the write mode meets none.
 #
 # The viewer is taken from WEB_IMAGE (the bytes the site serves; VIZ_DIR overrides with a directory
 # holding engine.js), each replay through soma's own GET /v1/matches/{id} and its signed replay_url,

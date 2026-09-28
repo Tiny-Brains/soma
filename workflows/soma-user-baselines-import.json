@@ -1,0 +1,132 @@
+{
+  "workflow_id": "soma-user-baselines-import",
+  "name": "Import baselines from another season",
+  "description": "THE MIGRATION'S BASELINES (Q7). `{from, baselines?}`: every admitted baseline of the season `from` -- or the slugs `baselines` names -- becomes a new version of the same baseline in this season over the SAME BYTES (bytes_of), `testing`: the admit clock admits it again under this season's rules, and it lands switched off, for an admin to switch on. A baseline already here is skipped. `imported` is how many came. 400 baselines_invalid when `baselines` is there and not an array; 404 unknown_source; 409 season_closed.",
+  "tags": ["soma", "user", "baselines"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "open",
+      "use": "season-not-closed"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "declared",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "data.req.from" } },
+        "status": 400,
+        "body": {
+          "error": "from_required",
+          "detail": "Name the season to import from in `from` (its slug); `baselines` narrows it."
+        },
+        "name": "A source season"
+      }
+    },
+    {
+      "id": "insert",
+      "name": "Import",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-baselines-import-insert.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "data.req.from" },
+            { "var": "data.req" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.imported"
+        }
+      }
+    },
+    {
+      "id": "invalidate",
+      "use": "invalidate",
+      "with": {
+        "namespaces": ["season"],
+        "when": { ">": [{ "var": "temp_data.imported.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "not_written",
+      "condition": { "$use": "none_written", "with": { "slot": "imported" } },
+      "tasks": [
+        {
+          "id": "why",
+          "name": "Why nothing came",
+          "function": {
+            "name": "db_read",
+            "input": {
+              "connector": "soma-db",
+              "query": { "$sql": "../sql/soma-user-shared-import-why.sql" },
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.from" },
+                { "var": "metadata.auth.claims.sub" },
+                { "var": "data.req" },
+                "baselines"
+              ],
+              "output": "temp_data.why"
+            }
+          }
+        },
+        {
+          "id": "list",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.list_ok" } },
+            "status": 400,
+            "body": {
+              "error": "baselines_invalid",
+              "detail": "baselines is an array of baseline names, or absent for every baseline."
+            },
+            "name": "The list is a list"
+          }
+        },
+        {
+          "id": "unknown",
+          "use": "refuse",
+          "with": {
+            "when": { "!": { "var": "temp_data.why.0.body.source" } },
+            "status": 404,
+            "body": {
+              "error": "unknown_source",
+              "detail": "No other season of this game that you may see has that slug."
+            },
+            "name": "A season to import from"
+          }
+        }
+      ]
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.body",
+              "logic": {
+                "imported": { "var": "temp_data.imported.rows_affected" },
+                "from": { "var": "data.req.from" }
+              }
+            },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

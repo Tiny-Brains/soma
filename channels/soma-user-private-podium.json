@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-podium",
+  "name": "soma-user-private-podium",
+  "description": "The member's read of a season's frozen podium. hot_cache. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "ladder"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/games/{game}/seasons/{slug}/podium",
+  "workflow_id": "soma-user-private-podium",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "workflow_id": "soma-user-private-matches-list",
+  "name": "Matches, by season, model or owner (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-matches-list: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. One statement, three listings: a season's matches, one version's history (?model=), or every match a person's versions played (?owner=), each row match_summary_json(), the card every channel returns. A TRIAL IS PUBLIC ONLY ONCE ITS CANDIDATE IS (match_public, the stored `listed`): the season and owner listings leave trials out, and a query naming the model or version returns its public ones; the rest are GET /v1/me/matches. Each sort is its own branch with its own KEYSET cursor on (key, id), and only the asked one runs, so a season-wide sort reads its page off its partial index rather than sorting the season; a row with no key (a shared first has no margin) is outside that sort. `discussed` ranks by live comments in the `since` window and pages by OFFSET, because a live count moves under a keyset. The seat filters (`model`, `version`, `owner`, `vs`, `top`) are sets of matches read off match_seats, so a model's listing and its total cost the model's matches. `total` is counted on the first page only and stops at 10,000 (`total_capped`), because it is the one part that must scan.",
+  "tags": ["soma", "user", "matches"],
+  "tasks": [
+    {
+      "id": "sort",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "metadata.query.sort" } },
+            {
+              "!": {
+                "in": [
+                  { "var": "metadata.query.sort" },
+                  ["newest", "closest", "upset", "longest", "discussed"]
+                ]
+              }
+            }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "sort_invalid",
+          "detail": "`sort` is newest, closest, upset, longest or discussed."
+        },
+        "name": "A known sort"
+      }
+    },
+    {
+      "id": "vs",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "!!": { "var": "metadata.query.vs" } },
+            { "!": { "var": "metadata.query.model" } }
+          ]
+        },
+        "status": 400,
+        "body": {
+          "error": "vs_needs_model",
+          "detail": "`vs` names the other model of a head to head, beside `model`."
+        },
+        "name": "A head to head names both models"
+      }
+    },
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-matches-list.sql" },
+          "params": [
+            { "var": "metadata.query.game" },
+            { "var": "metadata.query.season" },
+            { "var": "metadata.query.ladder" },
+            { "var": "metadata.query.class" },
+            { "var": "metadata.query.map" },
+            { "var": "metadata.query.outcome" },
+            { "var": "metadata.query.cursor" },
+            { "var": "metadata.query.limit" },
+            { "var": "metadata.query.model" },
+            { "var": "metadata.query.owner" },
+            { "var": "metadata.query.version" },
+            { "var": "metadata.query.players_min" },
+            { "var": "metadata.query.players_max" },
+            { "var": "metadata.query.sort" },
+            { "var": "metadata.query.since" },
+            { "var": "metadata.query.top" },
+            { "var": "metadata.query.vs" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1074,7 +1074,14 @@ CREATE TABLE model_versions (
     -- clock reads the object from it at admission, and every replica's roster clock fetches it
     -- from there by digest. Three readers, one spelling, and no statement that could disagree
     -- with another about where a version's bytes are.
-    artifact_key     text GENERATED ALWAYS AS ('models/' || id::text || '/model.onnx') STORED,
+    --
+    -- A VERSION CAN REUSE ANOTHER'S BYTES (`bytes_of`): a baseline imported into a new season, or an
+    -- entry re-entered with its last version, is a new version -- admitted again, under the new
+    -- season's classes, memory and engine -- over files already in the bucket, which nothing then
+    -- uploads or copies. Its key is its source's, and the source's own `bytes_of` is followed at
+    -- the write, so a chain never forms.
+    bytes_of         uuid REFERENCES model_versions (id),
+    artifact_key     text GENERATED ALWAYS AS ('models/' || coalesce(bytes_of, id)::text || '/model.onnx') STORED,
 
     -- Which Orion served the verdict; a change in it is what makes a sweep necessary (R10). It
     -- replaces `evaluator_digest`, which named an axon build that no longer exists.
@@ -1935,12 +1942,40 @@ CREATE TABLE audit_log (
     reason      text,
     detail      jsonb       NOT NULL DEFAULT '{}'::jsonb,
     at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    -- THE SEASON A LINE IS ABOUT, so a season's admins read their own season's lines (S7). Filled
+    -- by audit_log_season() below from the line itself, never by a writer, so no audit insert has
+    -- to remember it: a `season` line's slug, the `season` a map's, baseline's or key's detail
+    -- names, a season key's or runner's own season. Null for the platform's own lines.
+    season_id   uuid        REFERENCES seasons (id),
     CONSTRAINT audit_log_action CHECK (action ~ '^[a-z_]+\.[a-z_]+$'),
     CONSTRAINT audit_log_kind   CHECK (target_kind ~ '^[a-z_]+$'),
     CONSTRAINT audit_log_reason CHECK (reason IS NULL OR char_length(reason) <= 300),
     CONSTRAINT audit_log_detail CHECK (jsonb_typeof(detail) = 'object')
 );
 CREATE INDEX audit_log_at_idx    ON audit_log (at DESC);
+-- One season's lines, newest first: the season admin's audit page.
+CREATE INDEX audit_log_season_idx ON audit_log (season_id, at DESC, id DESC) WHERE season_id IS NOT NULL;
+-- THE SEASON OF A LINE, derived as the line is written (see audit_log.season_id). A slug is unique per
+-- game, so the game the detail names narrows it; the newest season wins only if it names none.
+CREATE FUNCTION audit_log_season() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.season_id IS NULL THEN
+        NEW.season_id := coalesce(
+            (SELECT s.id FROM seasons s JOIN games g ON g.id = s.game_id
+              WHERE s.slug = coalesce(NEW.detail ->> 'season',
+                                      CASE WHEN NEW.target_kind = 'season' THEN NEW.target_id END)
+                AND (NEW.detail ->> 'game' IS NULL OR g.slug = NEW.detail ->> 'game')
+              ORDER BY s.number DESC LIMIT 1),
+            CASE WHEN NEW.target_kind = 'runner_key'
+                 THEN (SELECT k.season_id FROM runner_keys k WHERE k.id = try_uuid(NEW.target_id)) END,
+            CASE WHEN NEW.target_kind = 'runner'
+                 THEN (SELECT k.season_id FROM runners r JOIN runner_keys k ON k.id = r.key_id
+                        WHERE r.id = try_uuid(NEW.target_id)) END);
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER audit_log_season BEFORE INSERT ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_season();
 CREATE INDEX audit_log_admin_idx ON audit_log (admin_id, at DESC);
 -- The lines naming one thing -- a user's desk reads its user's.
 CREATE INDEX audit_log_target_idx ON audit_log (target_kind, target_id, at DESC);
@@ -2136,7 +2171,8 @@ $$;
 
 -- WHERE A SEASON'S FINALS STAND: null with none (or one cancelled), else how many entries are in
 -- them, how many have played their games, and whether they are done -- started, and every active
--- entry at its number. Baselines are not entries: they fill the last seats and are never waited for.
+-- entry at its number. Baselines are not entries: they fill the last seats and are never waited for,
+-- and neither is a retired entry, which pair no longer seats.
 CREATE FUNCTION season_finals(p_season uuid)
 RETURNS TABLE (n int, games int, starts_at timestamptz, applied boolean,
                entries bigint, complete bigint, done boolean)
@@ -2147,7 +2183,8 @@ LANGUAGE sql STABLE AS $$
       FROM season_rounds r
       LEFT JOIN model_versions v ON v.season_id = r.season_id AND v.status = 'active'
                                 AND NOT EXISTS (SELECT 1 FROM models e JOIN users u ON u.id = e.owner_id
-                                                 WHERE e.id = v.model_id AND u.role = 'baseline')
+                                                 WHERE e.id = v.model_id
+                                                   AND (u.role = 'baseline' OR e.retired_at IS NOT NULL))
       LEFT JOIN round_games(r.season_id, r.n) g ON g.version_id = v.id
      WHERE r.season_id = p_season AND r.kind = 'finals' AND r.cancelled_at IS NULL
      GROUP BY r.n, r.games, r.starts_at, r.applied_at;
@@ -2462,8 +2499,16 @@ $$;
 -- written before most of its members have signed in, so a member listed by login is admitted at
 -- their first sign-in without an edit. A pinned row still requires a permitted identity, so it too
 -- honours `providers`. A baseline (no identity) is never admitted, which is right: it does not enter.
+-- A SEASON ADMIN OF THIS SEASON never enters it (BRD Q2, S5): they run its roster and its boards,
+-- so a standing of theirs in it would be judged by themselves. season_is_admin() says so, and the
+-- submission's `why` reads it to refuse by name.
+CREATE FUNCTION season_is_admin(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (SELECT 1 FROM season_admins sa
+                    WHERE sa.season_id = s.id AND sa.user_id = p_user AND sa.removed_at IS NULL);
+$$;
+
 CREATE FUNCTION season_admits(s seasons, p_user uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (
+    SELECT NOT season_is_admin(s, p_user) AND EXISTS (
         SELECT 1 FROM identities i
          WHERE i.user_id = p_user
            AND (s.providers IS NULL
@@ -2473,7 +2518,9 @@ CREATE FUNCTION season_admits(s seasons, p_user uuid) RETURNS boolean LANGUAGE s
                             WHERE sp.season_id = s.id AND sp.removed_at IS NULL
                               AND (sp.user_id = p_user
                                 OR (sp.provider = i.provider AND sp.login IS NULL)
-                                OR (sp.provider = i.provider
+                                -- A login matches only while no account holds the row: once
+                                -- pinned (at add, or at sign-in), the row is its account's alone.
+                                OR (sp.user_id IS NULL AND sp.provider = i.provider
                                     AND lower(sp.login) = lower(i.login))))));
 $$;
 
@@ -2489,6 +2536,33 @@ CREATE FUNCTION season_visible(s seasons, p_viewer uuid) RETURNS boolean LANGUAG
                         WHERE sa.season_id = s.id AND sa.user_id = p_viewer AND sa.removed_at IS NULL)
             OR EXISTS (SELECT 1 FROM users u
                         WHERE u.id = p_viewer AND u.role = 'admin')));
+$$;
+
+-- THE SEASON A READ IS ABOUT, FOR ONE VIEWER: public_season()'s resolution with the viewer's
+-- visibility. A named slug resolves when season_visible() lets the viewer see it -- so a member, a
+-- season admin or a platform admin reaches a private season by its slug, and anyone else gets
+-- nothing, as for a season that does not exist. Without a slug it is the featured season exactly as
+-- public_season() picks it: a private season is never anyone's default. A NULL viewer is the
+-- anonymous public, and this is then public_season() itself -- which is how one statement serves
+-- both a cached public route (no viewer) and a member's uncached one.
+CREATE FUNCTION viewable_season(p_game uuid, p_slug text, p_viewer uuid)
+RETURNS SETOF seasons LANGUAGE sql STABLE AS $$
+    SELECT s.* FROM seasons s
+     JOIN games g ON g.id = s.game_id
+     WHERE s.game_id = p_game
+       AND ((p_slug IS NULL AND s.visibility = 'public')
+         OR (p_slug IS NOT NULL AND s.slug = p_slug AND season_visible(s, p_viewer)))
+     ORDER BY (g.featured_season_id = s.id) DESC,
+              (s.closed_at IS NULL) DESC,
+              s.number DESC
+     LIMIT 1;
+$$;
+
+-- WHETHER ONE VIEWER MAY SEE A MATCH IN A LISTING: match_public() with the viewer's visibility --
+-- `listed`, and a season the viewer may see. A NULL viewer is match_public().
+CREATE FUNCTION match_visible(m matches, p_viewer uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT m.listed AND EXISTS (SELECT 1 FROM seasons s
+                                 WHERE s.id = m.season_id AND season_visible(s, p_viewer));
 $$;
 
 -- No one else already holds these weights, within the rule's scope.
@@ -3035,10 +3109,13 @@ CREATE FUNCTION thread_owners(t threads) RETURNS SETOF uuid LANGUAGE sql STABLE 
      WHERE ms.match_id = t.match_id;
 $$;
 
--- WHETHER A HOST MAY CARRY A THREAD: exactly one of a match anyone may see and a model.
-CREATE FUNCTION thread_host_ok(p_match uuid, p_model uuid) RETURNS boolean LANGUAGE sql STABLE AS $$
+-- WHETHER A HOST MAY CARRY A THREAD, FOR ONE VIEWER: exactly one of a match the viewer may see and a
+-- model. A private season's match is a host among the people who see its season (BRD Q8), so its
+-- thread is read through /v1/private/threads and posted to by them; a NULL viewer is the public.
+CREATE FUNCTION thread_host_ok(p_match uuid, p_model uuid, p_viewer uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT CASE WHEN p_match IS NOT NULL AND p_model IS NULL
-                THEN EXISTS (SELECT 1 FROM matches m WHERE m.id = p_match AND match_public(m))
+                THEN EXISTS (SELECT 1 FROM matches m WHERE m.id = p_match AND match_visible(m, p_viewer))
                 WHEN p_model IS NOT NULL AND p_match IS NULL
                 THEN EXISTS (SELECT 1 FROM models e WHERE e.id = p_model)
                 ELSE false END;
@@ -3145,6 +3222,22 @@ CREATE FUNCTION notify_audience_ok(a jsonb) RETURNS boolean LANGUAGE sql IMMUTAB
                  AND jsonb_array_length(CASE WHEN jsonb_typeof(a -> 'handles') = 'array'
                                              THEN a -> 'handles' ELSE '[]'::jsonb END) BETWEEN 1 AND 500)),
         false);
+$$;
+
+-- A SEASON'S PEOPLE, whom its season admins may notify (S8): everyone who entered it, every
+-- participant pinned to an account, and its season admins -- baselines never. An invite still
+-- waiting for its account's first sign-in reaches nobody yet.
+CREATE FUNCTION season_audience(p_season uuid) RETURNS TABLE (user_id uuid) LANGUAGE sql STABLE AS $$
+    SELECT w.id
+      FROM (SELECT e.owner_id AS id FROM model_versions v JOIN models e ON e.id = v.model_id
+             WHERE v.season_id = p_season
+            UNION
+            SELECT sp.user_id FROM season_participants sp
+             WHERE sp.season_id = p_season AND sp.removed_at IS NULL AND sp.user_id IS NOT NULL
+            UNION
+            SELECT sa.user_id FROM season_admins sa
+             WHERE sa.season_id = p_season AND sa.removed_at IS NULL) w
+      JOIN users u ON u.id = w.id AND u.role <> 'baseline';
 $$;
 
 -- WHO A NOTIFY AUDIENCE NAMES: a union of id sets, each read the cheap way, baselines dropped --

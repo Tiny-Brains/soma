@@ -10,7 +10,7 @@ WITH me AS (
 )
 SELECT coalesce(me.live, false) AS session_ok, json_build_object(
     'body_ok',    line_ok(btrim(($6)::text), 500),
-    'host_ok',    thread_host_ok(try_uuid(($3)::text), try_uuid(($4)::text)),
+    'host_ok',    thread_host_ok(try_uuid(($3)::text), try_uuid(($4)::text), ($1)::uuid),
     'parent_ok',  ($5)::text IS NULL
                   OR EXISTS (SELECT 1 FROM comments c JOIN t ON t.id = c.thread_id
                               WHERE c.id = try_uuid(($5)::text) AND c.state = 'live'),

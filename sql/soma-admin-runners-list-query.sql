@@ -1,12 +1,17 @@
+-- EVERY RUNNER, the platform's and every season's. `live` is live_runners' own answer -- the
+-- runner, its key and the key's owner in good standing, a season admin of its season counting for a
+-- season key -- so the page never calls a working season runner dead. `season` is the slug a season
+-- key is bound to, null for the platform fleet.
 SELECT coalesce(json_agg(json_build_object('id', r.id, 'label', r.label, 'key_id', r.key_id, 'key_label',
-                k.label, 'key_prefix', k.key_prefix, 'owner', u.handle, 'engine_digest', r.engine_digest,
+                k.label, 'key_prefix', k.key_prefix, 'owner', u.handle, 'season', se.slug,
+                'engine_digest', r.engine_digest,
                 'node_version', r.node_version, 'orion_version', r.orion_version, 'ops_budget', r.ops_budget,
                 'arch', r.arch, 'max_in_flight', r.max_in_flight, 'match_timeout_ms', r.match_timeout_ms,
-                'seat_concurrency', r.seat_concurrency, 'first_seen_at', r.first_seen_at,
-                'last_seen_at', r.last_seen_at, 'revoked_at', r.revoked_at, 'live', (r.revoked_at
-                    IS NULL
-                AND k.revoked_at IS NULL
-                AND u.role = 'admin'), 'in_flight', (SELECT count(*)
+                'seat_concurrency', r.seat_concurrency, 'plays_matches', r.plays_matches,
+                'first_seen_at', r.first_seen_at,
+                'last_seen_at', r.last_seen_at, 'revoked_at', r.revoked_at,
+                'live', EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = r.id),
+                'in_flight', (SELECT count(*)
                 FROM matches m
                 WHERE m.played_by = r.id
                 AND m.status IN ('claimed', 'running')), 'played', (SELECT count(*)
@@ -17,3 +22,4 @@ SELECT coalesce(json_agg(json_build_object('id', r.id, 'label', r.label, 'key_id
 FROM runners r
 JOIN runner_keys k ON k.id = r.key_id
 JOIN users u ON u.id = k.user_id
+LEFT JOIN seasons se ON se.id = k.season_id

@@ -1,0 +1,44 @@
+{
+  "workflow_id": "soma-user-season-runner-keys-revoke",
+  "name": "Revoke a season runner key",
+  "description": "A season admin revokes any key bound to their season, whoever minted it -- a runner holding it fails its next token exchange, not its current match. A key of another season or of the platform fleet is not reachable here (404), whatever its id. Allowed after the close too: a credential should always be revocable. Answers the season's keys.",
+  "tags": ["soma", "user", "runners"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "revoke",
+      "name": "Revoke it",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-season-runner-keys-revoke-revoke.sql" },
+          "params": [
+            { "var": "metadata.params.key" },
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.revoked"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "revoked" } },
+        "status": 404,
+        "body": { "error": "unknown_key", "detail": "No live key of this season has that id." },
+        "name": "No such key of this season"
+      }
+    },
+    {
+      "id": "answer",
+      "use": "season-runner-keys-answer"
+    }
+  ]
+}

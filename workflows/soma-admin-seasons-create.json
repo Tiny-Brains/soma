@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-admin-seasons-create",
   "name": "Create a season",
-  "description": "Admin only. ONE STATEMENT creates the season -- its NAME and the slug season_slug() derives from it, both fixed for ever, number last+1 as an internal ordinal, the engine pinned from games.active_engine_digest, the window, the whole rules document, and four settings that are not rules: `visibility` (public|private), `entry` (open|restricted; private forces restricted), `fleet` (which runners play it) and `providers` (which identity providers may enter). SEASONS OVERLAP (N30): a game may run any number of live seasons at once, so there is no 'a season is still live' or 'inside season_gap_days' refusal any more. Refusals, told apart by `why`: a name that gives no usable slug, a slug another season holds, or no engine declared. The season opens with NO MAPS AND NO BASELINES: both are uploaded to it afterwards, land out of play, and are put in play by hand -- and until a baseline is enabled no trial can be seated, so every candidate waits. A season's baselines are its own uploads, never carried forward from the previous season, and a name used again is the same baseline account with a new version. PARTICIPANTS ARE NOT SET HERE (N30): a cohort is season_participants + `entry = 'restricted'`, added on the season admin page after creation, so a class can add a late student once the season is open (rules freeze at open). WEIGHT CLASSES ARE THE SEASON'S: absent from the body it inherits the previous season's table rather than a constant.",
+  "description": "Admin only. ONE STATEMENT creates the season -- its NAME and the slug season_slug() derives from it, both fixed for ever, number last+1 as an internal ordinal, the engine pinned from games.active_engine_digest, the window, the whole rules document, and four settings that are not rules: `visibility` (public|private), `entry` (open|restricted; private forces restricted), `fleet` (which runners play it) and `providers` (which identity providers may enter). SEASONS OVERLAP (N30): a game may run any number of live seasons at once, so there is no 'a season is still live' or 'inside season_gap_days' refusal any more. Refusals, told apart by `why`: a name that gives no usable slug, a slug another season holds, or no engine declared. The season opens with NO MAPS AND NO BASELINES: both are uploaded to it afterwards, land out of play, and are put in play by hand -- and until a baseline is enabled no trial can be seated, so every candidate waits. A season's baselines are its own uploads, never carried forward from the previous season, and a name used again is the same baseline account with a new version. SEASON ADMINS MAY BE NAMED (`admins`, handles): checked before the create (400 admins_invalid, 422 admins_unknown naming each unknown handle) and assigned after it, as soma-admin-season-admins-add assigns one. A malformed `providers` is 400 providers_invalid. PARTICIPANTS ARE NOT SET HERE (N30): a cohort is season_participants + `entry = 'restricted'`, added on the season admin page after creation, so a class can add a late student once the season is open (rules freeze at open). WEIGHT CLASSES ARE THE SEASON'S: absent from the body it inherits the previous season's table rather than a constant.",
   "tags": ["soma", "admin", "seasons"],
   "tasks": [
     {
@@ -132,6 +132,56 @@
       }
     },
     {
+      "id": "check",
+      "name": "Check the providers and admins lists",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-create-check.sql" },
+          "params": [{ "var": "data.req" }],
+          "output": "temp_data.check"
+        }
+      }
+    },
+    {
+      "id": "providers",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.check.0.body.providers_ok" } },
+        "status": 400,
+        "body": {
+          "error": "providers_invalid",
+          "detail": "providers is null (any provider) or an array of provider slugs."
+        },
+        "name": "Providers are a list of slugs"
+      }
+    },
+    {
+      "id": "admins_shape",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.check.0.body.admins_ok" } },
+        "status": 400,
+        "body": { "error": "admins_invalid", "detail": "admins is an array of platform handles." },
+        "name": "Admins are a list of handles"
+      }
+    },
+    {
+      "id": "admins_known",
+      "use": "refuse",
+      "with": {
+        "when": { ">": [{ "length": { "var": "temp_data.check.0.body.unknown" } }, 0] },
+        "status": 422,
+        "body": {
+          "error": "admins_unknown",
+          "detail": "No account has these handles; a baseline cannot be a season admin.",
+          "handles": { "var": "temp_data.check.0.body.unknown" }
+        },
+        "name": "Every admin is an account"
+      }
+    },
+    {
       "id": "rules",
       "name": "Take the rules as given",
       "function": {
@@ -172,6 +222,31 @@
       "with": {
         "namespaces": ["season", "ladder"],
         "when": { ">": [{ "var": "temp_data.created.rows_affected" }, 0] }
+      }
+    },
+    {
+      "id": "admins",
+      "name": "Assign the season admins named at create",
+      "description": "Only after a create that wrote, and only when the body named admins: the check above refused an unknown handle, so each is an account.",
+      "condition": {
+        "and": [
+          { ">": [{ "var": "temp_data.created.rows_affected" }, 0] },
+          { "!!": { "var": "data.req.admins" } }
+        ]
+      },
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-admin-seasons-create-admins.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "data.req.name" },
+            { "var": "data.req.admins" },
+            { "var": "metadata.auth.claims.sub" }
+          ],
+          "output": "temp_data.admins"
+        }
       }
     },
     {

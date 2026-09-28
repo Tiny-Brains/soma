@@ -35,6 +35,7 @@ WITH live AS (
              -- Open row, still above settled_sigma, or short of its placement burst.
              AND NOT EXISTS (SELECT 1
                                FROM model_versions v
+                               JOIN models re ON re.id = v.model_id AND re.retired_at IS NULL
                                LEFT JOIN ratings r ON r.version_id = v.id AND r.ladder = 'open'
                               WHERE v.season_id = s.id AND v.status = 'active'
                                 AND (r.version_id IS NULL

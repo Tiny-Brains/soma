@@ -5,7 +5,8 @@ WITH ctx AS (
     END AS state, (s.id IS NOT NULL
         AND now() >= s.submissions_open_at
         AND now() < s.submissions_close_at) AS season_open, (s.id IS NOT NULL
-        AND season_admits(s, ($2)::uuid)) AS participant, (SELECT json_build_object('model_id', e.id,
+        AND season_admits(s, ($2)::uuid)) AS participant, (s.id IS NOT NULL
+        AND season_is_admin(s, ($2)::uuid)) AS season_admin, (SELECT json_build_object('model_id', e.id,
                 'model', e.name, 'retired', e.retired_at IS NOT NULL, 'next_version', (SELECT coalesce(max(v.version),
                         0) + 1
                 FROM model_versions v
@@ -13,6 +14,7 @@ WITH ctx AS (
                         'version', f.version, 'phase', model_phase(f))
                 FROM model_versions f
                 WHERE f.model_id = e.id
+                AND f.season_id = s.id
                 AND f.status IN ('testing', 'verified')), 'cooldown_until', season_cooldown_until(s,
                     e.id), 'versions_ok', s.id IS NULL
             OR season_admits_version(s, ($2)::uuid, e.id))
@@ -31,11 +33,16 @@ WITH ctx AS (
         JOIN models fe ON fe.id = f.model_id
         WHERE fe.owner_id = ($2)::uuid
         AND fe.game_id = g.id
+        AND f.season_id = s.id
         AND f.status IN ('testing', 'verified')) AS in_flight_used, (s.rules -> 'entries' ->> 'in_flight_max')::int
-        AS in_flight_max, (s.rules -> 'entries' ->> 'max_per_user')::int AS entries_max, (SELECT count(*)
-        FROM models e
+        AS in_flight_max, (s.rules -> 'entries' ->> 'max_per_user')::int AS entries_max,
+        -- PER SEASON, as season_admits_entry and season_admits_in_flight count: the models this
+        -- caller has a version of in THIS season, and their versions in flight in it.
+        (SELECT count(DISTINCT v.model_id)
+        FROM model_versions v
+        JOIN models e ON e.id = v.model_id
         WHERE e.owner_id = ($2)::uuid
-        AND e.game_id = g.id
+        AND v.season_id = s.id
         AND e.retired_at IS NULL) AS entries_used
     FROM games g
     -- The season the caller named (?season=<slug>), or the game's featured public season when none
@@ -51,6 +58,7 @@ SELECT ls.sid AS session_ok, (SELECT json_build_object( 'game', ctx.slug, 'seaso
             ctx.may_add_model, 'entries_used', ctx.entries_used, 'entries_max', ctx.entries_max, 'in_flight_used',
             ctx.in_flight_used, 'in_flight_max', ctx.in_flight_max, 'refusal', CASE
         WHEN NOT ctx.season_open THEN 'season_not_open'
+        WHEN ctx.season_admin THEN 'season_admin_cannot_enter'
         WHEN NOT ctx.participant THEN 'not_a_participant'
         WHEN ($3)::text IS NOT NULL
         AND ctx.model IS NULL THEN 'unknown_model'

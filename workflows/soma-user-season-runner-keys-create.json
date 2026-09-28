@@ -9,6 +9,10 @@
       "use": "season-admin-only"
     },
     {
+      "id": "open",
+      "use": "season-not-closed"
+    },
+    {
       "id": "parse",
       "name": "Parse payload",
       "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }

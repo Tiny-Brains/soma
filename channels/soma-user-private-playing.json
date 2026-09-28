@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-playing",
+  "name": "soma-user-private-playing",
+  "description": "The member's read of how many of a season's matches are on a board right now. NOT cached, deliberately: the count moves at every claim, finish and release, and carrying it in the season document made every one of those invalidate the games, seasons and podium routes. One cheap count on its own route instead. Signed in and uncached: it answers a private season to whoever may see it.",
+  "tags": ["soma", "user", "platform"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/games/{game}/seasons/{slug}/playing",
+  "workflow_id": "soma-user-private-playing",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

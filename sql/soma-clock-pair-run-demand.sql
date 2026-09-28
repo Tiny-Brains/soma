@@ -64,7 +64,9 @@ WITH live AS (
       CROSS JOIN lim
       LEFT JOIN ratings r ON r.version_id = vv.id AND r.ladder = 'open'
       LEFT JOIN rg        ON rg.version_id = vv.id
-     WHERE vv.status = 'active'
+     -- A RETIRED ENTRY asks for nothing and is seated opposite nobody: its owner took it out, and
+     -- its standing is kept as it was (the pool below leaves it out too).
+     WHERE vv.status = 'active' AND e.retired_at IS NULL
 ), f AS (
     -- In flight INCLUDES a finished row count has not yet folded: its result is what the next
     -- pairing's prior will move, which is the whole reason the cap exists. Without it, in the ten
@@ -162,7 +164,7 @@ WITH live AS (
       FROM model_versions vv
       JOIN models e ON e.id = vv.model_id
       JOIN live     ON live.id = vv.season_id
-     WHERE vv.status = 'active'
+     WHERE vv.status = 'active' AND e.retired_at IS NULL
 ), played AS (
     SELECT s.version_id AS model_id, m.season_map_id AS map, count(*) AS n
       FROM match_seats s JOIN matches m ON m.id = s.match_id

@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-season-runner-keys-revoke",
+  "name": "soma-user-season-runner-keys-revoke",
+  "description": "Revokes one of this season's runner keys. Season admins and platform admins.",
+  "tags": ["soma", "user", "runners"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["DELETE"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/runner-keys/{key}",
+  "workflow_id": "soma-user-season-runner-keys-revoke",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

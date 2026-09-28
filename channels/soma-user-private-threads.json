@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-private-threads",
+  "name": "soma-user-private-threads",
+  "description": "A host's live comments, for a member: signed in and uncached, so it answers a private season's match to whoever may see it.",
+  "tags": ["soma", "user", "community"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/private/threads",
+  "workflow_id": "soma-user-private-threads",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_read_rate" }
+  }
+}

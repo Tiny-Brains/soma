@@ -1,0 +1,51 @@
+{
+  "workflow_id": "soma-user-private-maps-list",
+  "name": "A season's maps (a member's)",
+  "description": "THE MEMBER'S COPY of soma-pub-maps-list: the same statement with the session's claims, so a private season answers to its participants, its season admins and platform admins (season_visible), and to anyone else exactly as the public route does. Uncached, because the answer depends on the viewer. PUBLIC, and from the moment an upload succeeds: every board a season has, in play or not, in the order they were added. A disabled board is listed, marked, because matches were played on it and a competitor reading a replay is owed the board it names; an upload not yet enabled is listed the same way. `?enabled=true` narrows to the boards in play, and `?boards=true` adds each board itself -- the cartridge's file, as uploaded -- which is what a page drawing every board wants in one call rather than one per map.",
+  "tags": ["soma", "user", "maps"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-maps-list.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            { "var": "metadata.query.enabled" },
+            { "var": "metadata.query.boards" },
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

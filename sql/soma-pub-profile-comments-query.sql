@@ -7,9 +7,11 @@ WITH author AS (
       FROM author
       JOIN comments c ON c.author_id = author.id AND c.state = 'live'
       JOIN threads t  ON t.id = c.thread_id
-     WHERE ($2)::text IS NULL
-        OR (c.created_at, c.id) < (split_part(($2)::text, '|', 1)::timestamptz,
-                                   try_uuid(split_part(($2)::text, '|', 2)))
+     -- The public page: a comment on a private season's match is its season's, never shown here.
+     WHERE thread_host_ok(t.match_id, t.model_id)
+       AND (($2)::text IS NULL
+            OR (c.created_at, c.id) < (split_part(($2)::text, '|', 1)::timestamptz,
+                                       try_uuid(split_part(($2)::text, '|', 2))))
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT 20
 )

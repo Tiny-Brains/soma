@@ -51,6 +51,14 @@ CREATE VIEW live_sessions AS
     WHERE revoked_at IS NULL
       AND expires_at > now();
 
+-- WHO IS READING, for a statement a public route and a member's route share: the account when the
+-- session is live, else NULL -- the anonymous public. The public route passes no session, so the
+-- same statement answers it as before; a member's route passes the session's claims, and this is
+-- the session guard, read inside the statement like every live_sessions JOIN.
+CREATE FUNCTION session_viewer(p_user uuid, p_sid uuid) RETURNS uuid LANGUAGE sql STABLE AS $$
+    SELECT ls.user_id FROM live_sessions ls WHERE ls.sid = p_sid AND ls.user_id = p_user;
+$$;
+
 -- "Sign out everywhere", and the session list behind it.
 CREATE INDEX sessions_user_live_idx
     ON sessions (user_id)

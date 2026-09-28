@@ -1,3 +1,5 @@
+-- What a baseline upload is judged against: the season, the name's account, what the name already
+-- holds in this season, and whether the caller may use the name at all.
 WITH se AS (
     SELECT s.id, s.closed_at
     FROM seasons s
@@ -7,7 +9,16 @@ WITH se AS (
 nm AS (
     SELECT baseline_handle(($3)::text) AS handle )
 SELECT json_build_object( 'season', EXISTS (SELECT 1
-        FROM se), 'closed', (SELECT se.closed_at IS NOT NULL
+        FROM se),
+        -- A BASELINE NAME ANOTHER SEASON ALREADY USES is a platform name: the account, its profile and
+        -- its record are shared across seasons, so only a platform admin ($7 = 'platform') may add a
+        -- version to it. A season admin names their own baselines.
+        'reserved', coalesce(($7)::text, '') <> 'platform' AND EXISTS (SELECT 1
+            FROM users u
+            JOIN models e ON e.owner_id = u.id
+            JOIN model_versions v ON v.model_id = e.id
+            WHERE lower(u.handle) = lower(nm.handle) AND u.role = 'baseline'
+            AND v.season_id NOT IN (SELECT id FROM se)), 'closed', (SELECT se.closed_at IS NOT NULL
         FROM se), 'handle', nm.handle, 'hashes_ok', coalesce(($4)::text ~ '^sha256:[0-9a-f]{64}$'
         AND ($5)::text ~ '^sha256:[0-9a-f]{64}$', false), 'existing', (SELECT json_build_object( 'slug',
                 substr(u.handle, length('baseline.') + 1), 'name', e.name, 'status', v.status, 'enabled',

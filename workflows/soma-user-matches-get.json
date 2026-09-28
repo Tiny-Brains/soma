@@ -38,33 +38,8 @@
       }
     },
     {
-      "id": "presign",
-      "name": "Sign the replay URL",
-      "condition": { "!!": { "var": "temp_data.rows.0.replay_key" } },
-      "function": {
-        "name": "storage_presign",
-        "input": {
-          "connector": "soma-blobs",
-          "method": "GET",
-          "key": { "var": "temp_data.rows.0.replay_key" },
-          "expires_in": "1h",
-          "output": "temp_data.replay_url"
-        }
-      }
-    },
-    {
-      "id": "respond",
-      "name": "Respond",
-      "function": {
-        "name": "map",
-        "input": {
-          "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
-            { "path": "data.body.replay_url", "logic": { "var": "temp_data.replay_url" } },
-            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
-          ]
-        }
-      }
+      "id": "answer",
+      "use": "match-answer"
     }
   ]
 }

@@ -1,0 +1,19 @@
+{
+  "channel_id": "soma-user-season-notify-send",
+  "name": "soma-user-season-notify-send",
+  "description": "Sends one notification to a season's people. Its season admins and platform admins.",
+  "tags": ["soma", "user", "notifications"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/notify",
+  "workflow_id": "soma-user-season-notify-send",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.session_rate" },
+    "auth": { "$from": "constants.session_auth" },
+    "principal_rate_limit": { "$from": "constants.per_user_write_rate" }
+  }
+}

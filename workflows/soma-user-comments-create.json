@@ -17,10 +17,7 @@
           "==": [{ "!!": { "var": "data.req.match" } }, { "!!": { "var": "data.req.model" } }]
         },
         "status": 400,
-        "body": {
-          "error": "host_required",
-          "detail": "Name exactly one host: `match` or `model`."
-        },
+        "body": { "$from": "constants.host_required" },
         "name": "Exactly one host"
       }
     },

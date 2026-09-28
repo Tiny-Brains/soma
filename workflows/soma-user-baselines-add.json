@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-user-baselines-add",
   "name": "Upload a baseline into a season",
-  "description": "Admin only, and THE ONLY WAY A BASELINE REACHES THE PLATFORM: no image, release or bootstrap carries one, and a season starts with none. The body is a name and the two hashes, exactly as a competitor's submission is, and the answer carries two one-shot presigned PUTs for the model and its manifest. The version is recorded `testing`, and the admit clock admits it by the walk every submission takes -- the node fetches and re-hashes the bytes, reads the graph, runs the adapters over the reference observations and measures the class -- then lands it `disabled`, not `verified`: a baseline has no trial, and it is out of play until an admin enables it, as an uploaded map is. THE NAME IS THE BASELINE: its account is `baseline.<slug of the name>`, so the same name in a later season is the same baseline with a new version, and one name holds one version a season. Refused in order: an unknown season, a closed one, a name with no usable slug, hashes that are not sha256:<64 hex>, and a name this season already has, unless that upload was rejected. POSTing the same name and hashes again while it is still `testing` answers 200 with fresh URLs, and creates nothing. One set of weights may stand under several names -- each is its own account and rating, which is how a trial on an eight-seat board finds seven opponents. The season's entry rules are not asked: they are a competitor's quotas, and admission still applies the season's graph and class rules. Its rate is per_admin_board_rate, as a season's boards and baselines arrive together.",
+  "description": "The season's admins and platform admins, and THE ONLY WAY A BASELINE REACHES THE PLATFORM: no image, release or bootstrap carries one, and a season starts with none. The body is a name and the two hashes, exactly as a competitor's submission is, and the answer carries two one-shot presigned PUTs for the model and its manifest. The version is recorded `testing`, and the admit clock admits it by the walk every submission takes -- the node fetches and re-hashes the bytes, reads the graph, runs the adapters over the reference observations and measures the class -- then lands it `disabled`, not `verified`: a baseline has no trial, and it is out of play until an admin enables it, as an uploaded map is. THE NAME IS THE BASELINE: its account is `baseline.<slug of the name>`, so the same name in a later season is the same baseline with a new version, and one name holds one version a season. Refused in order: an unknown season, a closed one, a name with no usable slug, hashes that are not sha256:<64 hex>, and a name this season already has, unless that upload was rejected. POSTing the same name and hashes again while it is still `testing` answers 200 with fresh URLs, and creates nothing. One set of weights may stand under several names -- each is its own account and rating, which is how a trial on an eight-seat board finds seven opponents. The season's entry rules are not asked: they are a competitor's quotas, and admission still applies the season's graph and class rules. Its rate is per_admin_board_rate, as a season's boards and baselines arrive together.",
   "tags": ["soma", "user", "baselines"],
   "tasks": [
     {
@@ -27,7 +27,8 @@
             { "var": "data.req.name" },
             { "var": "data.req.weights_hash" },
             { "var": "data.req.manifest_hash" },
-            { "var": "metadata.vars.upload_window_s" }
+            { "var": "metadata.vars.upload_window_s" },
+            { "var": "temp_data.who.0.body.scope" }
           ],
           "output": "temp_data.ctx"
         }
@@ -67,6 +68,19 @@
           "detail": "A baseline's name is 1 to 48 characters and must leave a slug: letters or digits."
         },
         "name": "A name that makes an account"
+      }
+    },
+    {
+      "id": "reserved",
+      "use": "refuse",
+      "with": {
+        "when": { "var": "temp_data.ctx.0.body.reserved" },
+        "status": 409,
+        "body": {
+          "error": "baseline_name_reserved",
+          "detail": "Another season already has a baseline of that name, and its account is the platform's. Give this season's baseline a name of its own."
+        },
+        "name": "A platform baseline's name is the platform's"
       }
     },
     {

@@ -45,6 +45,8 @@ SELECT json_build_object(
          'policy',        coalesce(s.rules -> 'closure' ->> 'policy', 'settle'),
          'rules',         s.rules -> 'rounds',
          'fill',          s.fill,
+         -- The fleet policy beside the fill: both are capacity a platform admin changes while live.
+         'fleet',         s.fleet,
          'current',       (SELECT n FROM cur),
          'rounds',        (SELECT coalesce(json_agg(json_build_object(
                               'n', r.n, 'kind', r.kind, 'starts_at', r.starts_at, 'games', r.games,

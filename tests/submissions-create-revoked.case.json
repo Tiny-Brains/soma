@@ -27,5 +27,5 @@
     "data._orion.response.status": 401,
     "data.body.error": "session_revoked"
   },
-  "expect_tasks": ["parse", "insert", "why", "revoked.answer"]
+  "expect_tasks": ["parse", "insert", "why", "refusals.revoked.answer"]
 }

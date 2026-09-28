@@ -1,0 +1,108 @@
+{
+  "workflow_id": "soma-user-season-notify-send",
+  "name": "Notify a season",
+  "description": "A season admin tells the season's people something: `{subject, link?}` (a line of up to 200 characters, a site path). It reaches everyone who entered the season, its pinned participants and its admins who want season notifications -- a `broadcast` in their bell, keyed on the send so a retry writes nothing twice -- and is logged with the season's audience and audited. 400 notify_invalid for a bad field, 422 no_recipients when nobody would receive it. 201 with the season's sends.",
+  "tags": ["soma", "user", "notifications"],
+  "tasks": [
+    {
+      "id": "gate",
+      "use": "season-admin-only"
+    },
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "mint",
+      "name": "Mint the id",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "temp_data.id", "logic": { "random": ["uuid"] } }] }
+      }
+    },
+    {
+      "id": "write",
+      "name": "Send",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-season-notify-send-write.sql" },
+          "params": [
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "metadata.auth.claims.sid" },
+            { "var": "temp_data.id" },
+            { "var": "data.req.subject" },
+            { "var": "data.req.link" },
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.sent"
+        }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read the season's sends",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-user-shared-season-notify.sql" },
+          "params": [
+            { "var": "temp_data.who.0.body.season_id" },
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" }
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "nobody",
+      "use": "refuse",
+      "with": {
+        "when": {
+          "and": [
+            { "$use": "none_written", "with": { "slot": "sent" } },
+            { "!": { ">": [{ "var": "temp_data.rows.0.body.recipients" }, 0] } }
+          ]
+        },
+        "status": 422,
+        "body": {
+          "error": "no_recipients",
+          "detail": "Nobody in the season would receive it yet."
+        },
+        "name": "Nobody would receive it"
+      }
+    },
+    {
+      "id": "invalid",
+      "use": "refuse",
+      "with": {
+        "when": { "$use": "none_written", "with": { "slot": "sent" } },
+        "status": 400,
+        "body": {
+          "error": "notify_invalid",
+          "detail": "subject: 1 to 200 characters; link: a site path."
+        },
+        "name": "Refuse a bad field"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.created" } }
+          ]
+        }
+      }
+    }
+  ]
+}
