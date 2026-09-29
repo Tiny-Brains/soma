@@ -19,7 +19,10 @@
           "input": {
             "connector": "soma-db",
             "query": { "$sql": "../sql/soma-clock-pair-run-pick.sql" },
-            "params": [{ "var": "metadata.vars.game" }],
+            "params": [
+              { "var": "metadata.vars.game" },
+              { "var": "metadata.vars.pair_depth_target" }
+            ],
             "output": "temp_data.pick"
           }
         }
@@ -49,7 +52,9 @@
               { "var": "metadata.vars.steady_cap" },
               { "var": "metadata.vars.settled_sigma" },
               { "var": "metadata.vars.pair_depth_target" },
-              { "var": "metadata.vars.cross_class_fraction" }
+              { "var": "metadata.vars.cross_class_fraction" },
+              { "var": "metadata.vars.turn_ms" },
+              { "var": "metadata.vars.max_turns" }
             ],
             "output": "temp_data.demand"
           }

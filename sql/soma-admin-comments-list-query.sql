@@ -38,7 +38,7 @@ WITH me AS (
       FROM filtered f, q
      WHERE q.view = 'all'
        AND (($5)::text IS NULL
-            OR (f.created_at, f.id) < (split_part(($5)::text, '|', 1)::timestamptz,
+            OR (f.created_at, f.id) < (try_timestamptz(split_part(($5)::text, '|', 1)),
                                        try_uuid(split_part(($5)::text, '|', 2))))
      ORDER BY f.created_at DESC, f.id DESC
      LIMIT 50

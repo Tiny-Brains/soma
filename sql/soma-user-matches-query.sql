@@ -15,7 +15,7 @@ page AS (
     SELECT m, id, at
     FROM mine
     WHERE ($4)::text IS NULL
-    OR (at, id) < (split_part(($4)::text, '|', 1)::timestamptz, split_part(($4)::text, '|', 2)::uuid)
+    OR (at, id) < (try_timestamptz(split_part(($4)::text, '|', 1)), try_uuid(split_part(($4)::text, '|', 2)))
     ORDER BY at DESC, id DESC
     LIMIT ($5)::int )
 SELECT ls.sid AS session_ok, json_build_object( 'total', CASE

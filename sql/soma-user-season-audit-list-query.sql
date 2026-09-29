@@ -9,7 +9,7 @@ WITH page AS (
        AND (nullif(btrim(coalesce(($2)::text, '')), '') IS NULL
             OR left(a.action, char_length(btrim(($2)::text))) = btrim(($2)::text))
        AND (($3)::text IS NULL
-            OR (a.at, a.id) < (split_part(($3)::text, '|', 1)::timestamptz,
+            OR (a.at, a.id) < (try_timestamptz(split_part(($3)::text, '|', 1)),
                                try_uuid(split_part(($3)::text, '|', 2))))
      ORDER BY a.at DESC, a.id DESC
      LIMIT 50

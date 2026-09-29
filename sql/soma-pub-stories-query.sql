@@ -29,7 +29,7 @@ WITH lim AS (
     SELECT at, id, item
       FROM items
      WHERE ($2)::text IS NULL
-        OR (at, id) < (split_part(($2)::text, '|', 1)::timestamptz, split_part(($2)::text, '|', 2)::uuid)
+        OR (at, id) < (try_timestamptz(split_part(($2)::text, '|', 1)), try_uuid(split_part(($2)::text, '|', 2)))
      ORDER BY at DESC, id DESC
      LIMIT (SELECT n FROM lim)
 )

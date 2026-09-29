@@ -821,7 +821,12 @@ CREATE TABLE season_participants (
     added_at    timestamptz NOT NULL DEFAULT now(),
     removed_at  timestamptz,
     CONSTRAINT season_participants_login_shape    CHECK (login IS NULL OR btrim(login) <> ''),
-    CONSTRAINT season_participants_provider_shape CHECK (provider ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+    -- `slug_ok`'s rule, written out because that function is declared further down this file
+    -- than this table. THE WRITER CALLS `slug_ok` (soma-user-participants-add's insert), so a
+    -- malformed provider writes nothing and is diagnosed rather than raising 23514 here, which
+    -- would make the route a 500. Keep the two in step: same shape, same length.
+    CONSTRAINT season_participants_provider_shape CHECK (provider ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+                                                     AND char_length(provider) <= 40)
 );
 -- One live row per (season, provider, login), case-insensitive; a removed row may be re-added. NULLs
 -- are distinct in a unique index, so the wildcard (null login) needs its own one-live index.
@@ -917,7 +922,8 @@ CREATE TABLE runners (
     -- `fleet.admissions` is `own` has its own fleet to keep up; until this column existed the
     -- platform had no way to say so, and a submission sat in `testing` spending no attempt with
     -- nothing anywhere naming the reason. `admitters_up()` is the reader, and the runner is counted
-    -- live on `last_seen_at` inside the same 90 seconds pair's idle fill counts a match lane on.
+    -- live on `last_seen_at` inside `runner_live_window()`, the same window pair's idle fill counts
+    -- a match lane on.
     admits        boolean     NOT NULL DEFAULT false,
 
     first_seen_at timestamptz NOT NULL DEFAULT now(),
@@ -928,6 +934,22 @@ CREATE TABLE runners (
 
     UNIQUE (key_id, label)
 );
+
+-- HOW STALE `last_seen_at` MAY BE AND STILL MEAN "up". It must be at least the heartbeat's period,
+-- and the heartbeat is slower than it looks: `soma-gate-token-register` is the ONLY statement that
+-- writes `last_seen_at`, and a runner exchanges a token only when its cached one has expired --
+-- kalam keeps it 480 s of its 600 (`shared/kalam.json`). A claim poll every 5 s touches nothing
+-- here. So this was 90 seconds against a ~480 second heartbeat, and a perfectly healthy runner read
+-- as down for about four fifths of every cycle: `admitters_up()` cried "nothing can admit" on
+-- /v1/status and the season desk, and pair's idle fill summed a fleet of zero lanes and queued
+-- nothing, on four ticks in five.
+--
+-- 600 s is the token's own life, so a runner that has not exchanged one inside it has missed its
+-- renewal outright. The cost of the other direction -- a runner that dies is counted for up to ten
+-- minutes -- is bounded and self-correcting: the fill queues rows nobody takes, they stay `pending`
+-- and claimable, and `pair_depth_target` caps how many. Under-counting had no such floor.
+CREATE FUNCTION runner_live_window() RETURNS interval
+LANGUAGE sql IMMUTABLE AS $$ SELECT interval '600 seconds' $$;
 
 -- live_sessions' argument applied to runners, and it is the same argument: a revoked key, a revoked
 -- runner, a deleted user OR AN ADMIN WHO IS NO LONGER ONE all end the runner's next call. Every
@@ -994,7 +1016,7 @@ LANGUAGE sql STABLE AS $$
       JOIN runners r  ON r.id = lr.id
       JOIN seasons se ON se.closed_at IS NULL AND (p_season IS NULL OR se.id = p_season)
      WHERE r.admits
-       AND r.last_seen_at > now() - interval '90 seconds'
+       AND r.last_seen_at > now() - runner_live_window()
        AND CASE WHEN lr.season_id IS NOT NULL
                 THEN lr.season_id = se.id AND (se.fleet ->> 'admissions') IN ('own', 'both')
                 ELSE (se.fleet ->> 'admissions') IN ('platform', 'both') END
@@ -1579,7 +1601,14 @@ ALTER TABLE season_maps
 -- manifest limits, the deployment's [vars]), which the claim's `row` read sends to the runner as the
 -- execution contract and the claim's `pick` uses to hand a row only to a runner that can finish it.
 -- One function, so the two statements cannot disagree about what a match will cost.
-CREATE FUNCTION match_execution(m matches, turn_ms_default int, max_turns_default int, refusal_default int)
+-- THE TERMS A SEASON'S MATCHES ARE PLAYED UNDER, from the season alone: what `match_execution`
+-- answers for a row that does not exist yet. PAIR NEEDS IT BEFORE THERE IS A MATCH -- it prices a
+-- BOARD against the fleet to decide whether a row on it could ever be claimed -- and the gate needs
+-- it for a row in hand, so the coalesce order (season rule, game limits, deploy var) is written
+-- once here and `match_execution` delegates. A second copy of it in a workflow is how the queue and
+-- the claim come to disagree about what a match costs.
+CREATE FUNCTION season_execution(p_season uuid, turn_ms_default int, max_turns_default int,
+                                 refusal_default int)
 RETURNS TABLE (turn_ms int, max_turns int, refusal_ceiling int)
 LANGUAGE sql STABLE AS $$
     SELECT coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
@@ -1591,8 +1620,54 @@ LANGUAGE sql STABLE AS $$
            coalesce(CASE WHEN (se.rules -> 'execution' ->> 'enabled')::boolean
                          THEN (se.rules -> 'execution' ->> 'refusal_ceiling')::int END,
                     refusal_default)
-      FROM seasons se, games g
-     WHERE se.id = m.season_id AND g.id = m.game_id
+      FROM seasons se JOIN games g ON g.id = se.game_id
+     WHERE se.id = p_season
+$$;
+
+CREATE FUNCTION match_execution(m matches, turn_ms_default int, max_turns_default int, refusal_default int)
+RETURNS TABLE (turn_ms int, max_turns int, refusal_ceiling int)
+LANGUAGE sql STABLE AS $$
+    SELECT e.turn_ms, e.max_turns, e.refusal_ceiling
+      FROM season_execution(m.season_id, turn_ms_default, max_turns_default, refusal_default) e
+$$;
+
+-- CAN ANY LIVE RUNNER FINISH A MATCH OF `p_seats` SEATS IN THIS SEASON? The gate's fit, asked of the
+-- fleet instead of one runner: turn_ms x max_turns x the seat batches, plus a tenth. Pair asks it of
+-- every enabled board before choosing one, because a row on a board NO runner can hold is pending
+-- for ever -- the reap only touches `claimed` and `running` -- and once `pair_depth_target` of them
+-- have piled up the season stops pairing anything at all, silently: the claim answers `{"idle":
+-- true}` and nothing says why. The fleet policy is read exactly as the claim reads it, so the two
+-- cannot disagree about who could take the row.
+-- A COLD FLEET IS NOT A REFUSAL. With no live runner at all this answers true, so pair queues ahead
+-- of the fleet exactly as it always has: the rows wait, pending and visible, and are claimed when a
+-- runner arrives. The question here is only whether a board is one the runners that ARE up could
+-- never hold -- an answer nothing can give while none is up.
+CREATE FUNCTION seats_claimable(p_season uuid, p_seats int,
+                                turn_ms_default int, max_turns_default int)
+RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    WITH fleet AS (
+        SELECT lr.match_timeout_ms, lr.seat_concurrency
+          FROM live_runners lr
+          JOIN runners r  ON r.id = lr.id
+          JOIN seasons se ON se.id = p_season
+         WHERE r.plays_matches
+           AND r.engine_digest = se.engine_digest
+           AND r.last_seen_at > now() - runner_live_window()
+           AND CASE WHEN lr.season_id IS NOT NULL
+                    THEN lr.season_id = se.id AND (se.fleet ->> 'matches') IN ('own', 'both')
+                    ELSE (se.fleet ->> 'matches') IN ('platform', 'both') END
+    )
+    SELECT NOT EXISTS (SELECT 1 FROM fleet)
+        OR EXISTS (
+            SELECT 1
+              FROM fleet f
+              CROSS JOIN LATERAL season_execution(p_season, turn_ms_default, max_turns_default, 5) e
+             -- The same inequality as soma-gate-claim's `pick`, and unbounded for a runner that has
+             -- reported neither number, exactly as there.
+             WHERE f.match_timeout_ms IS NULL OR f.seat_concurrency IS NULL
+                OR e.turn_ms::numeric * e.max_turns * ceil(p_seats::numeric / f.seat_concurrency) * 11
+                   <= f.match_timeout_ms::numeric * 10)
 $$;
 
 -- The order count folded matches in. A sequence rather than a timestamp: two matches can share a
@@ -1770,6 +1845,28 @@ $$;
 -- A uuid out of caller text, or NULL for anything else -- never a 22P02 on a request path.
 CREATE FUNCTION try_uuid(t text) RETURNS uuid LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE WHEN t ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN t::uuid END;
+$$;
+
+-- `try_uuid`'s siblings, for the other halves of a keyset cursor. A CURSOR IS CALLER TEXT: it is
+-- handed back to us in a query string, and anyone may type anything into one. A bare
+-- `split_part(cursor, '|', 1)::timestamptz` on a public listing turns `?cursor=x` into a 22007 and
+-- an UNAUTHENTICATED 500 -- on `/v1/matches`, the site's main listing. Every cursor half now casts
+-- through one of these and reads as "no cursor" instead, which is the first page: wrong input gives
+-- the caller the start of the list, not an error page and a trace row.
+--
+-- plpgsql with an EXCEPTION block rather than a regex, because neither timestamptz nor float8 has
+-- one worth writing; the block costs a subtransaction, and a cursor is parsed once per request.
+-- timestamptz parsing reads the session TimeZone, so it is STABLE where the other two are IMMUTABLE.
+CREATE FUNCTION try_timestamptz(t text) RETURNS timestamptz LANGUAGE plpgsql STABLE AS $$
+BEGIN RETURN t::timestamptz; EXCEPTION WHEN others THEN RETURN NULL; END;
+$$;
+
+CREATE FUNCTION try_int(t text) RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN RETURN t::int; EXCEPTION WHEN others THEN RETURN NULL; END;
+$$;
+
+CREATE FUNCTION try_float8(t text) RETURNS float8 LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN RETURN t::float8; EXCEPTION WHEN others THEN RETURN NULL; END;
 $$;
 
 -- The uuids in a caller's JSON array, the rest dropped; nothing for anything but an array.

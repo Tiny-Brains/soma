@@ -17,7 +17,7 @@ WITH me AS (
        AND (f.q IS NULL OR strpos(lower(coalesce(a.target_id, '')), f.q) > 0
             OR strpos(lower(coalesce(a.reason, '')), f.q) > 0)
        AND (($6)::text IS NULL
-            OR (a.at, a.id) < (split_part(($6)::text, '|', 1)::timestamptz,
+            OR (a.at, a.id) < (try_timestamptz(split_part(($6)::text, '|', 1)),
                                try_uuid(split_part(($6)::text, '|', 2))))
 ), page AS (
     -- Two branches, so each reads its own index: one admin's lines down audit_log_admin_idx, or

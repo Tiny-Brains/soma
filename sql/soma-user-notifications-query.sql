@@ -20,7 +20,7 @@ page AS (
     SELECT *
     FROM feed
     WHERE ($6)::text IS NULL
-    OR (created_at, id) < (split_part(($6)::text, '|', 1)::timestamptz, split_part(($6)::text, '|',
+    OR (created_at, id) < (try_timestamptz(split_part(($6)::text, '|', 1)), split_part(($6)::text, '|',
                 2)::uuid)
     ORDER BY created_at DESC, id DESC
     LIMIT (SELECT n

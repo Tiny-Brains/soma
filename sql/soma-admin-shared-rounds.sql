@@ -27,7 +27,7 @@ WITH s AS (
       JOIN runners r ON r.id = lr.id
      WHERE r.plays_matches
        AND r.engine_digest = s.engine_digest
-       AND r.last_seen_at > now() - interval '90 seconds'
+       AND r.last_seen_at > now() - runner_live_window()
        AND CASE WHEN lr.season_id IS NOT NULL
                 THEN lr.season_id = s.id AND (s.fleet ->> 'matches') IN ('own', 'both')
                 ELSE (s.fleet ->> 'matches') IN ('platform', 'both') END

@@ -23,8 +23,8 @@ WITH RECURSIVE host AS (
                              WHERE r.thread_id = c.thread_id AND r.root_id = c.id
                                AND r.id <> c.id AND r.state = 'live')))
        AND (($3)::text IS NULL
-            OR (c.created_at, c.id) < (split_part(($3)::text, '|', 1)::timestamptz,
-                                       split_part(($3)::text, '|', 2)::uuid))
+            OR (c.created_at, c.id) < (try_timestamptz(split_part(($3)::text, '|', 1)),
+                                       try_uuid(split_part(($3)::text, '|', 2))))
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT 20
 ), replies AS (

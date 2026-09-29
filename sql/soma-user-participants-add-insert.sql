@@ -17,7 +17,13 @@ WITH given AS (
         END) AS h
     WHERE btrim(h) <> ''
 ), prov AS (
-    SELECT coalesce(nullif(($2)::text, ''), 'github') AS provider
+    -- LOWERCASED AND SHAPE-CHECKED, against `slug_ok` -- the same rule the table's CHECK carries.
+    -- Taken verbatim, `"GitHub"` tripped that CHECK: 23514, a db_write task error, a 500 with no
+    -- `why`, and not one of the batch landed. Lowercasing is not cosmetic either -- `season_admits`
+    -- resolves on `(provider, lower(login))` against `identities`, whose slug is `github`, so a
+    -- provider that differs only in case wrote a whole cohort that could never match anyone and
+    -- read back as `resolved: false`, which looks exactly like "has not signed in yet".
+    SELECT lower(btrim(coalesce(nullif(($2)::text, ''), 'github'))) AS provider
 ), resolved AS (
     -- Pinned now only when exactly ONE account holds the login on that provider: two (a login freed
     -- and taken again, both identities still on file) is not a choice to make here, so the row stays
@@ -32,6 +38,7 @@ WITH given AS (
     INSERT INTO season_participants (season_id, provider, login, user_id, added_by)
     SELECT ($1)::uuid, prov.provider, resolved.login, resolved.user_id, ($4)::uuid
     FROM resolved, prov
+    WHERE slug_ok(prov.provider, 40)
     ON CONFLICT (season_id, provider, lower(login)) WHERE removed_at IS NULL DO NOTHING
     RETURNING id
 )

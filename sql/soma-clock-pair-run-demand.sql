@@ -37,9 +37,20 @@ WITH live AS (
     -- change while the season is live. The season is the only source -- there is no deploy list to
     -- fall back to -- so a season with none enabled pairs nothing, the same paused state as no
     -- season at all. A match already queued keeps the board it was paired on.
+    --
+    -- AND ONLY THE BOARDS THE FLEET COULD FINISH. `seats_claimable` is the gate's own fit asked of
+    -- the whole fleet instead of one runner, so pair never queues a row no runner can take: those
+    -- sit `pending` for ever -- the reap touches only `claimed` and `running` -- and once
+    -- `pair_depth_target` of them have piled up the season stops pairing ANYTHING, with the claim
+    -- answering `{"idle": true}` and nothing naming the board. A default runner derives
+    -- `seat_concurrency` from `cores / lanes`, so on a small node that is 1, and at ants' 1000 ms x
+    -- 1000 turns every board above two seats fails the inequality -- and `ants/maps/` ships boards
+    -- of 3, 4, 6 and 8. A board that no runner can hold is simply not paired on until one can; the
+    -- admin's enabled list is untouched, and `soma-admin-shared-rounds` is where the fleet is read.
     SELECT sm.id, sm.players
       FROM season_maps sm JOIN live ON live.id = sm.season_id
      WHERE sm.enabled
+       AND seats_claimable(live.id, sm.players, ($7)::int, ($8)::int)
      ORDER BY sm.added_at, sm.map_id
 ), rg AS (
     -- Each version's rated games in the current round (none without one).
@@ -184,7 +195,7 @@ WITH live AS (
                          FROM live_runners lr JOIN runners r ON r.id = lr.id
                         WHERE r.plays_matches
                           AND r.engine_digest = live.engine_digest
-                          AND r.last_seen_at > now() - interval '90 seconds'
+                          AND r.last_seen_at > now() - runner_live_window()
                           AND CASE WHEN lr.season_id IS NOT NULL
                                    THEN lr.season_id = live.id AND (live.fleet ->> 'matches') IN ('own', 'both')
                                    ELSE (live.fleet ->> 'matches') IN ('platform', 'both') END), 0)
@@ -238,9 +249,18 @@ SELECT json_build_object(
          -- How many more seats each VERSION may take in the window: its target less what it has
          -- played and holds there. Absent is uncapped: every version while the season has neither a
          -- round nor the fill, and a baseline in the finals, which is not an entry.
+         --
+         -- NEVER BELOW THE VERSION'S OWN `base`. `target` is `greatest(quota, fill_games)`, and the
+         -- IDLE FILL IS NOT A QUOTA: with a fill and no round, `base` is the settling rule and is
+         -- not bounded by the window at all, while this room would be. A version past `fill_games`
+         -- then got `room = 0`, and `choose.rs` walls a drawn version on that regardless of
+         -- `strict_rooms` -- so any entry still above `settled_sigma` stopped being paired, never
+         -- settled, and a `closure.policy = settle` season never closed, while `demand` went on
+         -- reporting work. The fill may only RAISE a version's room; what the season's own rule
+         -- asks for is served either way.
          'rooms',  (SELECT coalesce(json_agg(json_build_object(
                         'model_id', w.model_id,
-                        'room', greatest(w.target - w.window_played - w.in_window, 0))), '[]'::json)
+                        'room', greatest(w.target - w.window_played - w.in_window, w.base, 0))), '[]'::json)
                       FROM w CROSS JOIN lim
                      WHERE w.target IS NOT NULL AND NOT (lim.finals AND w.baseline))) AS body,
        (SELECT epoch FROM clocks WHERE key = 'roster') AS epoch

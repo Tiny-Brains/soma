@@ -697,7 +697,7 @@ EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
 UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e::jsonb ? 'role' AS has_role
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
@@ -706,9 +706,35 @@ UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-
 
 \echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
+
+\echo '--- THE FIT, asked of the fleet: pair may only offer a board some live runner could finish.'
+\echo '    At turn_ms 1000 x max_turns 1000 a runner of seat_concurrency 1 holds 2 seats (22.0M <= 24M)'
+\echo '    and not 4 (44M), so a fleet of only mini-2 drops melee (expect default 2 and other-map 2, NO melee)'
+BEGIN;
+-- The season moved to sha256:e2 earlier in this walk, so the fleet must be ON the season's engine
+-- to be its fleet at all -- that join is the first thing the claim checks.
+UPDATE runners SET engine_digest = 'sha256:e2' WHERE label IN ('mini-1', 'mini-2');
+UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-2';
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
+  FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
+\echo '    ... and mini-1, seat_concurrency 2, seats melee in two batches (22.0M), so it comes back (expect all 3)'
+UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-1';
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
+  FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
+\echo '    ... and a runner last seen longer ago than runner_live_window() is no fleet at all, so the'
+\echo '    COLD-FLEET GRACE applies and every board is offered again -- pair queues ahead of the fleet'
+\echo '    exactly as it always has, rather than stopping (expect all 3)'
+UPDATE runners SET last_seen_at = now() - runner_live_window() - interval '1 minute'
+ WHERE label IN ('mini-1', 'mini-2');
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
+  FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
+ROLLBACK;
 \echo '--- disable a board with one match queued on it and one running: the queued one is cancelled MAP_DISABLED and the running one plays on (expect two INSERT 0 2, the flip INSERT 0 1, then cancelled/MAP_DISABLED and running, and one event with cancelled 1)'
 BEGIN;
 SELECT epoch AS ep FROM clocks WHERE key = 'roster' \gset
@@ -1368,7 +1394,7 @@ SELECT n, starts_at - (SELECT submissions_open_at FROM seasons WHERE id = '50000
 EXECUTE w_schedule ('00000000-0000-0000-0000-00000000000a');
 
 \echo '--- pair in round 1: every version wants the round''s 4 whatever its age (expect quota 4 for all three, rooms 4 each, room 12, round n 1)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e ->> 'played' AS played
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
@@ -1386,7 +1412,7 @@ INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash
   ('11111111-1111-1111-1111-1111111111e1', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
   ('11111111-1111-1111-1111-1111111111e1', 1, '10000000-0000-0000-0000-0000000000d3', 'sha256:wd3', 'sha256:md3', 2, 1, 0);
 SELECT version_id, games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) ORDER BY 1;
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS played
   FROM json_array_elements((:'body')::json -> 'wants') e;
 
@@ -1394,7 +1420,7 @@ SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS pla
 SELECT (:'body')::json -> 'spare' AS spare_off;
 EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": true, "games": 10}', '00000000-0000-0000-0000-0000000000ad');
 UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-1';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
 SELECT (:'body')::json -> 'spare' IS NOT NULL AS spare_read;
 \echo '    ... a fill without games, or with a key it does not know, writes nothing (expect INSERT 0 0 twice)'
@@ -1471,7 +1497,7 @@ SELECT version_id, round(mu::numeric, 2) AS mu, sigma FROM ratings
  ORDER BY version_id DESC;
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 901;
 \echo '--- pair in the finals: the wall asks for nothing and has no wall of its own; the two entries want 2 behind a strict room (expect dora 2, eve 2 -- no wall row; rooms dora 2, eve 2; strict t; fill ignored, spare null)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
 SELECT (:'body')::json -> 'limits' ->> 'strict_rooms' AS strict, (:'body')::json -> 'spare' AS spare;

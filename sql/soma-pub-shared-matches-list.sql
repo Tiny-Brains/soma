@@ -10,15 +10,15 @@ lim AS (
     SELECT least(greatest(coalesce(($8)::int, 25), 1), 60) AS n ),
 cur AS (
     SELECT CASE
-        WHEN coalesce(($14)::text, 'newest') = 'newest' THEN split_part(($7)::text, '|', 1)::timestamptz
+        WHEN coalesce(($14)::text, 'newest') = 'newest' THEN try_timestamptz(split_part(($7)::text, '|', 1))
         END AS at, CASE
-        WHEN ($14)::text IN ('closest', 'longest') THEN split_part(($7)::text, '|', 1)::int
+        WHEN ($14)::text IN ('closest', 'longest') THEN try_int(split_part(($7)::text, '|', 1))
         END AS ki, CASE
-        WHEN ($14)::text = 'upset' THEN split_part(($7)::text, '|', 1)::float8
+        WHEN ($14)::text = 'upset' THEN try_float8(split_part(($7)::text, '|', 1))
         END AS kf, CASE
-        WHEN ($14)::text IS DISTINCT FROM 'discussed' THEN split_part(($7)::text, '|', 2)::uuid
+        WHEN ($14)::text IS DISTINCT FROM 'discussed' THEN try_uuid(split_part(($7)::text, '|', 2))
         END AS id, CASE
-        WHEN ($14)::text = 'discussed' THEN coalesce(($7)::text::int, 0)
+        WHEN ($14)::text = 'discussed' THEN coalesce(try_int(($7)::text), 0)
         ELSE 0
         END AS off ),
 top10 AS (

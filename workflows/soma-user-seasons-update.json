@@ -60,7 +60,7 @@
     {
       "id": "diagnose",
       "name": "Diagnose a write that changed nothing",
-      "description": "Only when the edit wrote nothing. The season exists (season-admin-only 404s an unknown one before the edit), so the sole reason left is that it is no longer scheduled: `why` reads the state back and 409 carries it.",
+      "description": "Only when the edit wrote nothing. The season exists (season-admin-only 404s an unknown one before the edit), so the reasons left are that it is no longer scheduled, or that a shape the WHERE checks was malformed: `why` reads the state back AND re-asks the three predicates of the submitted values, so 422 names the bad field and 409 carries the state. The edit checks the same predicates rather than letting the table CHECKs raise, which would be a 500 and no audit line.",
       "condition": { "$use": "none_written", "with": { "slot": "edited" } },
       "tasks": [
         {
@@ -70,10 +70,36 @@
             "name": "db_read",
             "input": {
               "connector": "soma-db",
-              "query": "SELECT json_build_object('slug', s.slug, 'state', season_state(s)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
-              "params": [{ "var": "metadata.params.game" }, { "var": "metadata.params.slug" }],
+              "query": "SELECT json_build_object('slug', s.slug, 'state', season_state(s), 'rules_ok', ($3)::jsonb IS NULL OR season_rules_ok(($3)::jsonb), 'weight_classes_ok', ($4)::jsonb IS NULL OR weight_classes_ok(($4)::jsonb), 'window_ok', coalesce(($6)::timestamptz, s.submissions_close_at) > coalesce(($5)::timestamptz, s.submissions_open_at)) AS body FROM seasons s JOIN games g ON g.id = s.game_id WHERE g.slug = ($1)::text AND s.slug = ($2)::text",
+              "params": [
+                { "var": "metadata.params.game" },
+                { "var": "metadata.params.slug" },
+                { "var": "data.req.rules" },
+                { "var": "data.req.weight_classes" },
+                { "var": "data.req.submissions_open_at" },
+                { "var": "data.req.submissions_close_at" }
+              ],
               "output": "temp_data.why"
             }
+          }
+        },
+        {
+          "id": "malformed",
+          "use": "refuse",
+          "with": {
+            "when": {
+              "or": [
+                { "==": [{ "var": "temp_data.why.0.body.rules_ok" }, false] },
+                { "==": [{ "var": "temp_data.why.0.body.weight_classes_ok" }, false] },
+                { "==": [{ "var": "temp_data.why.0.body.window_ok" }, false] }
+              ]
+            },
+            "status": 422,
+            "body": {
+              "error": "season_shape_invalid",
+              "detail": { "var": "temp_data.why.0.body" }
+            },
+            "name": "A field the season's own rules refuse"
           }
         },
         {

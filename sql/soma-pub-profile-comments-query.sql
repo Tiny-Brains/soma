@@ -10,7 +10,7 @@ WITH author AS (
      -- The public page: a comment on a private season's match is its season's, never shown here.
      WHERE thread_host_ok(t.match_id, t.model_id)
        AND (($2)::text IS NULL
-            OR (c.created_at, c.id) < (split_part(($2)::text, '|', 1)::timestamptz,
+            OR (c.created_at, c.id) < (try_timestamptz(split_part(($2)::text, '|', 1)),
                                        try_uuid(split_part(($2)::text, '|', 2))))
      ORDER BY c.created_at DESC, c.id DESC
      LIMIT 20
