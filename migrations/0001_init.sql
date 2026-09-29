@@ -897,17 +897,17 @@ CREATE TABLE runners (
     -- editing a definition anywhere.
     max_in_flight smallint    NOT NULL DEFAULT 4,
 
-    -- REPORTED AT TOKEN EXCHANGE TOO: the longest match this node's channel can hold, and how many
-    -- seats it asks at once. The claim hands a row only to a runner whose timeout covers the row's
-    -- turn_ms x max_turns x ceil(seats / seat_concurrency) plus a tenth (match_execution() below the
-    -- matches table), so a match no live runner can finish inside its deadline is never claimed. It
-    -- does not loop -- the reap only touches claimed and running -- it waits pending, which is the
-    -- worse ending: nothing plays it and nothing says why. THIS PAIR IS THEREFORE THE WIDEST BOARD
-    -- THE FLEET PLAYS, not a safety margin: at one seat at a time and 1000 ms x 1000 turns, a
-    -- forty-minute timeout reaches two seats, and a season's 3-to-8-seat boards are quietly off the
-    -- ladder. Kalam's entrypoint.sh derives both from the cartridge's own envelope for that reason,
-    -- and web's configs.sh holds its fallbacks to it. NULL is a runner from before this was
-    -- reported, or an admitting one, which the claim does not bound.
+    -- REPORTED AT TOKEN EXCHANGE TOO, AND READ BY NO DECISION: the longest match this node's channel
+    -- can hold, and how many seats it asks at once. They are here for the Runners screen and for an
+    -- operator reading a row -- what a machine says about itself -- and NOTHING prices a match
+    -- against them. The claim did once, and it was the wrong shape: a node whose deadline was short
+    -- for a board did not play that board slowly, it removed the board from the ladder, because the
+    -- row then waited pending for ever (the reap only touches claimed and running) while pair
+    -- skipped the board and the season played its narrow ones in silence. A RUNNER DOES NOT
+    -- PRESCRIBE THE MATCH: the season's rules do, and a node that cannot cover what these rules
+    -- allow refuses to boot rather than narrowing the ladder (kalam's entrypoint.sh; web's
+    -- configs.sh holds its numbers to the ceilings in this file). NULL is a runner from before
+    -- either was reported, or an admitting one.
     match_timeout_ms bigint,
     seat_concurrency smallint,
 
@@ -1634,45 +1634,6 @@ RETURNS TABLE (turn_ms int, max_turns int, refusal_ceiling int)
 LANGUAGE sql STABLE AS $$
     SELECT e.turn_ms, e.max_turns, e.refusal_ceiling
       FROM season_execution(m.season_id, turn_ms_default, max_turns_default, refusal_default) e
-$$;
-
--- CAN ANY LIVE RUNNER FINISH A MATCH OF `p_seats` SEATS IN THIS SEASON? The gate's fit, asked of the
--- fleet instead of one runner: turn_ms x max_turns x the seat batches, plus a tenth. Pair asks it of
--- every enabled board before choosing one, because a row on a board NO runner can hold is pending
--- for ever -- the reap only touches `claimed` and `running` -- and once `pair_depth_target` of them
--- have piled up the season stops pairing anything at all, silently: the claim answers `{"idle":
--- true}` and nothing says why. The fleet policy is read exactly as the claim reads it, so the two
--- cannot disagree about who could take the row.
--- A COLD FLEET IS NOT A REFUSAL. With no live runner at all this answers true, so pair queues ahead
--- of the fleet exactly as it always has: the rows wait, pending and visible, and are claimed when a
--- runner arrives. The question here is only whether a board is one the runners that ARE up could
--- never hold -- an answer nothing can give while none is up.
-CREATE FUNCTION seats_claimable(p_season uuid, p_seats int,
-                                turn_ms_default int, max_turns_default int)
-RETURNS boolean
-LANGUAGE sql STABLE AS $$
-    WITH fleet AS (
-        SELECT lr.match_timeout_ms, lr.seat_concurrency
-          FROM live_runners lr
-          JOIN runners r  ON r.id = lr.id
-          JOIN seasons se ON se.id = p_season
-         WHERE r.plays_matches
-           AND r.engine_digest = se.engine_digest
-           AND r.last_seen_at > now() - runner_live_window()
-           AND CASE WHEN lr.season_id IS NOT NULL
-                    THEN lr.season_id = se.id AND (se.fleet ->> 'matches') IN ('own', 'both')
-                    ELSE (se.fleet ->> 'matches') IN ('platform', 'both') END
-    )
-    SELECT NOT EXISTS (SELECT 1 FROM fleet)
-        OR EXISTS (
-            SELECT 1
-              FROM fleet f
-              CROSS JOIN LATERAL season_execution(p_season, turn_ms_default, max_turns_default, 5) e
-             -- The same inequality as soma-gate-claim's `pick`, and unbounded for a runner that has
-             -- reported neither number, exactly as there.
-             WHERE f.match_timeout_ms IS NULL OR f.seat_concurrency IS NULL
-                OR e.turn_ms::numeric * e.max_turns * ceil(p_seats::numeric / f.seat_concurrency) * 11
-                   <= f.match_timeout_ms::numeric * 10)
 $$;
 
 -- The order count folded matches in. A sequence rather than a timestamp: two matches can share a

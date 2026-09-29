@@ -114,9 +114,16 @@ SELECT id AS m46 FROM matches WHERE seed = 46 \gset
 \echo '--- kalam: reap (expect 0); nothing in flight yet (expect f); claim ONE row, trials first (expect 1)'
 EXECUTE k_reap;
 EXECUTE k_in_flight;
-\echo '--- a runner whose channel cannot hold a 1000-turn match at 1 s claims nothing (expect 0)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000000', 60, 4, 'c1000000-0000-0000-0000-000000000004', 1000, 1000, 5);
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+\echo '--- A SHORT-DEADLINE RUNNER IS STILL A RUNNER. `short` reports a 60 s channel, where a'
+\echo '    1000-turn match at 1 s a turn cannot fit by any arithmetic. The claim used to price the row'
+\echo '    against that and refuse it every time -- which is how a fleet of small nodes quietly shrank'
+\echo '    a season -- and prices nothing now: a runner does not prescribe the match (expect 1, rolled'
+\echo '    back so the walk below is unchanged)'
+BEGIN;
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-0000000000f0', 60, 'c1000000-0000-0000-0000-000000000004');
+SELECT r.label AS played_by, m.seat_count FROM matches m JOIN runners r ON r.id = m.played_by;
+ROLLBACK;
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000001', 60, 'c1000000-0000-0000-0000-000000000001');
 \echo '--- one row claimed: something is in flight (expect t)'
 EXECUTE k_in_flight;
 -- Eight parameters: the read-back also builds the execution contract, so it carries
@@ -124,13 +131,13 @@ EXECUTE k_in_flight;
 -- manifest has no limits -- which is this fixture, so `turn_ms` here is the 1000 below.
 EXECUTE k_row ('30000000-0000-0000-0000-000000000001', 'tb.v', 'replays', 30, 300, 1000, 1000, 5);
 \echo '--- a second runner takes the NEXT row rather than queueing behind the first: SKIP LOCKED is the only coordinator there is (expect 1)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 4, 'c1000000-0000-0000-0000-000000000002', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000002', 60, 'c1000000-0000-0000-0000-000000000002');
 \echo '--- the in-flight ceiling: mini-2 is allowed one row, so its next claim takes nothing (expect 0)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000003', 60, 4, 'c1000000-0000-0000-0000-000000000002', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000003', 60, 'c1000000-0000-0000-0000-000000000002');
 \echo '--- a REVOKED runner claims nothing, however live its token: the check is a JOIN inside the statement (expect 0)'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 4, 'c1000000-0000-0000-0000-000000000003', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 'c1000000-0000-0000-0000-000000000003');
 \echo '--- mini-1 takes the row that is left, and every claim named the machine that took it'
-EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 'c1000000-0000-0000-0000-000000000001');
 SELECT m.seed, r.label AS played_by FROM matches m JOIN runners r ON r.id = m.played_by ORDER BY m.seed;
 \echo '--- kalam: start on ANOTHER runner''s claim (expect 0); start it properly (expect 1 each); renew (expect 1); renew on a foreign token (expect 0)'
 EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000002', :'m42');
@@ -467,23 +474,23 @@ ROLLBACK;
 EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 51, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m51 FROM matches WHERE seed = 51 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000006', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-000000000006', true, 5, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, lapses FROM matches WHERE seed = 51;
 \echo '    ... the ceiling spent INSIDE the grace does not fail it: the row was paired a moment ago (expect 1; pending, refusals 2, no fault)'
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000007', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-000000000007', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 3600);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 \echo '    ... past the grace, a season ceiling above the fallback still holds it: the release reads the value the claim sent (expect 1; pending, refusals 3), rolled back'
 BEGIN;
 UPDATE seasons SET rules = rules || '{"execution": {"enabled": true, "refusal_ceiling": 10}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000b', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000b', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000b', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 ROLLBACK;
 \echo '    ... past the grace at the ceiling (expect 1; failed, refusals 3, MODEL_UNAVAILABLE)'
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000c', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000c', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m51', 0);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 51;
 
@@ -497,17 +504,17 @@ EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 71, '70000000-0000-
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 SELECT id AS m71 FROM matches WHERE seed = 71 \gset
 UPDATE matches SET created_at = now() - interval '1 hour' WHERE seed = 71;
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000071', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000071', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-000000000071', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
 SELECT seed, status, refusals, fault_reason, first_refused_at > now() - interval '1 minute' AS window_opened_now
   FROM matches WHERE seed = 71;
 \echo '    ... and the fleet that never catches up still loses it, a grace after the refusals began,'
 \echo '        at the ceiling and not before (expect pending at the ceiling inside the window, then failed)'
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000072', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000072', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-000000000072', true, 2, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 71;
 UPDATE matches SET first_refused_at = now() - interval '5 minutes' WHERE seed = 71;
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000073', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000073', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-000000000073', true, 3, 'c1000000-0000-0000-0000-000000000001', :'m71', 120);
 SELECT seed, status, refusals, fault_reason FROM matches WHERE seed = 71;
 ROLLBACK;
@@ -604,7 +611,7 @@ EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 59, '70000000-0000-
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m59 FROM matches WHERE seed = 59 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-00000000000d', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_release ('30000000-0000-0000-0000-00000000000d', true, 1, 'c1000000-0000-0000-0000-000000000001', :'m59', 0);
 SELECT seed, status, fault_reason FROM matches WHERE seed = 59;
 EXECUTE p_trials ('50000000-0000-0000-0000-000000000001', 3);
@@ -618,7 +625,7 @@ EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 60, '70000000-0000-
   '{20000000-0000-0000-0000-000000000004,10000000-0000-0000-0000-000000000001}',
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
-EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 4, 'c1000000-0000-0000-0000-000000000001', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 'c1000000-0000-0000-0000-000000000001');
 EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60');
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
@@ -697,7 +704,7 @@ EXECUTE d_demand ('00000000-0000-0000-0000-00000000000a', 8, 2, 3.0);
 SELECT rules AS saved_rules FROM seasons WHERE id = '50000000-0000-0000-0000-000000000001' \gset
 UPDATE seasons SET rules = '{"pairing": {"enabled": true, "queue_share_max": 4}}'
  WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e::jsonb ? 'role' AS has_role
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room' AS room
@@ -706,32 +713,32 @@ UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-
 
 \echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
 
-\echo '--- THE FIT, asked of the fleet: pair may only offer a board some live runner could finish.'
-\echo '    At turn_ms 1000 x max_turns 1000 a runner of seat_concurrency 1 holds 2 seats (22.0M <= 24M)'
-\echo '    and not 4 (44M), so a fleet of only mini-2 drops melee (expect default 2 and other-map 2, NO melee)'
+\echo '--- A RUNNER DOES NOT NARROW THE BOARD LIST. The claim once priced a row against the runner''s'
+\echo '    reported timeout and seat concurrency, so a fleet of small nodes silently removed the wide'
+\echo '    boards from the season. Nothing prices a board now: whatever the fleet looks like, every'
+\echo '    enabled board is offered (expect all 3 at each step, melee among them)'
 BEGIN;
 -- The season moved to sha256:e2 earlier in this walk, so the fleet must be ON the season's engine
 -- to be its fleet at all -- that join is the first thing the claim checks.
 UPDATE runners SET engine_digest = 'sha256:e2' WHERE label IN ('mini-1', 'mini-2');
+\echo '    ... mini-2 alone, seat_concurrency 1: it used to hold 2 seats and drop melee'
 UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-2';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
-\echo '    ... and mini-1, seat_concurrency 2, seats melee in two batches (22.0M), so it comes back (expect all 3)'
-UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-1';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+\echo '    ... a runner reporting no timeout or concurrency at all'
+UPDATE runners SET match_timeout_ms = NULL, seat_concurrency = NULL WHERE label = 'mini-2';
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
-\echo '    ... and a runner last seen longer ago than runner_live_window() is no fleet at all, so the'
-\echo '    COLD-FLEET GRACE applies and every board is offered again -- pair queues ahead of the fleet'
-\echo '    exactly as it always has, rather than stopping (expect all 3)'
+\echo '    ... and a cold fleet: pair queues ahead of the runners, as it always has'
 UPDATE runners SET last_seen_at = now() - runner_live_window() - interval '1 minute'
  WHERE label IN ('mini-1', 'mini-2');
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
 SELECT (SELECT map_id FROM season_maps WHERE id = (m ->> 'id')::uuid) AS map, m ->> 'players' AS players
   FROM json_array_elements((:'body')::json -> 'limits' -> 'maps') m ORDER BY 1;
 ROLLBACK;
@@ -1394,7 +1401,7 @@ SELECT n, starts_at - (SELECT submissions_open_at FROM seasons WHERE id = '50000
 EXECUTE w_schedule ('00000000-0000-0000-0000-00000000000a');
 
 \echo '--- pair in round 1: every version wants the round''s 4 whatever its age (expect quota 4 for all three, rooms 4 each, room 12, round n 1)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want, e ->> 'played' AS played
   FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
@@ -1412,7 +1419,7 @@ INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash
   ('11111111-1111-1111-1111-1111111111e1', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
   ('11111111-1111-1111-1111-1111111111e1', 1, '10000000-0000-0000-0000-0000000000d3', 'sha256:wd3', 'sha256:md3', 2, 1, 0);
 SELECT version_id, games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) ORDER BY 1;
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS played
   FROM json_array_elements((:'body')::json -> 'wants') e;
 
@@ -1420,7 +1427,7 @@ SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS pla
 SELECT (:'body')::json -> 'spare' AS spare_off;
 EXECUTE f_set ('ants', 'rounds-2026', '{"enabled": true, "games": 10}', '00000000-0000-0000-0000-0000000000ad');
 UPDATE runners SET plays_matches = true, last_seen_at = now() WHERE label = 'mini-1';
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
 SELECT (:'body')::json -> 'spare' IS NOT NULL AS spare_read;
 \echo '    ... a fill without games, or with a key it does not know, writes nothing (expect INSERT 0 0 twice)'
@@ -1497,7 +1504,7 @@ SELECT version_id, round(mu::numeric, 2) AS mu, sigma FROM ratings
  ORDER BY version_id DESC;
 SELECT seed, status, withdrawn_reason FROM matches WHERE seed = 901;
 \echo '--- pair in the finals: the wall asks for nothing and has no wall of its own; the two entries want 2 behind a strict room (expect dora 2, eve 2 -- no wall row; rooms dora 2, eve 2; strict t; fill ignored, spare null)'
-EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2, 1000, 1000) \gset
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS want FROM json_array_elements((:'body')::json -> 'wants') e ORDER BY 1;
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
 SELECT (:'body')::json -> 'limits' ->> 'strict_rooms' AS strict, (:'body')::json -> 'spare' AS spare;
@@ -1712,7 +1719,7 @@ INSERT INTO matches (id, game_id, season_id, status, engine_digest, seed, season
 
 \echo '--- MATCHES, Fleet A = own: its own runner takes its row, the platform runner takes nothing (expect UPDATE 1, UPDATE 0)'
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000001', 60, 4, :'fl_om', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000001', 60, :'fl_om');
 RESET ROLE;
 UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
 -- Fleet B is 'platform', so the platform runner WOULD reach it: park B's row on another engine
@@ -1720,23 +1727,23 @@ UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lea
 -- only have come from A. Parking by status would have to satisfy matches_status_shape.
 UPDATE matches SET engine_digest = 'sha256:parked' WHERE id = '1f000000-0000-0000-0000-000000000002';
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000002', 60, 4, :'fl_pm', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000002', 60, :'fl_pm');
 RESET ROLE;
 
 \echo '--- MATCHES, Fleet A = platform: the same two the other way round (expect UPDATE 0, UPDATE 1)'
 UPDATE seasons SET fleet = '{"matches": "platform", "admissions": "platform"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
 UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000003', 60, 4, :'fl_om', 1000, 1000, 5);
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000004', 60, 4, :'fl_pm', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000003', 60, :'fl_om');
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000004', 60, :'fl_pm');
 RESET ROLE;
 
 \echo '--- MATCHES, Fleet A = both: either machine, whichever asks first (expect UPDATE 1, then UPDATE 0 -- the row is gone, not refused)'
 UPDATE seasons SET fleet = '{"matches": "both", "admissions": "both"}' WHERE id = '5f000000-0000-0000-0000-000000000001';
 UPDATE matches SET status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000001';
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000005', 60, 4, :'fl_om', 1000, 1000, 5);
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000006', 60, 4, :'fl_pm', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000005', 60, :'fl_om');
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000006', 60, :'fl_pm');
 RESET ROLE;
 
 \echo '--- MATCHES: a season runner never reaches ANOTHER season, whatever that season says (expect UPDATE 0 on both `platform` and `both`)'
@@ -1745,11 +1752,11 @@ RESET ROLE;
 UPDATE matches SET engine_digest = 'sha256:parked' WHERE id = '1f000000-0000-0000-0000-000000000001';
 UPDATE matches SET engine_digest = 'sha256:e1', status = 'pending', claim_token = NULL, played_by = NULL, lease_expires_at = NULL WHERE id = '1f000000-0000-0000-0000-000000000002';
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000007', 60, 4, :'fl_om', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000007', 60, :'fl_om');
 RESET ROLE;
 UPDATE seasons SET fleet = '{"matches": "both", "admissions": "both"}' WHERE id = '5f000000-0000-0000-0000-000000000002';
 SET ROLE runner_gate;
-EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000008', 60, 4, :'fl_om', 1000, 1000, 5);
+EXECUTE k_claim ('sha256:e1', '3f000000-0000-0000-0000-000000000008', 60, :'fl_om');
 RESET ROLE;
 UPDATE seasons SET fleet = '{"matches": "platform", "admissions": "platform"}' WHERE id = '5f000000-0000-0000-0000-000000000002';
 

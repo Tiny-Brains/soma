@@ -322,15 +322,19 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A gate route's `data.req.*` field names are the contract with the runner. Diff them against the
   body `kalam/workflows/kalam-match-run.json` sends.
 - `live_runners` is joined **inside** every statement. A JSONLogic guard fails open.
-- **A row goes only to a runner that can finish it.** The claim's `pick` prices the row with
-  `match_execution()` (the one function `row` sends as the contract) against the runner's reported
-  `match_timeout_ms` and `seat_concurrency`: turn_ms × max_turns × the seat batches, plus a tenth.
-  A row no runner can hold stays pending and visible; a runner that reported neither is unbounded.
-  **So the fleet's timeout is what decides the widest board a season can actually use**, and a
-  board past it is not slow, it is off the ladder: pair skips it (`seats_claimable()`) and nothing
-  says so. Kalam derives that timeout from the cartridge's envelope and web's `configs.sh` prices
-  its fallbacks against `limits.boards`, which is where this is kept honest — never widen the fleet
-  by loosening the inequality.
+- **A row goes to any runner of its engine, and NOTHING a runner reports narrows what a season can
+  run.** The claim's `pick` filters on the digest, the fleet policy and the runner's own lanes, and
+  on nothing else. It used to price the row against the runner's `match_timeout_ms` and
+  `seat_concurrency`, and to take a `seat_count` ceiling from the request — a runner prescribing the
+  match. The failure that taught it: a node whose deadline was short for a board did not play that
+  board slowly, it **removed the board from the ladder**, because the row then waited pending for
+  ever (the reap only touches claimed and running) while pair skipped the board and the season
+  played its narrow ones in silence. Both halves are gone, `seats_claimable()` with them.
+  `match_timeout_ms` and `seat_concurrency` remain on the row as reported facts that no decision
+  reads. **The burden moved to the runner**: kalam's seat list is the engine's envelope, its loop
+  bound and its occurrence bound come from the ceilings in `season_rule_spec()` here, and a node
+  that cannot cover them refuses to boot. web's `configs.sh` reads those ceilings out of this
+  migration. Never put a fleet's capacity back into a competitive decision.
 - **The idle claim is answered from the cache, per runner.** `claim` reads `gen:work` and
   `idle:<engine digest>:<runner>` in one `MGET` before the statement and answers `{"idle": true}`
   when the marker is present and equal to the generation; a claim that moved no row stores the

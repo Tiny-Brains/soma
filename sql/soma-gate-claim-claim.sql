@@ -1,16 +1,21 @@
--- THE FIT: a row goes only to a runner whose channel timeout covers what the row will cost --
--- turn_ms x max_turns x the turns' seat batches, plus a tenth for the steps and the gate calls --
--- so a match a node cannot finish inside its deadline is never claimed, reaped and re-claimed
--- for ever; it waits, pending and visible. A runner that reported no timeout (before it was
--- reported) is not bounded.
+-- A ROW GOES TO ANY RUNNER OF ITS ENGINE, AND THE SEASON'S TERMS ARE WHAT IT IS PLAYED UNDER. This
+-- statement narrows by the digest, the fleet policy and the runner's own lanes -- and by nothing a
+-- runner reports about how long it is willing to play or how many seats it will take. It used to:
+-- the claim priced the row at turn_ms x max_turns x the seat batches, plus a tenth, against the
+-- runner's channel timeout, and took `seat_count` from the request as a ceiling. Both were a runner
+-- prescribing the match. A node whose deadline was short for a board did not play that board more
+-- slowly, it removed it from the ladder: the row stayed pending for ever (the reap only touches
+-- claimed and running), pair skipped the board, and the season played its narrow boards in silence.
+-- Kalam now covers the widest match these rules can declare -- its seat width is the cartridge's
+-- envelope and its channel timeout is sized from soma's own rule ceilings, checked by web's
+-- configs.sh -- so there is nothing left here to filter on. The terms ride the row, in
+-- `soma-gate-claim-row.sql`.
 WITH pick AS MATERIALIZED (SELECT m.id
     FROM matches m
-    JOIN live_runners lr ON lr.id = ($5)::uuid
+    JOIN live_runners lr ON lr.id = ($4)::uuid
     JOIN seasons se ON se.id = m.season_id
-    CROSS JOIN LATERAL match_execution(m, ($6)::int, ($7)::int, ($8)::int) e
     WHERE m.status = 'pending'
     AND m.engine_digest = ($1)::text
-    AND m.seat_count <= ($4)::int
     -- THE FLEET POLICY (N30). A SEASON runner (lr.season_id set) claims only its own season's rows,
     -- and only while that season lets its own fleet play (fleet.matches in 'own'|'both'). A PLATFORM
     -- runner (lr.season_id null) claims any season whose policy admits the platform ('platform'|'both').
@@ -23,14 +28,11 @@ WITH pick AS MATERIALIZED (SELECT m.id
         FROM matches h
         WHERE h.played_by = lr.id
         AND h.status IN ('claimed', 'running')) < lr.max_in_flight
-    AND (lr.match_timeout_ms IS NULL OR lr.seat_concurrency IS NULL
-         OR e.turn_ms::numeric * e.max_turns * ceil(m.seat_count::numeric / lr.seat_concurrency) * 11
-            <= lr.match_timeout_ms::numeric * 10)
     ORDER BY (m.trial_version_id IS NOT NULL) DESC, m.refusals, m.created_at, m.id
     LIMIT 1
     FOR UPDATE OF m SKIP LOCKED)
 UPDATE matches m
 SET status = 'claimed', claim_token = ($2)::uuid, lease_expires_at = now() + ($3)::int * interval
-    '1 second', played_by = ($5)::uuid
+    '1 second', played_by = ($4)::uuid
 FROM pick
 WHERE m.id = pick.id

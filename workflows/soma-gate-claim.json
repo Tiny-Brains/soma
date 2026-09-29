@@ -92,11 +92,7 @@
             { "var": "data.req.engine_digest" },
             { "var": "temp_data.token" },
             { "var": "metadata.vars.lease_seconds" },
-            { "var": "data.req.seat_count" },
-            { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.vars.turn_ms" },
-            { "var": "metadata.vars.max_turns" },
-            { "var": "metadata.vars.refusal_ceiling" }
+            { "var": "metadata.auth.claims.sub" }
           ],
           "output": "temp_data.claimed"
         }

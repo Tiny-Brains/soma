@@ -38,19 +38,14 @@ WITH live AS (
     -- fall back to -- so a season with none enabled pairs nothing, the same paused state as no
     -- season at all. A match already queued keeps the board it was paired on.
     --
-    -- AND ONLY THE BOARDS THE FLEET COULD FINISH. `seats_claimable` is the gate's own fit asked of
-    -- the whole fleet instead of one runner, so pair never queues a row no runner can take: those
-    -- sit `pending` for ever -- the reap touches only `claimed` and `running` -- and once
-    -- `pair_depth_target` of them have piled up the season stops pairing ANYTHING, with the claim
-    -- answering `{"idle": true}` and nothing naming the board. A default runner derives
-    -- `seat_concurrency` from `cores / lanes`, so on a small node that is 1, and at ants' 1000 ms x
-    -- 1000 turns every board above two seats fails the inequality -- and `ants/maps/` ships boards
-    -- of 3, 4, 6 and 8. A board that no runner can hold is simply not paired on until one can; the
-    -- admin's enabled list is untouched, and `soma-admin-shared-rounds` is where the fleet is read.
+    -- EVERY ENABLED BOARD, AND NO SECOND OPINION ABOUT WHETHER THE FLEET LIKES IT. This filtered on
+    -- `seats_claimable()` for a while -- the gate's old fit, asked of the whole fleet -- to keep
+    -- rows no runner would take from piling up to `pair_depth_target` and stalling the season. Both
+    -- halves are gone: a runner no longer declares a match too long or a board too wide, so there
+    -- is no such row. The admin's enabled list is the whole of what is paired on.
     SELECT sm.id, sm.players
       FROM season_maps sm JOIN live ON live.id = sm.season_id
      WHERE sm.enabled
-       AND seats_claimable(live.id, sm.players, ($7)::int, ($8)::int)
      ORDER BY sm.added_at, sm.map_id
 ), rg AS (
     -- Each version's rated games in the current round (none without one).

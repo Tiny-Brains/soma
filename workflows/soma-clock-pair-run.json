@@ -52,9 +52,7 @@
               { "var": "metadata.vars.steady_cap" },
               { "var": "metadata.vars.settled_sigma" },
               { "var": "metadata.vars.pair_depth_target" },
-              { "var": "metadata.vars.cross_class_fraction" },
-              { "var": "metadata.vars.turn_ms" },
-              { "var": "metadata.vars.max_turns" }
+              { "var": "metadata.vars.cross_class_fraction" }
             ],
             "output": "temp_data.demand"
           }
