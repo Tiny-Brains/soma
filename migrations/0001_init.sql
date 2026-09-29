@@ -900,8 +900,13 @@ CREATE TABLE runners (
     -- REPORTED AT TOKEN EXCHANGE TOO: the longest match this node's channel can hold, and how many
     -- seats it asks at once. The claim hands a row only to a runner whose timeout covers the row's
     -- turn_ms x max_turns x ceil(seats / seat_concurrency) plus a tenth (match_execution() below the
-    -- matches table), so a match a node cannot finish inside its deadline is never claimed, reaped
-    -- and re-claimed for ever: it waits, pending and visible. NULL is a runner from before this was
+    -- matches table), so a match no live runner can finish inside its deadline is never claimed. It
+    -- does not loop -- the reap only touches claimed and running -- it waits pending, which is the
+    -- worse ending: nothing plays it and nothing says why. THIS PAIR IS THEREFORE THE WIDEST BOARD
+    -- THE FLEET PLAYS, not a safety margin: at one seat at a time and 1000 ms x 1000 turns, a
+    -- forty-minute timeout reaches two seats, and a season's 3-to-8-seat boards are quietly off the
+    -- ladder. Kalam's entrypoint.sh derives both from the cartridge's own envelope for that reason,
+    -- and web's configs.sh holds its fallbacks to it. NULL is a runner from before this was
     -- reported, or an admitting one, which the claim does not bound.
     match_timeout_ms bigint,
     seat_concurrency smallint,

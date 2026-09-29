@@ -326,6 +326,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   `match_execution()` (the one function `row` sends as the contract) against the runner's reported
   `match_timeout_ms` and `seat_concurrency`: turn_ms × max_turns × the seat batches, plus a tenth.
   A row no runner can hold stays pending and visible; a runner that reported neither is unbounded.
+  **So the fleet's timeout is what decides the widest board a season can actually use**, and a
+  board past it is not slow, it is off the ladder: pair skips it (`seats_claimable()`) and nothing
+  says so. Kalam derives that timeout from the cartridge's envelope and web's `configs.sh` prices
+  its fallbacks against `limits.boards`, which is where this is kept honest — never widen the fleet
+  by loosening the inequality.
 - **The idle claim is answered from the cache, per runner.** `claim` reads `gen:work` and
   `idle:<engine digest>:<runner>` in one `MGET` before the statement and answers `{"idle": true}`
   when the marker is present and equal to the generation; a claim that moved no row stores the
