@@ -30,7 +30,7 @@ the `runner_gate` role.
 
 ## Quick start
 
-The local stack is web's `docker-compose.yml` (Postgres, Redis, MinIO, Soma, the Orion console, the
+The local stack is `devops/compose/web.yml` (Postgres, Redis, MinIO, Soma, the Orion console, the
 site); its README covers the first run (`scripts/setup/init.sh`, the OAuth App). To run this
 checkout in it:
 
@@ -417,7 +417,7 @@ listed account is restored by its next sign-in, so removing someone for good mea
 - **An admitting runner, somewhere.** Soma runs no model, so a submission waits in `testing` until
   a kalam runner with `RUNNER_ROLE=admit` claims it (`--profile admit` in kalam's compose files). One
   per deployment is enough; run it on the Orion `orion_version` names, or the claim refuses it.
-- **Non-empty trust keys** and plugins signed by web's `scripts/setup/sign-plugins.sh` for every new
+- **Non-empty trust keys** and plugins signed by `devops/devops/scripts/setup/sign-plugins.sh` for every new
   image, or the boot apply stops the node on a quarantined channel.
 - **Narrow `SOMA_TRUSTED_PROXIES`** to the proxy actually in front. Empty, every browser shares one
   rate-limit bucket. Too wide, anyone inside the range can claim any address.
