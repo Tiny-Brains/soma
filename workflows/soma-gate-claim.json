@@ -13,13 +13,11 @@
       "id": "declared",
       "use": "refuse",
       "with": {
-        "when": {
-          "!": { "and": [{ "var": "data.req.engine_digest" }, { "var": "data.req.seat_count" }] }
-        },
+        "when": { "!": { "var": "data.req.engine_digest" } },
         "status": 400,
-        "body": { "error": "engine_digest_and_seat_count_required" },
-        "name": "A claim states what it can play",
-        "description": "Both are properties of the caller, not of the queue: the digest partitions the queue so a mixed-engine rollout works at all, and seat_count is how many seats this runner's task list has. A 6-seat board claimed by a 4-lane runner would be a match played short a seat, which is worse than one nobody claimed."
+        "body": { "error": "engine_digest_required" },
+        "name": "A claim states which engine it plays",
+        "description": "The digest is a property of the caller, not of the queue, and it partitions the queue so a mixed-engine rollout works at all. It is the ONLY thing a claim states: `seat_count` was here too -- how many seats this runner's task list has -- and it was a runner prescribing the match, the shape that let a small machine take boards off the ladder. It is also redundant, which is why dropping it is safe rather than merely principled: kalam's seat list IS the engine's `limits.boards` envelope now, and this digest is joined against the season's, so a runner that claims here demonstrably seats every board that engine allows. A RUNNER ON THE WRONG DIGEST IS REFUSED BY THE QUERY, not seated short."
       }
     },
     {

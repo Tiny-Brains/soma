@@ -1,7 +1,7 @@
 {
   "name": "claim-no-generation: with no generation yet the claim runs and the marker is written under zero",
   "workflow": "../workflows/soma-gate-claim.json",
-  "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
+  "input": { "engine_digest": "sha256:e1" },
   "metadata": {
     "auth": { "claims": { "sub": "r1", "sid": "s1" } },
     "params": {},

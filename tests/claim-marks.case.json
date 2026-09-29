@@ -1,7 +1,7 @@
 {
   "name": "claim-marks: no row and a generation read before the claim leave this runner's marker behind",
   "workflow": "../workflows/soma-gate-claim.json",
-  "input": { "engine_digest": "sha256:e1", "seat_count": 2 },
+  "input": { "engine_digest": "sha256:e1" },
   "metadata": {
     "auth": { "claims": { "sub": "r1", "sid": "s1" } },
     "params": {},
