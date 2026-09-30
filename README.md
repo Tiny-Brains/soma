@@ -65,7 +65,7 @@ channels add a per-principal quota.
 |---|---|---|---|
 | GET | `/v1/auth-providers` | Public | The sign-in buttons the deployment serves (`[{slug,label}]`), for the chooser page (a sibling path: `/v1/auth/*` is the sign-in channel's) |
 | GET | `/v1/auth/{provider}` | Public | Redirect to that provider (state, PKCE, `?next=`); the same channel serves `/{provider}/callback` and sets the cookie. GitHub in the block, others via `[oauth2_login.providers.*]` |
-| GET · PATCH | `/v1/me` | Session | Current user, bio, commenting switch and `admin_of` (the seasons the caller administers), served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
+| GET · PATCH | `/v1/me` | Session | Current user, bio, `avatar_url` (the provider's picture, refreshed at each sign-in; null is the initials), commenting switch and `admin_of` (the seasons the caller administers), served from its session entry in Redis until a sign-out, a revocation or five minutes · `display_name`, `bio` (422 `bio_word_listed`) |
 | GET | `/v1/me/candidates` | Session | The caller's versions still being admitted or on trial; uncached, polled with the bell |
 | GET | `/v1/me/matches` | Session | The caller's matches in every state, queued and cancelled included, as cards with `mine` on each seat |
 | GET | `/v1/me/matches/{id}` | Session | One match the caller has a seat in, any status, with a signed replay URL: a trial in progress or a rejected candidate's |
@@ -572,6 +572,9 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   match result.
 - A session does not record which provider it was signed in with, so the sessions page cannot say
   (BRD I8). `identities` holds it; `sessions` does not.
+- `users.avatar_url` is answered by `/v1/me` and the public profile and by nothing else, so a ladder
+  row, a comment, a notification's actor and the admin users list still draw initials. Each of those
+  names a person by handle alone, so carrying the picture is a shape change on every one of them.
 - The OAuth callback cannot say which failure happened: `oauth2_login` answers a fixed 401.
 - No API tokens for an SDK or CLI.
 - `finish` has no `turns <= max_turns` gate (`max_turns` is a season rule, so it needs the claim's coalesce).

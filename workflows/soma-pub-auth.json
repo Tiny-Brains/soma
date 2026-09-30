@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-pub-auth",
   "name": "Complete sign-in",
-  "description": "Runs on the callback leg only, for whichever provider `{provider}` named. The channel's oauth2_login block owns everything that is the same for every provider -- the 302, the signed state cookie and its CSRF binding, PKCE, the code exchange, and for an OIDC provider the id_token check -- fetches the userinfo for a provider that has no id_token (GitHub), and hands this workflow a NORMALISED identity at `metadata.identity` (`provider`, `subject`, `login`, `name`, `picture`): §I made one workflow serve them all by keying on (provider, subject) rather than a GitHub id. Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. THE ACCOUNT IS UPSERT ON THE IDENTITY: a new (provider, subject) mints a fresh account (soma-pub-auth-upsert), its handle seeded ONCE from the login and its display_name from the provider's name; a returning one only refreshes its cached login, so a competitor who renamed themselves at the provider keeps their handle and their PATCH /v1/me display_name. The deployment-admin promotion is its own write (soma-pub-auth-promote) because two writes to `users` in one statement would race. A SIGN-IN WHILE ANOTHER SESSION IS LIVE IS AN `account` NOTIFICATION, after the session row and allowed to fail without failing the sign-in. WHERE IT SENDS YOU AFTERWARDS: `metadata.oauth.return_to` when the authorize leg carried a vetted `?next=`, otherwise `app_url` -- Orion checks it against `return_to.allow_list` on the way in and seals it into the state, so an unlisted or tampered value simply is not here.",
+  "description": "Runs on the callback leg only, for whichever provider `{provider}` named. The channel's oauth2_login block owns everything that is the same for every provider -- the 302, the signed state cookie and its CSRF binding, PKCE, the code exchange, and for an OIDC provider the id_token check -- fetches the userinfo for a provider that has no id_token (GitHub), and hands this workflow a NORMALISED identity at `metadata.identity` (`provider`, `subject`, `login`, `name`, `picture`): §I made one workflow serve them all by keying on (provider, subject) rather than a GitHub id. Orion retires the spent state cookie itself, so this response sets one cookie, not two. THE SESSION IS SERVER-SIDE: `sid` names a row in `sessions`, written BEFORE the token is signed so a token can never name a row that does not exist, and its expires_at must stay in step with jwt_sign's expires_in. THE ACCOUNT IS UPSERT ON THE IDENTITY: a new (provider, subject) mints a fresh account (soma-pub-auth-upsert), its handle seeded ONCE from the login and its display_name from the provider's name; a returning one only refreshes its cached login, so a competitor who renamed themselves at the provider keeps their handle and their PATCH /v1/me display_name. The deployment-admin promotion is its own write (soma-pub-auth-promote) because two writes to `users` in one statement would race, and the provider's picture (soma-pub-auth-avatar) is a third for the same reason -- a display cache, refreshed every sign-in, that no decision rests on. A SIGN-IN WHILE ANOTHER SESSION IS LIVE IS AN `account` NOTIFICATION, after the session row and allowed to fail without failing the sign-in. WHERE IT SENDS YOU AFTERWARDS: `metadata.oauth.return_to` when the authorize leg carried a vetted `?next=`, otherwise `app_url` -- Orion checks it against `return_to.allow_list` on the way in and seals it into the state, so an unlisted or tampered value simply is not here.",
   "tags": ["soma", "pub", "auth"],
   "tasks": [
     {
@@ -83,6 +83,25 @@
             { "var": "metadata.vars.admin_ids" }
           ],
           "output": "temp_data.promoted"
+        }
+      }
+    },
+    {
+      "id": "avatar",
+      "name": "Refresh the account's picture",
+      "description": "The provider's `picture`, cached on the account for every page that draws a face. Its own write, like `promote`, because two writes to `users` in one statement cannot see each other's rows and this must reach an account the upsert may have just created. continue_on_error: a picture is decoration, and nothing about signing in may turn on one -- sql/soma-pub-auth-avatar.sql stores NULL for anything avatar_ok() refuses rather than letting the CHECK raise.",
+      "continue_on_error": true,
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-auth-avatar.sql" },
+          "params": [
+            { "var": "metadata.identity.provider" },
+            { "var": "metadata.identity.subject" },
+            { "var": "metadata.identity.picture" }
+          ],
+          "output": "temp_data.avatar"
         }
       }
     },

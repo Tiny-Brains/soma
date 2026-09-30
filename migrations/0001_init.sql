@@ -645,6 +645,18 @@ ALTER TABLE games
 
 -- ---------------------------------------------------------------------- users
 
+-- WHAT MAY BE STORED AS AN ACCOUNT'S PICTURE. An absolute https URL and nothing else: the column is
+-- written straight into an <img src> by the browser, so a `javascript:` or `data:` value would be a
+-- script the provider chose. Declared here, before `users`, because that table's CHECK calls it.
+--
+-- IT IS A FILTER, NOT A REFUSAL. The only writer is the sign-in, which must not fail on a provider
+-- that answers something unexpected, so soma-pub-auth-avatar nulls what this refuses rather than
+-- letting the CHECK raise: one function, called by the write and by the constraint behind it, which
+-- is the rule every text shape here follows.
+CREATE FUNCTION avatar_ok(u text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT coalesce(char_length(u) <= 500 AND u ~ '^https://[^/\s]+/', false);
+$$;
+
 -- Baselines are users -- one per reference opponent, so they can be told apart on a ladder that
 -- displays a model as its owner's handle. They never sign in, so they hold no `identities` row; an
 -- admin makes one by uploading it into a season under a name (N29), and the account is
@@ -671,9 +683,24 @@ CREATE TABLE users (
     -- the dotted namespace and collide with a baseline.
     handle      text        NOT NULL,
 
-    -- Seeded from GitHub ON INSERT ONLY: overwriting it at every sign-in would silently undo the
-    -- one field PATCH /v1/me lets a competitor edit. Null falls back to the handle.
+    -- Seeded from the provider ON INSERT ONLY: overwriting it at every sign-in would silently undo
+    -- the one field PATCH /v1/me lets a competitor edit. Null falls back to the handle.
     display_name text,
+
+    -- THE PICTURE THE PROVIDER SERVES FOR THE IDENTITY THIS ACCOUNT LAST SIGNED IN WITH, refreshed
+    -- on every sign-in from the normalised `picture` Orion hands soma-pub-auth (GitHub's
+    -- avatar_url, an OIDC `picture`). It is a DISPLAY CACHE and nothing rests on it: no route reads
+    -- it to decide anything, the browser fetches it straight from the provider, and NULL -- a
+    -- baseline, a provider that serves none, a value this rejected -- is the initials the site drew
+    -- before there was a column. That is why it sits here and not on `identities`: a reader wants
+    -- one picture for an account, and an account may hold several identities, so a per-identity
+    -- column would make every ladder row choose one. It is not `handle`: the lesson there was that
+    -- an account's stable public NAME must not be a cache of a mutable provider value. A face is
+    -- not a name, and a stale one costs nothing.
+    --
+    -- NEVER SET FROM A REQUEST BODY. PATCH /v1/me does not name it; the sign-in write is the only
+    -- writer, and it nulls anything avatar_ok() would refuse rather than failing the sign-in.
+    avatar_url  text,
 
     -- One line a competitor writes about themselves, on their profile. REFUSED, not held, on a
     -- listed word (text_hold_tag): the author rewrites a line rather than waiting on an admin. A
@@ -690,6 +717,7 @@ CREATE TABLE users (
     created_at  timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT users_bio_size CHECK (bio IS NULL OR char_length(bio) <= 160),
+    CONSTRAINT users_avatar_url_shape CHECK (avatar_url IS NULL OR avatar_ok(avatar_url)),
     CONSTRAINT users_comments_off_shape
         CHECK ((comments_off_until IS NULL) = (comments_off_reason IS NULL)
                AND (comments_off_reason IS NULL

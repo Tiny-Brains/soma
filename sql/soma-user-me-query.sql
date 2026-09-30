@@ -4,6 +4,8 @@
 -- No `candidates` here: they move with every admit tick, which cannot name the user, so they have
 -- their own route (soma-user-me-candidates) and this body can be cached per session.
 SELECT json_build_object('id', u.id, 'handle', u.handle, 'display_name', u.display_name, 'bio', u.bio,
+        -- The provider's picture, refreshed at sign-in; null is the initials the bar drew before it.
+        'avatar_url', u.avatar_url,
         'role', u.role, 'created_at', u.created_at, 'comments_off_until', commenting_off_until(u),
         'comments_off_reason', commenting_off_reason(u),
         -- The seasons this account administers (A5): a membership in season_admins, not a role, so a

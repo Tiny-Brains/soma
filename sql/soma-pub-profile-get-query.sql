@@ -4,6 +4,7 @@
 -- season. A viewer seeing their OWN private-season standings is the auth-aware Phase 4b read; here the
 -- viewer is anonymous, so season_visible reduces to visibility = 'public'.
 SELECT json_build_object( 'handle', u.handle, 'display_name', u.display_name, 'bio', u.bio, 'role', u.role,
+        'avatar_url', u.avatar_url,
         'baseline', u.role = 'baseline', 'created_at', u.created_at, 'medals', coalesce((SELECT json_agg(json_build_object(
                         'game', mg.slug, 'season', ms.slug, 'season_name', ms.name, 'ladder', p.ladder, 'place',
                         p.place, 'model_id', me.id, 'model', me.name, 'version', mv.version)
