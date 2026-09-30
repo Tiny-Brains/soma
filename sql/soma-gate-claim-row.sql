@@ -9,11 +9,13 @@ SELECT json_build_object('id', m.id, 'seed', m.seed, 'map_id', sm.map_id, 'map',
     lease_expires_at, json_build_object('turn_ms', e.turn_ms, 'max_turns', e.max_turns, 'model_prefix',
         ($2)::text, 'engine_digest', m.engine_digest, 'replay_prefix', ($3)::text, 'renew_every_n_turns',
         GREATEST(1, LEAST(($4)::int, (($5)::int * 1000) / ((m.seat_count + 1) * e.turn_ms))), 'lease_seconds',
-        ($5)::int, 'refusal_ceiling', e.refusal_ceiling) AS contract
+        l.secs, 'renew_after_ms', l.secs * 1000 / 3, 'retry_after_ms', l.secs * 1000 / 15, 'refusal_ceiling',
+        e.refusal_ceiling) AS contract
 FROM matches m
 JOIN season_maps sm ON sm.id = m.season_map_id
 JOIN seasons se ON se.id = m.season_id
 JOIN games g ON g.id = m.game_id
 CROSS JOIN LATERAL match_execution(m, ($6)::int, ($7)::int, ($8)::int) e
+CROSS JOIN LATERAL (SELECT GREATEST(($5)::int, CEIL(1.5 * (m.seat_count + 1) * e.turn_ms / 1000.0)::int) AS secs) l
 WHERE m.claim_token = ($1)::uuid
 AND m.status = 'claimed'

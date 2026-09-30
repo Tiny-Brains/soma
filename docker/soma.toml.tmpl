@@ -329,7 +329,14 @@ refusal_grace_secs = 120
 # are, not by what the season is testing.
 lease_seconds = 300
 
-# A TARGET, AND THE CLAIM MAY SEND LESS. What it puts on the contract is
+# A runner paces its renewals by TIME: the contract carries `renew_after_ms` (a third of the row's
+# lease) and `retry_after_ms` (a fifteenth), and a runner renews once that much of its own clock has
+# passed. The row's lease is this `lease_seconds`, or 1.5 x (seat_count + 1) x turn_ms if that is
+# longer, because a renew happens only between turns -- start and renew set it, and the claim sends
+# it (soma-gate-renew-renew.sql). Nothing here configures the pace; it follows from the lease.
+#
+# `renew_every_n_turns` below is the turn-counted rule that came before, sent only for a runner
+# older than the time rule. A TARGET, AND THE CLAIM MAY SEND LESS. What it puts on the contract is
 #     min(this, floor(lease_seconds * 1000 / ((seat_count + 1) * turn_ms)))
 # A season may move `turn_ms`, and a fixed interval would then let the lease expire before the
 # renew fires -- 30 turns at 5000 ms is 450 s against a 300 s lease, on every match, and it reads

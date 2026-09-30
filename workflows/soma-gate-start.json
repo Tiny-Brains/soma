@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-gate-start",
   "name": "Start a claimed match",
-  "description": "claimed -> running, on the token. The residency barrier the runner crosses before calling this is local to it and costs nothing at either end, which is why claim and start are two routes rather than one. Answers 409 rather than 404 when nothing moved: the row exists, the claim on it does not -- and telling a runner its claim is gone is the whole message.",
+  "description": "claimed -> running, on the token, and the lease reset to the row's own (soma-gate-renew-renew.sql says why it is what it is). The residency barrier the runner crosses before calling this is local to it and costs nothing at either end, which is why claim and start are two routes rather than one. Answers 409 rather than 404 when nothing moved: the row exists, the claim on it does not -- and telling a runner its claim is gone is the whole message.",
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
@@ -15,11 +15,15 @@
         "name": "db_write",
         "input": {
           "connector": "soma-db-gate",
-          "query": "UPDATE matches SET status = 'running' WHERE id = ($3)::uuid AND claim_token = ($1)::uuid AND status = 'claimed' AND played_by = ($2)::uuid AND EXISTS (SELECT 1 FROM live_runners lr WHERE lr.id = ($2)::uuid)",
+          "query": { "$sql": "../sql/soma-gate-start-start.sql" },
           "params": [
             { "var": "data.req.claim_token" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.params.id" }
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.lease_seconds" },
+            { "var": "metadata.vars.turn_ms" },
+            { "var": "metadata.vars.max_turns" },
+            { "var": "metadata.vars.refusal_ceiling" }
           ],
           "output": "temp_data.started"
         }

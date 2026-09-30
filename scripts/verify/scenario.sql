@@ -140,11 +140,18 @@ EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000004', 60, 'c1000
 EXECUTE k_claim ('sha256:e1', '30000000-0000-0000-0000-000000000005', 60, 'c1000000-0000-0000-0000-000000000001');
 SELECT m.seed, r.label AS played_by FROM matches m JOIN runners r ON r.id = m.played_by ORDER BY m.seed;
 \echo '--- kalam: start on ANOTHER runner''s claim (expect 0); start it properly (expect 1 each); renew (expect 1); renew on a foreign token (expect 0)'
-EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000002', :'m42');
-EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001', :'m42');
-EXECUTE k_start ('30000000-0000-0000-0000-000000000002', 'c1000000-0000-0000-0000-000000000002', :'m43');
-EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60, 'c1000000-0000-0000-0000-000000000001', :'m42');
-EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60, 'c1000000-0000-0000-0000-000000000001', :'m42');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000002', :'m42', 300, 1000, 1000, 5);
+EXECUTE k_start ('30000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001', :'m42', 300, 1000, 1000, 5);
+EXECUTE k_start ('30000000-0000-0000-0000-000000000002', 'c1000000-0000-0000-0000-000000000002', :'m43', 300, 1000, 1000, 5);
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60, 'c1000000-0000-0000-0000-000000000001', :'m42', 1000, 1000, 5);
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000009', 60, 'c1000000-0000-0000-0000-000000000001', :'m42', 1000, 1000, 5);
+\echo '--- the lease is the ROW''S: a runner renews only between turns, so it covers 1.5 x (seats + 1) x turn_ms'
+\echo '    whatever the deployment asks. At a 60 s turn this 2-seat row holds 270 s against a 1 s floor,'
+\echo '    and at a 1 s turn the 60 s floor wins (expect 1, lease_s 270, then 1, lease_s 60)'
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 1, 'c1000000-0000-0000-0000-000000000001', :'m42', 60000, 1000, 5);
+SELECT m.seat_count, round(extract(epoch FROM m.lease_expires_at - now())) AS lease_s FROM matches m WHERE m.id = :'m42';
+EXECUTE k_renew ('30000000-0000-0000-0000-000000000001', 60, 'c1000000-0000-0000-0000-000000000001', :'m42', 1000, 1000, 5);
+SELECT m.seat_count, round(extract(epoch FROM m.lease_expires_at - now())) AS lease_s FROM matches m WHERE m.id = :'m42';
 \echo '--- kalam: a malformed result naming one seat twice (expect 0, row still running); finish both rows (expect UPDATE 2 seats each); finish again (expect 0)'
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000001', :'m42',
   '[{"seat":0,"rank":1,"score":10,"strikes":0},{"seat":0,"rank":2,"score":3,"strikes":0}]',
@@ -169,7 +176,7 @@ UPDATE matches SET status = 'claimed', claim_token = '30000000-0000-0000-0000-00
        lease_expires_at = now() + interval '60 seconds',
        played_by = 'c1000000-0000-0000-0000-000000000002'
  WHERE id = :'m46';
-EXECUTE k_start ('30000000-0000-0000-0000-000000000003', 'c1000000-0000-0000-0000-000000000002', :'m46');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000003', 'c1000000-0000-0000-0000-000000000002', :'m46', 300, 1000, 1000, 5);
 
 \echo '--- the misconfiguration gates: a result that cannot have come from this match (expect 0 each,'
 \echo '    and the row stays running for the reap rather than taking a result no fold can trust)'
@@ -626,7 +633,7 @@ EXECUTE p_insert (2, '50000000-0000-0000-0000-000000000001', 60, '70000000-0000-
   '20000000-0000-0000-0000-000000000004', gen_random_uuid(), 5);
 SELECT id AS m60 FROM matches WHERE seed = 60 \gset
 EXECUTE k_claim ('sha256:e2', '30000000-0000-0000-0000-000000000008', 60, 'c1000000-0000-0000-0000-000000000001');
-EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60');
+EXECUTE k_start ('30000000-0000-0000-0000-000000000008', 'c1000000-0000-0000-0000-000000000001', :'m60', 300, 1000, 1000, 5);
 EXECUTE k_finish ('30000000-0000-0000-0000-000000000008', :'m60',
   '[{"seat":0,"rank":1,"score":8,"strikes":0},{"seat":1,"rank":2,"score":2,"strikes":0}]',
   'all_food', 90, now() - interval '2.5 seconds', 'sha256:e2', '1.8.1', 'replays/ants/w/t7.json', 'c1000000-0000-0000-0000-000000000001', NULL);
@@ -1171,7 +1178,7 @@ SELECT season_slug('FireAnts 2026') AS fireants, season_slug('  Summer   2026!! 
 -- fence is the statement's, not the route's.
 EXECUTE k_start ('00000000-0000-0000-0000-0000000000ff',
                  'c1000000-0000-0000-0000-000000000001',
-                 :'m43');
+                 :'m43', 300, 1000, 1000, 5);
 
 \echo '--- finish is idempotent: the row is already finished and the token still matches, so the'
 \echo '    route reads it back and answers applied:false rather than the 409 a lost claim gets.'

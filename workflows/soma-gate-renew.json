@@ -1,7 +1,7 @@
 {
   "workflow_id": "soma-gate-renew",
   "name": "Renew the lease",
-  "description": "THE LEASE IS THE DATABASE'S CLOCK and always was: now() + $2 seconds is computed here, the runner never sends a timestamp, and moving the caller onto a machine whose clock nobody controls costs nothing because of it. No indexed column changes, so the update stays heap-only -- the reason matches carries fillfactor 70 and the reason lease_expires_at is deliberately not indexed.\n\nANSWERS 200 EVEN WHEN NOTHING MOVED, and that is not sloppiness. Over a WAN a runner must tell two failures apart: applied:false means the statement ran and matched no row, so the claim is genuinely gone and the match should halt; a transport error means almost nothing and should be retried, because the renew interval is roughly a tenth of the lease. A 409 here would collapse the two into one, and the second is the common one.",
+  "description": "THE LEASE IS THE DATABASE'S CLOCK and always was: now() plus the row's lease is computed here, the runner never sends a timestamp, and moving the caller onto a machine whose clock nobody controls costs nothing because of it. No indexed column changes, so the update stays heap-only -- the reason matches carries fillfactor 70 and the reason lease_expires_at is deliberately not indexed.\n\nANSWERS 200 EVEN WHEN NOTHING MOVED, and that is not sloppiness. Over a WAN a runner must tell two failures apart: applied:false means the statement ran and matched no row, so the claim is genuinely gone and the match should halt; a transport error means almost nothing and should be retried, because the runner renews once a third of the lease has passed and retries after a fifteenth. A 409 here would collapse the two into one, and the second is the common one. THE LEASE IS THE ROW'S: at least `lease_seconds`, and at least 1.5 x (seat_count + 1) x turn_ms under the row's own terms, because a runner renews only between turns -- the statement says why.",
   "tags": ["soma", "gate", "matches"],
   "tasks": [
     {
@@ -20,7 +20,10 @@
             { "var": "data.req.claim_token" },
             { "var": "metadata.vars.lease_seconds" },
             { "var": "metadata.auth.claims.sub" },
-            { "var": "metadata.params.id" }
+            { "var": "metadata.params.id" },
+            { "var": "metadata.vars.turn_ms" },
+            { "var": "metadata.vars.max_turns" },
+            { "var": "metadata.vars.refusal_ceiling" }
           ],
           "output": "temp_data.renewed"
         }
