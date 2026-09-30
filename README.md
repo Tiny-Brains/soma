@@ -155,9 +155,9 @@ channels add a per-principal quota.
 | GET · POST · PATCH | `/v1/admin/picks` | Admin | Live picks as the public cards with `pick_id`, `position`, `pinned_by`, `pinned_at` · `{match_id}` pins (404 for an unknown id, 422 `match_not_public`, 409 `already_pinned`) · `{ids}` reorders the whole list (409 `order_incomplete`) |
 | DELETE | `/v1/admin/picks/{id}` | Admin | Unpins |
 | POST | `/v1/runner/token` | Public, address-limited | Key → ten-minute token; the runner self-registers on `(key, label)` and reports `max_in_flight`, `ops_budget`, `match_timeout_ms` and `seat_concurrency`; 409 when its `ops_budget` disagrees with a live season. The last two are facts on the row, read by no decision |
-| POST | `/v1/runner/claim` | Runner | One match and its execution contract, or `200 {"idle": true}`. Filtered by the engine digest, the season's fleet policy and the runner's own lanes — never by anything a runner says about how long it will play or how many seats it will take |
+| POST | `/v1/runner/claim` | Runner | One match, its execution contract and its replay PUT signed for an hour (`replay`), or `200 {"idle": true}`. Filtered by the engine digest, the season's fleet policy and the runner's own lanes — never by anything a runner says about how long it will play or how many seats it will take |
 | POST | `/v1/runner/matches/{id}/start` · `/renew` · `/release` | Runner | claimed → running · extend the lease (`{applied, lease_expires_at}`) · requeue, spending a refusal |
-| POST | `/v1/runner/matches/{id}/replay-url` | Runner | Presigned PUT for `replays/<match>/<claim_token>.json` |
+| POST | `/v1/runner/matches/{id}/replay-url` | Runner | Presigned PUT for `replays/<match>/<claim_token>.json`, for a match that outlived the claim's, or a runner from before it |
 | POST | `/v1/runner/matches/{id}/finish` | Runner | Result, and optionally the last `frame` (an object up to 64 KB, stored opaque) · `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 | GET | `/v1/runner/roster` | Runner | Every `verified` or `active` version a runner must be able to play |
 | POST | `/v1/runner/admissions/claim` | Runner | `{orion_version}` → one prepared submission (registration, key, digest, budget, reference observations) and its claim, or `200 {"idle": true}`; 409 `orion_version_differs` |

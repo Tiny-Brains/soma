@@ -1,0 +1,67 @@
+{
+  "name": "claim-signs-replay: a claim that takes a row answers the attempt's replay PUT, signed for an hour, so the runner never asks for it",
+  "workflow": "../workflows/soma-gate-claim.json",
+  "input": { "engine_digest": "sha256:e1" },
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": {
+      "lease_seconds": 300,
+      "max_turns": 1000,
+      "model_prefix": "tb.v",
+      "refusal_ceiling": 5,
+      "renew_every_n_turns": 30,
+      "replay_prefix": "replays",
+      "turn_ms": 1000,
+      "idle_marker_ttl_secs": 30,
+      "blob_endpoint": "http://minio:9000"
+    }
+  },
+  "stubs": {
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } },
+    "db_read": {
+      "soma-db-gate": [
+        {
+          "row": { "id": "m-1", "seat_count": 2 },
+          "engine_digest": "sha256:e1",
+          "lease_expires_at": "2026-09-30T12:05:00Z",
+          "contract": {
+            "turn_ms": 1000,
+            "lease_seconds": 300,
+            "renew_after_ms": 100000,
+            "retry_after_ms": 20000
+          }
+        }
+      ]
+    },
+    "cache_read": { "soma-cache": [7, null] },
+    "cache_write": { "soma-cache": {} },
+    "cache_incr": { "soma-cache": 8 },
+    "storage_presign": {
+      "soma-blobs-gate": "http://minio:9000/tinybrains-replays/replays/m-1/tok.json?X-Amz-Signature=x"
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.match.id": "m-1",
+    "data.body.replay.url": "http://minio:9000/tinybrains-replays/replays/m-1/tok.json?X-Amz-Signature=x",
+    "data.body.replay.endpoint": "http://minio:9000",
+    "data.body.replay.expires_in": 3600
+  },
+  "expect_calls": {
+    "storage_presign": [{ "connector": "soma-blobs-gate", "method": "PUT", "expires_in": "1h" }],
+    "cache_write": []
+  },
+  "expect_tasks": [
+    "parse",
+    "mint",
+    "probe",
+    "generation.zero",
+    "claim",
+    "bump_work.bump",
+    "row",
+    "key",
+    "sign",
+    "respond"
+  ]
+}

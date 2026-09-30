@@ -128,6 +128,46 @@
               "output": "temp_data.rows"
             }
           }
+        },
+        {
+          "id": "key",
+          "name": "This attempt's replay key",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.key",
+                  "logic": {
+                    "cat": [
+                      { "var": "metadata.vars.replay_prefix" },
+                      "/",
+                      { "var": "temp_data.rows.0.row.id" },
+                      "/",
+                      { "var": "temp_data.token" },
+                      ".json"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "sign",
+          "name": "Sign this attempt's replay PUT now, so the runner need not ask at the end",
+          "description": "The same key soma-gate-replay-url computes -- replay_prefix/<match>/<claim_token>.json -- and the same connector, signed while the claim is in hand. A runner then makes one call fewer a match: over a WAN a round trip is a quarter of a second, and it was paid on every match to learn a URL that was already determined here. An hour, not replay-url's fifteen minutes, because it must outlast the match; a runner whose match outlives it (it measures from before it claimed) asks replay-url instead, which stays for that and for a runner from before this. Soft: a failed signature leaves `replay` off the answer and the runner asks at the end, as it always did. A URL for an attempt that is reaped or released can still write only under that attempt's own key, which is an orphan, never a replacement -- what a per-attempt key is for.",
+          "continue_on_error": true,
+          "function": {
+            "name": "storage_presign",
+            "input": {
+              "connector": "soma-blobs-gate",
+              "method": "PUT",
+              "key": { "var": "temp_data.key" },
+              "expires_in": "1h",
+              "output": "temp_data.signed"
+            }
+          }
         }
       ]
     },
@@ -186,6 +226,18 @@
                 "claim": {
                   "token": { "var": "temp_data.token" },
                   "lease_expires_at": { "var": "temp_data.rows.0.lease_expires_at" }
+                },
+                "replay": {
+                  "if": [
+                    { "var": "temp_data.signed" },
+                    {
+                      "url": { "var": "temp_data.signed" },
+                      "key": { "var": "temp_data.key" },
+                      "endpoint": { "var": "metadata.vars.blob_endpoint" },
+                      "expires_in": 3600
+                    },
+                    null
+                  ]
                 }
               }
             },
