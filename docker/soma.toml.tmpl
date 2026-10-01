@@ -1,5 +1,5 @@
 # Orion config for the SOMA unit: the REST surface, the runner gate and the five clocks, in cluster mode.
-# Requires 1.11.1. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
+# Requires 1.12.0. Baked into this repository's image at /etc/orion/soma.toml.tmpl; a runner's half is
 # kalam's docker/runner.toml.tmpl.
 #
 # ${NAME:-default} is substituted by orion-server from the container's environment before the file
@@ -244,7 +244,7 @@ model_prefix = "tb.v"
 # rather than read from the process -- `metadata.engine_version` is dataflow-rs's number, which is
 # a different thing that moves for different reasons. AN ADMITTING RUNNER MUST RUN THIS ONE: the
 # admission claim refuses any other, because the stats a verdict is judged on are its Orion's.
-orion_version = "${ORION_VERSION:-1.11.1}"
+orion_version = "${ORION_VERSION:-1.12.0}"
 
 # ADMISSION. The admit clock prepares up to admit_batch submissions a tick and holds each for
 # admit_timeout_s; the model itself is admitted on an ADMITTING RUNNER (kalam, RUNNER_ROLE=admit),

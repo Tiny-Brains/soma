@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Soma is an Orion 1.11.1 package plus the Postgres migrations every TinyBrains package shares, shipped
+Soma is an Orion 1.12.0 package plus the Postgres migrations every TinyBrains package shares, shipped
 as the node image `ghcr.io/tiny-brains/soma`. There is no server code. Behaviour is JSON channel and
 workflow definitions whose statements live in `sql/*.sql`, connectors and two
 Rust/wasm plugins, so `orion-server lint`/`clippy`/`sql check` act as the compiler. The set declares

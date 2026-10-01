@@ -17,7 +17,7 @@
       "op_allowlist": ["Conv", "Relu"],
       "opset_max": 19,
       "opset_min": 13,
-      "orion_version": "1.11.1",
+      "orion_version": "1.12.0",
       "upload_window_s": 1800
     }
   },

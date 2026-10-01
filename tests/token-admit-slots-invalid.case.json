@@ -6,7 +6,7 @@
     "label": "admitter",
     "arch": "arm64",
     "engine_digest": "sha256:e1",
-    "orion_version": "1.11.1",
+    "orion_version": "1.12.0",
     "node_version": "dev",
     "admit_slots": 0
   },
