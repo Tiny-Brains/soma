@@ -11,14 +11,17 @@ DECLARE
   bad     bigint;
   report  text := '';
 BEGIN
-  -- 1. Every row of every old table is still here, but the per-class ladder rows the backfill
-  --    drops on purpose (one rated ladder: a class is a view of Open).
+  -- 1. Every row of every old table is still here, but the per-class ladder rows of a season still
+  --    live, which the backfill drops on purpose (one rated ladder: a class is a view of Open). A
+  --    closed season keeps its class rows: they are its class tables as they stood.
   FOR t IN SELECT c.relname FROM pg_class c
             WHERE c.relnamespace = 'legacy'::regnamespace AND c.relkind IN ('r', 'p')
               AND c.relname <> 'soma_schema' ORDER BY c.relname
   LOOP
     IF t IN ('ratings', 'rating_events') THEN
-      EXECUTE format('SELECT count(*) FROM legacy.%I WHERE ladder::text = ''open''', t) INTO n_old;
+      EXECUTE format('SELECT count(*) FROM legacy.%I x WHERE x.ladder::text = ''open''
+                         OR EXISTS (SELECT 1 FROM legacy.model_versions v JOIN legacy.seasons s ON s.id = v.season_id
+                                     WHERE v.id = x.version_id AND s.closed_at IS NOT NULL)', t) INTO n_old;
     ELSE
       EXECUTE format('SELECT count(*) FROM legacy.%I', t) INTO n_old;
     END IF;
@@ -65,7 +68,7 @@ BEGIN
   SELECT count(*) INTO bad FROM legacy.ratings o
     JOIN public.ratings n ON n.version_id = o.version_id AND n.ladder::text = o.ladder::text
    WHERE n.conservative IS DISTINCT FROM o.conservative OR n.matches_played <> o.matches_played;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % Open rating(s) changed', bad; END IF;
+  IF bad > 0 THEN RAISE EXCEPTION 'verify: % rating(s) changed', bad; END IF;
 
   -- 6. The season a visitor lands on is the one they landed on yesterday: the live one, else the
   --    newest. current_season() is what every public read resolves "no season named" through.

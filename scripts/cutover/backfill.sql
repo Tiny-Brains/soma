@@ -11,15 +11,23 @@
 
 -- ONE RATED LADDER (this release). Production was copied from the dual-ladder schema, so transfer.sql
 -- brought per-class `ratings`, `rating_events` and `ladder_snapshots`, and matches whose `ladders`
--- array still carries a class. A weight class is now a filtered VIEW of Open, so those class rows are
--- dead weight the new reads never touch: normalise every rated match's array to {open} (trials keep
--- {}), and drop the class ratings, events and snapshots. The Open rows -- the real ladder -- and the
--- frozen per-class `season_podium` (a view label, still wanted) are left untouched. Idempotent: a
--- second run finds nothing left to change.
+-- array still carries a class. A weight class is now a filtered VIEW of Open: normalise every rated
+-- match's array to {open} (trials keep {}), so the count clock's priors can never read a class row
+-- again, and drop the class snapshots. The class ratings and events of a season that is still LIVE
+-- are dropped too -- it goes on under one ladder. A CLOSED season keeps its own: they are its class
+-- tables as they stood, which the leaderboard shows for such a season (soma-pub-shared-leaderboard's
+-- `fz`), and no clock writes a class row or touches a closed season's ratings. The Open rows -- the
+-- real ladder -- are left untouched. Idempotent: a second run finds nothing left to change.
 UPDATE matches SET ladders = ARRAY['open']::ladder[]
  WHERE 'open' = ANY (ladders) AND ladders <> ARRAY['open']::ladder[];
-DELETE FROM rating_events    WHERE ladder <> 'open';
-DELETE FROM ratings          WHERE ladder <> 'open';
+DELETE FROM rating_events e
+ WHERE e.ladder <> 'open'
+   AND NOT EXISTS (SELECT 1 FROM model_versions v JOIN seasons s ON s.id = v.season_id
+                    WHERE v.id = e.version_id AND s.closed_at IS NOT NULL);
+DELETE FROM ratings r
+ WHERE r.ladder <> 'open'
+   AND NOT EXISTS (SELECT 1 FROM model_versions v JOIN seasons s ON s.id = v.season_id
+                    WHERE v.id = r.version_id AND s.closed_at IS NOT NULL);
 DELETE FROM ladder_snapshots WHERE ladder <> 'open';
 
 -- Who may see a match: what finish and a trial's pass would have set. A trial is public when its
@@ -88,12 +96,35 @@ UPDATE model_versions v
                                  WHERE g.id = v.game_id), 0)
  WHERE v.memory_bytes IS NULL AND v.manifest IS NOT NULL;
 
--- The podium of every season already closed, as the close would have written it.
+-- THE CLASS PODIUMS OF A SEASON THAT CLOSED ON THE OLD SCHEMA, AS ITS CLASS LADDERS STOOD. That
+-- season was ranked per class by per-class ratings, and its competitors saw those standings; a class
+-- is now Open filtered, which would reorder them after the fact. So a closed season's class medals
+-- are frozen from `legacy.ratings` -- podium_of()'s own field and order (active versions of the
+-- class, humans only, each owner's best, top three), with the class rating where it reads Open's.
+-- It reads `legacy`, the old schema as it was, which holds exactly the rows kept above.
 INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
-SELECT s.id, l.ladder, p.place, p.version_id, p.owner_id, p.rating
+SELECT k.season_id, k.ladder, k.place, k.version_id, k.owner_id, k.conservative
+  FROM (SELECT b.*, row_number() OVER (PARTITION BY b.season_id, b.ladder
+                                        ORDER BY b.conservative DESC, b.version_id)::smallint AS place
+  FROM (SELECT DISTINCT ON (s.id, v.weight_class, e.owner_id)
+               s.id AS season_id, v.weight_class::text::ladder AS ladder, v.id AS version_id,
+               e.owner_id, r.conservative
+          FROM seasons s
+          JOIN model_versions v ON v.season_id = s.id AND v.status = 'active'
+          JOIN models e         ON e.id = v.model_id
+          JOIN users u          ON u.id = e.owner_id AND u.role <> 'baseline'
+          JOIN legacy.ratings r ON r.version_id = v.id AND r.ladder::text = v.weight_class::text
+         WHERE s.closed_at IS NOT NULL
+         ORDER BY s.id, v.weight_class, e.owner_id, r.conservative DESC, v.id) b) k
+ WHERE k.place <= 3
+ON CONFLICT (season_id, ladder, place) DO NOTHING;
+
+-- The Open podium of every season already closed, as the close would have written it: Open's
+-- ratings came across unchanged, so podium_of() reproduces it. The class podiums are above.
+INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
+SELECT s.id, 'open'::ladder, p.place, p.version_id, p.owner_id, p.rating
   FROM seasons s
- CROSS JOIN unnest(enum_range(NULL::ladder)) AS l (ladder)
- CROSS JOIN LATERAL podium_of(s.id, l.ladder) p
+ CROSS JOIN LATERAL podium_of(s.id, 'open'::ladder) p
  WHERE s.closed_at IS NOT NULL
 ON CONFLICT (season_id, ladder, place) DO NOTHING;
 

@@ -79,7 +79,7 @@ channels add a per-principal quota.
 | GET | `/v1/admin-check` | Session | **204** admin, **401** no or revoked session, **403** signed-in non-admin; no body |
 | GET | `/v1/status` | Public | Queue, throughput, how far each clock is behind, and `admitters`: how many machines could serve the admission queue |
 | GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes with their memory numbers |
-| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor` |
+| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor`. A class is Open filtered to it, except in a season that closed under per-class ratings: its class table is that class's own rating, events and field as they stood, kept by the cutover |
 | GET | `/v1/private/...` | Session | The member's copy of every season-scoped public read -- seasons, leaderboard and series, podium, maps, playing, matches (list, one, frame, related), a match's thread (`/v1/private/threads`), versions, models -- with the same shapes: the same statement with the session's claims, so a private season answers to whoever `season_visible()` lets see it. Uncached |
 | GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
 | GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |

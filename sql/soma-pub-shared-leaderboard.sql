@@ -17,9 +17,34 @@ rnd AS (
      WHERE r.n IS NOT NULL ),
 rg AS (
     SELECT g.version_id, g.games FROM season, rnd, round_games(season.id, rnd.n) g ),
+-- A CLASS TABLE FROZEN AT THE ONE-LADDER CUTOVER. A season that closed while every class was rated
+-- on its own still carries those per-class `ratings` and `rating_events` rows (the cutover keeps
+-- them for closed seasons alone, and no clock writes a class row), and its class tables are shown as
+-- they stood: ranked by the class rating, over the class's active versions, under the same per-owner
+-- cap. Every other table -- Open, and every class of a season played on one ladder -- is Open's.
+fz AS (
+    SELECT ($2)::ladder <> 'open' AND season.closed
+           AND EXISTS (SELECT 1 FROM ratings r JOIN model_versions v ON v.id = r.version_id
+                        WHERE v.season_id = season.id AND r.ladder = ($2)::ladder) AS frozen,
+           season.id AS season_id
+      FROM season ),
+lad AS (
+    SELECT CASE WHEN fz.frozen THEN ($2)::ladder ELSE 'open'::ladder END AS rated FROM fz ),
 field AS (
     SELECT f.version_id
-    FROM season, ladder_field(season.id, ($2)::ladder) f ),
+    FROM season, fz, ladder_field(season.id, ($2)::ladder) f
+    WHERE NOT fz.frozen
+    UNION ALL
+    SELECT k.id
+    FROM (SELECT v.id, fz.season_id,
+                 row_number() OVER (PARTITION BY e.owner_id ORDER BY r.conservative DESC, v.id) AS per_owner
+            FROM fz
+            JOIN model_versions v ON v.season_id = fz.season_id AND v.status = 'active'
+                                 AND v.weight_class = ($2)::ladder
+            JOIN models e  ON e.id = v.model_id
+            JOIN ratings r ON r.version_id = v.id AND r.ladder = ($2)::ladder
+           WHERE fz.frozen) k
+    WHERE k.per_owner <= season_owner_cap(k.season_id) ),
 page AS (
     SELECT row_number() OVER (ORDER BY r.conservative DESC, v.id) AS rank, v.id::text AS version_id,
         e.id::text AS model_id, e.name AS model, u.handle AS owner, v.version, v.weight_class::text
@@ -30,7 +55,7 @@ page AS (
                 ev.sigma_after) - (ev.mu_before - 3 * ev.sigma_before)
         FROM rating_events ev
         WHERE ev.version_id = v.id
-        AND ev.ladder = 'open'
+        AND ev.ladder = r.ladder
         AND ev.seq > 0
         ORDER BY ev.seq DESC
         LIMIT 1) AS trend, (SELECT coalesce(json_agg(round(h.c::numeric, 2)
@@ -38,7 +63,7 @@ page AS (
         FROM (SELECT ev.seq, (ev.mu_after - 3 * ev.sigma_after) AS c
             FROM rating_events ev
             WHERE ev.version_id = v.id
-            AND ev.ladder = 'open'
+            AND ev.ladder = r.ladder
             ORDER BY ev.seq DESC
             LIMIT 12) h) AS history
     FROM field
@@ -47,8 +72,9 @@ page AS (
     -- One rated ladder: the rating, trend and history are the Open row whatever field ($2) names.
     -- `field` (ladder_field) already restricted membership to the class, so row_number() over
     -- Open's conservative is the class rank -- consistent with the Open board by construction.
+    -- A frozen class table (`fz` above) reads the class's own row instead, and its own events.
     JOIN ratings r ON r.version_id = v.id
-    AND r.ladder = 'open'
+    AND r.ladder = (SELECT rated FROM lad)
     JOIN users u ON u.id = e.owner_id
     LEFT JOIN rg ON rg.version_id = v.id
     ORDER BY r.conservative DESC, v.id
