@@ -397,7 +397,8 @@ listed account is restored by its next sign-in, so removing someone for good mea
 - **The models bucket needs a CORS rule** allowing `PUT` from the site's origin: `/submit` uploads
   from the browser. MinIO answers preflights by default, and R2 and S3 do not. Verify from a browser,
   because `curl` sends no `Origin`.
-- **`models/*` public-read, replays private**, and a lifecycle rule expiring `replays/` by age.
+- **`models/*` public-read, replays private**, and **no lifecycle rule that expires either**:
+  a replay is the match, kept for ever like its row, and no route or clock deletes one.
 - **One bucket for uploads and nodes.** A node reading a different bucket from the one Soma signed
   the upload for rejects every submission `ARTIFACT_MISSING`.
 - **Cluster mode whenever N > 1**: two nodes on two state databases are two schedulers, so each
