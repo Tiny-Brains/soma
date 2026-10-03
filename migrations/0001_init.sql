@@ -1801,6 +1801,81 @@ CREATE TABLE season_podium (
 );
 CREATE INDEX season_podium_owner_idx ON season_podium (owner_id);
 
+-- ------------------------------------------------------------- season records
+
+-- A CLOSED SEASON IS READ FROM ITS RECORD, NEVER RECOMPUTED. The close renders what the season
+-- shows -- every ladder's standings, every version's ratings, a summary -- with the live code, in
+-- the statement that closes it, and from then on its pages read these rows and nothing else. So a
+-- later release may change how a ladder is ranked, rated or capped for every season after it,
+-- without a branch for the ones before: their answer was written down when they closed.
+--
+-- A record is never edited. A correction is a new REVISION beside the old one (reason
+-- 'correction'), and readers take the newest (season_record_latest); 'backfill' is a season that
+-- closed before records existed, rendered once by a cutover from what that release served.
+-- `format` is the shape of `entry` and `columns`, so a reader can draw every format ever written;
+-- `columns` describes the standings' fields (standings_columns()) for a renderer that draws what a
+-- record lists rather than what it expects. season_podium is the record's podium.
+CREATE TABLE season_records (
+    season_id   uuid        NOT NULL REFERENCES seasons (id),
+    revision    smallint    NOT NULL,
+    format      smallint    NOT NULL,
+    reason      text        NOT NULL,
+    written_at  timestamptz NOT NULL DEFAULT now(),
+    columns     jsonb       NOT NULL,
+    summary     json        NOT NULL,     -- season_json() as the season reads once closed
+    -- WHAT RATED IT, pinned the way seasons.engine_digest pins what played it: the rating plugin's
+    -- digest and every parameter count passed it, so the season's ratings can be replayed exactly.
+    rating      jsonb       NOT NULL,
+    PRIMARY KEY (season_id, revision),
+    CONSTRAINT season_records_revision CHECK (revision >= 1),
+    CONSTRAINT season_records_format   CHECK (format >= 1),
+    CONSTRAINT season_records_reason   CHECK (reason IN ('close', 'backfill', 'correction')),
+    CONSTRAINT season_records_columns  CHECK (jsonb_typeof(columns) = 'array'),
+    CONSTRAINT season_records_rating   CHECK (jsonb_typeof(rating) = 'object')
+);
+
+-- One ladder's standings as the leaderboard served them: `entry` is the row, kept as `json` so it
+-- reads back byte for byte (jsonb would re-order its keys and re-print its numbers). `rank`,
+-- `version_id`, `owner_id` and `rating` are copies of what `entry` says, as columns, so a profile
+-- can ask "best finish" across seasons without parsing a document.
+CREATE TABLE season_standings (
+    season_id   uuid        NOT NULL,
+    revision    smallint    NOT NULL,
+    ladder      ladder      NOT NULL,
+    rank        int         NOT NULL,
+    version_id  uuid        NOT NULL REFERENCES model_versions (id),
+    owner_id    uuid        NOT NULL REFERENCES users (id),
+    rating      float8      NOT NULL,
+    entry       json        NOT NULL,
+    PRIMARY KEY (season_id, revision, ladder, rank),
+    UNIQUE (season_id, revision, ladder, version_id),
+    FOREIGN KEY (season_id, revision) REFERENCES season_records (season_id, revision),
+    CONSTRAINT season_standings_rank CHECK (rank >= 1)
+);
+CREATE INDEX season_standings_owner_idx ON season_standings (owner_id);
+
+-- Every version of the season, its ratings as model_ratings() answered at the close: what a
+-- version's page, a profile and the owner's model list print for a closed season.
+CREATE TABLE season_version_ratings (
+    season_id   uuid        NOT NULL,
+    revision    smallint    NOT NULL,
+    version_id  uuid        NOT NULL REFERENCES model_versions (id),
+    ratings     json        NOT NULL,
+    PRIMARY KEY (season_id, revision, version_id),
+    FOREIGN KEY (season_id, revision) REFERENCES season_records (season_id, revision)
+);
+
+-- A SEASON'S RECORD, THE NEWEST REVISION: none for a live season, nor for one closed before
+-- records existed and not yet backfilled. Every closed-season read takes its answer from here
+-- first and computes nothing it finds.
+CREATE FUNCTION season_record_latest(p_season uuid)
+RETURNS SETOF season_records LANGUAGE sql STABLE AS $$
+    SELECT r.* FROM season_records r
+     WHERE r.season_id = p_season
+     ORDER BY r.revision DESC
+     LIMIT 1;
+$$;
+
 -- ------------------------------------------------------------------ community
 --
 -- Comments, stories, posts, announcements, picks: everything a person writes for others to read.
@@ -2437,8 +2512,9 @@ $$;
 -- versions are mid-trial" means. `matches_played` EXCLUDES TRIALS so it agrees with what
 -- GET /v1/matches can reach, and is the column count's fold moves: RATED matches, so one finished
 -- a moment ago is counted within the minute.
+-- A CLOSED SEASON answers from its record (the summary the close wrote), not from the live counts.
 CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
-    SELECT json_build_object(
+    SELECT coalesce((SELECT r.summary FROM season_record_latest(s.id) r), (SELECT json_build_object(
         'name',   s.name,
         'slug',   s.slug,
         'state',  season_state(s),
@@ -2499,7 +2575,52 @@ CREATE FUNCTION season_json(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
                    FROM model_versions v
                    JOIN models e ON e.id = v.model_id
                    JOIN users u  ON u.id = e.owner_id AND u.role = 'baseline'
-                  WHERE v.season_id = s.id));
+                  WHERE v.season_id = s.id))));
+$$;
+
+-- THE SEASON AS IT READS ONCE CLOSED, for the record the close writes. The close renders it in the
+-- statement that closes, whose snapshot still sees the season as it was a moment before: not yet
+-- closed, its undecided versions not yet rejected, its unplayed rounds not yet cancelled. So the
+-- summary is season_json() over the row as closed now, with what the same statement does to the
+-- rest stated here: nothing in flight, no next round, no baseline still being admitted.
+CREATE FUNCTION season_closing_summary(s seasons) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT (j || jsonb_build_object('in_flight_versions', 0, 'next_round', NULL,
+                                    'baselines', (j -> 'baselines') || jsonb_build_object('admitting', 0)))::json
+      FROM (SELECT season_json(jsonb_populate_record(s, jsonb_build_object('closed_at', now())))::jsonb AS j) x;
+$$;
+
+-- A CLOSED SEASON'S WHOLE RECORD AS ONE DOCUMENT: what GET .../seasons/{slug}/record serves and an
+-- archive keeps -- the season as it closed, what rated it, the columns, every ladder's standings
+-- in rank order, the podium and every version's ratings. Every aggregate is ordered, so the same
+-- record always reads as the same document. Null for a season with no record.
+CREATE FUNCTION season_record_document(p_season uuid) RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT json_build_object(
+        'format',     r.format,
+        'revision',   r.revision,
+        'reason',     r.reason,
+        'written_at', r.written_at,
+        'season',     r.summary,
+        'rating',     r.rating,
+        'columns',    r.columns,
+        'ladders',    (SELECT coalesce(json_object_agg(l.ladder, l.entries ORDER BY l.ladder), '{}'::json)
+                         FROM (SELECT st.ladder, json_agg(st.entry ORDER BY st.rank) AS entries
+                                 FROM season_standings st
+                                WHERE st.season_id = r.season_id AND st.revision = r.revision
+                                GROUP BY st.ladder) l),
+        'podium',     (SELECT coalesce(json_object_agg(p.ladder, p.places ORDER BY p.ladder), '{}'::json)
+                         FROM (SELECT sp.ladder, json_agg(json_build_object(
+                                          'place',      sp.place,
+                                          'version_id', sp.version_id,
+                                          'owner',      (SELECT st.entry ->> 'owner' FROM season_standings st
+                                                          WHERE st.season_id = r.season_id AND st.revision = r.revision
+                                                            AND st.ladder = sp.ladder AND st.version_id = sp.version_id),
+                                          'rating',     sp.rating) ORDER BY sp.place) AS places
+                                 FROM season_podium sp WHERE sp.season_id = r.season_id
+                                GROUP BY sp.ladder) p),
+        'versions',   (SELECT coalesce(json_object_agg(vr.version_id, vr.ratings ORDER BY vr.version_id), '{}'::json)
+                         FROM season_version_ratings vr
+                        WHERE vr.season_id = r.season_id AND vr.revision = r.revision))
+      FROM season_record_latest(p_season) r;
 $$;
 
 -- WHETHER ANYONE MAY SEE A VERSION: `active`, `disabled` (a baseline switched off) or `superseded`.
@@ -3011,8 +3132,19 @@ $$;
 -- The field is the season's CURRENT field, since only `active` versions are on a ladder. A
 -- superseded version keeps its ratings rows and gets a rank too: where it would place among the
 -- versions playing now.
+--
+-- A CLOSED SEASON'S VERSION answers from its record (season_version_ratings, the newest revision),
+-- which holds what this function answered when the season closed; nothing below runs for it.
 CREATE FUNCTION model_ratings(p_version uuid, p_settled_sigma float8)
 RETURNS json LANGUAGE sql STABLE AS $$
+    SELECT coalesce(
+      (SELECT vr.ratings
+         FROM model_versions v
+        CROSS JOIN LATERAL season_record_latest(v.season_id) rec
+         JOIN season_version_ratings vr ON vr.season_id = rec.season_id AND vr.revision = rec.revision
+                                       AND vr.version_id = v.id
+        WHERE v.id = p_version),
+      (
     -- ONE RATING, RANKED TWO WAYS. A version has a single rated row, on Open. Its class standing is
     -- its place on the Open ladder among same-size versions: the SAME mu/sigma/conservative with a
     -- class-filtered rank -- so the two keys can never disagree about which of two same-size models
@@ -3039,7 +3171,7 @@ RETURNS json LANGUAGE sql STABLE AS $$
     FROM ratings r
     JOIN model_versions v ON v.id = r.version_id
     CROSS JOIN LATERAL (VALUES ('open'::ladder), (v.weight_class)) AS x (ladder)
-    WHERE r.version_id = p_version AND r.ladder = 'open' AND x.ladder IS NOT NULL;
+    WHERE r.version_id = p_version AND r.ladder = 'open' AND x.ladder IS NOT NULL));
 $$;
 
 -- A match's seats, resolved: who sat there, in which class, and how it went for them. The three
@@ -3565,6 +3697,197 @@ LANGUAGE sql STABLE AS $$
       FROM owner_ranks(p_season, p_ladder) o
      WHERE o.place <= 3;
 $$;
+
+-- ONE LADDER'S STANDINGS AS THE LIVE CODE RANKS THEM, every row in the leaderboard's shape: the
+-- leaderboard serves a live season from this, and the close writes a closing season's record from
+-- it (season_standings), so what a season closes on is what it showed a second before. A closed
+-- season is never ranked here again. One rated ladder: the rating, trend and history are the Open
+-- row whatever field p_ladder names, and ladder_field() restricts membership, so row_number() over
+-- Open's conservative is the class rank. `provisional` is the season's own settled_sigma where it
+-- declares one, the deploy's (p_settled_sigma) otherwise. `trend` is the last move and `history`
+-- the last twelve conservative ratings oldest first, seed row included, rounded to two places.
+CREATE FUNCTION ladder_standings(p_season uuid, p_ladder ladder, p_settled_sigma float8)
+RETURNS TABLE (rank bigint, version_id uuid, owner_id uuid, rating float8, entry json)
+LANGUAGE sql STABLE AS $$
+    WITH se AS (
+        SELECT coalesce((s.rules -> 'rating' ->> 'settled_sigma')::float8, p_settled_sigma) AS settled_sigma
+          FROM seasons s WHERE s.id = p_season ),
+    rnd AS (
+        SELECT r.n FROM season_round(p_season) r WHERE r.n IS NOT NULL ),
+    rg AS (
+        SELECT g.version_id, g.games FROM rnd, round_games(p_season, rnd.n) g ),
+    ranked AS (
+        SELECT row_number() OVER (ORDER BY r.conservative DESC, v.id) AS rank,
+               v.id AS version_id, e.id AS model_id, e.name AS model, u.handle AS owner,
+               e.owner_id, v.version, v.weight_class, v.size_bytes, r.conservative, r.sigma,
+               r.matches_played, rg.games, u.role = 'baseline' AS baseline
+          FROM ladder_field(p_season, p_ladder) f
+          JOIN model_versions v ON v.id = f.version_id
+          JOIN models e         ON e.id = v.model_id
+          JOIN users u          ON u.id = e.owner_id
+          JOIN ratings r        ON r.version_id = v.id AND r.ladder = 'open'
+          LEFT JOIN rg          ON rg.version_id = v.id )
+    SELECT k.rank, k.version_id, k.owner_id, k.conservative,
+           json_build_object(
+               'rank',          k.rank,
+               'version_id',    k.version_id::text,
+               'model_id',      k.model_id::text,
+               'model',         k.model,
+               'owner',         k.owner,
+               'version',       k.version,
+               'class',         k.weight_class::text,
+               'size_bytes',    k.size_bytes,
+               'rating',        k.conservative,
+               'provisional',   k.sigma > (SELECT settled_sigma FROM se),
+               'matches',       k.matches_played,
+               'round_matches', CASE WHEN (SELECT n FROM rnd) IS NOT NULL THEN coalesce(k.games, 0) END,
+               'baseline',      k.baseline,
+               'trend',         (SELECT (ev.mu_after - 3 * ev.sigma_after) - (ev.mu_before - 3 * ev.sigma_before)
+                                   FROM rating_events ev
+                                  WHERE ev.version_id = k.version_id AND ev.ladder = 'open' AND ev.seq > 0
+                                  ORDER BY ev.seq DESC
+                                  LIMIT 1),
+               'history',       (SELECT coalesce(json_agg(round(h.c::numeric, 2) ORDER BY h.seq), '[]'::json)
+                                   FROM (SELECT ev.seq, (ev.mu_after - 3 * ev.sigma_after) AS c
+                                           FROM rating_events ev
+                                          WHERE ev.version_id = k.version_id AND ev.ladder = 'open'
+                                          ORDER BY ev.seq DESC
+                                          LIMIT 12) h))
+      FROM ranked k;
+$$;
+
+-- WHAT A STANDINGS ROW HOLDS, for a renderer that draws the columns a record lists rather than the
+-- ones it expects: a later format may add a column (points, wins, a round's games) and an older
+-- record still draws. `format` 1 is ladder_standings()' entry. A change to that entry is a new
+-- format number here, never an edit of this one, since records already written name it.
+CREATE FUNCTION standings_columns(p_format int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE p_format WHEN 1 THEN jsonb_build_array(
+        jsonb_build_object('key', 'rank',          'type', 'rank'),
+        jsonb_build_object('key', 'model',         'type', 'model',     'link', 'model_id'),
+        jsonb_build_object('key', 'owner',         'type', 'handle'),
+        jsonb_build_object('key', 'version',       'type', 'int'),
+        jsonb_build_object('key', 'class',         'type', 'ladder'),
+        jsonb_build_object('key', 'size_bytes',    'type', 'bytes'),
+        jsonb_build_object('key', 'rating',        'type', 'rating',    'primary', true),
+        jsonb_build_object('key', 'provisional',   'type', 'flag'),
+        jsonb_build_object('key', 'matches',       'type', 'int'),
+        jsonb_build_object('key', 'round_matches', 'type', 'int'),
+        jsonb_build_object('key', 'baseline',      'type', 'flag'),
+        jsonb_build_object('key', 'trend',         'type', 'delta'),
+        jsonb_build_object('key', 'history',       'type', 'sparkline')) END;
+$$;
+
+-- ------------------------------------------------------------- the seal
+
+-- A CLOSED SEASON'S FACTS DO NOT CHANGE, and the database refuses the write rather than trusting
+-- every writer's `closed_at IS NULL`. Refused once its season has closed: any write to a version's
+-- `ratings` or `rating_events` or to `ladder_snapshots`; an update or delete of a match that has
+-- finished for good (rated, cancelled, failed) or of such a match's seats; and any change at all to
+-- the season row -- its visibility too, since a closed season made private would vanish from the
+-- record it is. A record (season_records and its two tables, season_podium) is never updated or
+-- deleted at all; a correction is a new revision. What still moves is a match not yet finished for
+-- good, which reap and the sweep still settle. A one-time migration that must rewrite sealed rows (a cutover's copy) says
+-- so in its own transaction with SET LOCAL soma.unseal = 'on'; nothing a node runs sets it.
+-- SECURITY DEFINER, because the runner gate's role, which updates matches and seats, has no
+-- grant on the columns this reads.
+CREATE FUNCTION sealed_season(p_season uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT coalesce((SELECT s.closed_at IS NOT NULL FROM seasons s WHERE s.id = p_season), false)
+       AND coalesce(current_setting('soma.unseal', true), '') <> 'on';
+$$;
+
+CREATE FUNCTION seal_refuse(p_what text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'SEASON_SEALED: % belongs to a closed season, whose facts and record never change', p_what
+        USING ERRCODE = 'check_violation';
+END
+$$;
+
+CREATE FUNCTION seal_version_rows() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE r record := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+BEGIN
+    IF sealed_season((SELECT v.season_id FROM model_versions v WHERE v.id = r.version_id))
+       OR (TG_OP = 'UPDATE'
+           AND sealed_season((SELECT v.season_id FROM model_versions v WHERE v.id = OLD.version_id))) THEN
+        PERFORM seal_refuse(TG_TABLE_NAME);
+    END IF;
+    RETURN r;
+END
+$$;
+CREATE TRIGGER ratings_sealed BEFORE INSERT OR UPDATE OR DELETE ON ratings
+    FOR EACH ROW EXECUTE FUNCTION seal_version_rows();
+CREATE TRIGGER rating_events_sealed BEFORE INSERT OR UPDATE OR DELETE ON rating_events
+    FOR EACH ROW EXECUTE FUNCTION seal_version_rows();
+
+CREATE FUNCTION seal_snapshots() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE r record := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+BEGIN
+    IF sealed_season(r.season_id) THEN
+        PERFORM seal_refuse('ladder_snapshots');
+    END IF;
+    RETURN r;
+END
+$$;
+CREATE TRIGGER ladder_snapshots_sealed BEFORE INSERT OR UPDATE OR DELETE ON ladder_snapshots
+    FOR EACH ROW EXECUTE FUNCTION seal_snapshots();
+
+CREATE FUNCTION seal_matches() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF OLD.status IN ('rated', 'cancelled', 'failed') AND sealed_season(OLD.season_id) THEN
+        PERFORM seal_refuse('a finished match');
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
+CREATE TRIGGER matches_sealed BEFORE UPDATE OR DELETE ON matches
+    FOR EACH ROW EXECUTE FUNCTION seal_matches();
+
+CREATE FUNCTION seal_match_seats() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM matches m
+                WHERE m.id = OLD.match_id AND m.status IN ('rated', 'cancelled', 'failed')
+                  AND sealed_season(m.season_id)) THEN
+        PERFORM seal_refuse('a finished match''s seat');
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
+CREATE TRIGGER match_seats_sealed BEFORE UPDATE OR DELETE ON match_seats
+    FOR EACH ROW EXECUTE FUNCTION seal_match_seats();
+
+CREATE FUNCTION seal_season_row() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    IF OLD.closed_at IS NOT NULL AND coalesce(current_setting('soma.unseal', true), '') <> 'on'
+       AND (TG_OP = 'DELETE' OR NEW IS DISTINCT FROM OLD) THEN
+        PERFORM seal_refuse('the season row');
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
+CREATE TRIGGER seasons_sealed BEFORE UPDATE OR DELETE ON seasons
+    FOR EACH ROW EXECUTE FUNCTION seal_season_row();
+
+CREATE FUNCTION seal_record() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF coalesce(current_setting('soma.unseal', true), '') <> 'on' THEN
+        PERFORM seal_refuse(TG_TABLE_NAME);
+    END IF;
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
+CREATE TRIGGER season_records_sealed BEFORE UPDATE OR DELETE ON season_records
+    FOR EACH ROW EXECUTE FUNCTION seal_record();
+CREATE TRIGGER season_standings_sealed BEFORE UPDATE OR DELETE ON season_standings
+    FOR EACH ROW EXECUTE FUNCTION seal_record();
+CREATE TRIGGER season_version_ratings_sealed BEFORE UPDATE OR DELETE ON season_version_ratings
+    FOR EACH ROW EXECUTE FUNCTION seal_record();
+CREATE TRIGGER season_podium_sealed BEFORE UPDATE OR DELETE ON season_podium
+    FOR EACH ROW EXECUTE FUNCTION seal_record();
 
 -- ---------------------------------------------------------------- table storage
 

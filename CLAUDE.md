@@ -40,7 +40,8 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - A plugin's digest moves only when its source does. When it moves, web's
   `scripts/setup/sign-plugins.sh` must run again, or `[packages] apply` stops the node on a
   quarantined channel — which is the point: it will not serve the site without its plugins.
-- **`scripts/cutover/` is a release's one-time database migration, not a check**, and the order is
+- **`scripts/cutover/` is a release's one-time database migration, not a check** (on main: from v0.9.x's
+  `41279af0`; `legacy-leaderboard.sql` is v0.9.1's statement verbatim and is never edited), and the order is
   the whole of it: `cutover.sh` (the schema, in one transaction, the old one kept as `legacy`, with
   every node stopped), then `retire.sh` against Orion's state **before the new node boots**, then
   `backfill-frames.sh` once it serves. `retire.sh` cannot wait for `load-package.sh --prune`: a
@@ -71,7 +72,7 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   the next request. `admin-only` is now the narrower case: creating a season, featuring one, the
   fleet policy, rounds, the fill, and assigning season admins. Both surfaces still tag `admin`.
 - **Every season-scoped public read has a `/v1/private/...` twin, and the two share one statement.**
-  `channels/soma-user-private-*.json` sits beside `channels/soma-pub-*.json` (fourteen pairs) and
+  `channels/soma-user-private-*.json` sits beside `channels/soma-pub-*.json` (fifteen pairs) and
   both workflows name the same `sql/soma-pub-shared-*.sql`: the same SQL with the session's claims,
   so `season_visible()` decides what a private season answers and to whom. A change to a public
   season read is a change to both channels and one file. The private twin declares no `cache` — its
@@ -239,6 +240,21 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 
 ### Schema
 
+- **A closed season is read from its record, never ranked again.** The close writes `season_records`,
+  `season_standings` and `season_version_ratings` (and `season_podium`) in the statement that
+  closes, from `ladder_standings()`, `model_ratings()` and `season_closing_summary()` -- the code
+  that serves a live season -- with `rating` pinning the plugin digest and parameters, so a record is
+  what the season showed and what made it. `season_json()` answers a closed season from it too. A read of a closed season takes the record first
+  (`season_record_latest`); never add a branch to the live ranking for a past season's rules, and
+  never edit `standings_columns(1)` -- a new row shape is a new format number. A new page about a
+  closed season reads the record, or adds to what the close writes.
+- **The seal is the schema's, not the writers'.** Triggers refuse a closed season's rating, event,
+  snapshot, finished-match and seat writes, its row's scoring columns, and any update or delete of a
+  record (`SEASON_SEALED`) -- the whole season row once closed, visibility included. Only a cutover's
+  transaction sets `soma.unseal`; a fixture in
+  `scripts/verify/` that rewrites a closed season sets it around that one statement and says so. A
+  clock that could reach a closed season's rows filters them out first (count's fold does), or the
+  seal stops the run and every live ladder behind it.
 - **The schema is `migrations/0001_init.sql` and `0002_sessions.sql`, rewritten in place**, with
   no ALTERs and no third file (`check-sql.sh` and `verify/run.sh` name exactly these two).
 - **`bootstrap` hashes every byte of the migrations, comments included**, and refuses a database

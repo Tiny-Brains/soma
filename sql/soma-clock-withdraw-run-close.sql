@@ -12,7 +12,10 @@ WITH live AS (
        -- is left in flight to fold after the podium is frozen; and no settled test closes it before
        -- then. A request to close still wins over both, which is how an admin ends finals that
        -- cannot finish (an entry with nobody left to play).
-       AND (s.close_requested_at IS NOT NULL
+       -- A request still waits for the fold: nothing `finished` and uncounted, so the record it
+       -- writes holds every match played before it (count folds within the minute).
+       AND (  (s.close_requested_at IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.season_id = s.id AND m.status = 'finished'))
          OR (coalesce((SELECT f.done FROM season_finals(s.id) f), false)
              AND NOT EXISTS (SELECT 1 FROM matches m
                               WHERE m.season_id = s.id
@@ -82,6 +85,29 @@ WITH live AS (
       FROM closed
      CROSS JOIN unnest(enum_range(NULL::ladder)) AS l (ladder)
      CROSS JOIN LATERAL podium_of(closed.id, l.ladder) p
+), recorded AS (
+    -- THE RECORD, IN THE SAME STATEMENT: what the season shows, rendered once by the live code and
+    -- read from then on instead of it (season_records). Same snapshot as the podium, so the record,
+    -- the podium and the close cannot disagree. The summary is the season as it reads once closed
+    -- (season_closing_summary); `rating` pins what rated it: the plugin's digest ($4, this node's
+    -- [vars] rating_digest) and every parameter count passes it ($5-$9), and settled_sigma ($2).
+    INSERT INTO season_records (season_id, revision, format, reason, columns, summary, rating)
+    SELECT s.id, 1, 1, 'close', standings_columns(1), season_closing_summary(s),
+           jsonb_build_object('plugin', 'tb.rating', 'digest', nullif(($4)::text, ''),
+                              'ts_beta', ($5)::float8, 'ts_tau', ($6)::float8,
+                              'ts_draw_probability', ($7)::float8, 'prior_mu', ($8)::float8,
+                              'prior_sigma', ($9)::float8, 'settled_sigma', ($2)::float8)
+      FROM closed JOIN seasons s ON s.id = closed.id
+), standings AS (
+    INSERT INTO season_standings (season_id, revision, ladder, rank, version_id, owner_id, rating, entry)
+    SELECT closed.id, 1, l.ladder, st.rank, st.version_id, st.owner_id, st.rating, st.entry
+      FROM closed
+     CROSS JOIN unnest(enum_range(NULL::ladder)) AS l (ladder)
+     CROSS JOIN LATERAL ladder_standings(closed.id, l.ladder, ($2)::float8) st
+), version_ratings AS (
+    INSERT INTO season_version_ratings (season_id, revision, version_id, ratings)
+    SELECT closed.id, 1, v.id, model_ratings(v.id, ($2)::float8)
+      FROM closed JOIN model_versions v ON v.season_id = closed.id
 )
 UPDATE clocks c SET epoch = c.epoch + 1, updated_at = now()
   FROM closed WHERE c.key = 'roster'

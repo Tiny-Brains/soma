@@ -196,6 +196,9 @@ game = "ants"
 # nothing about the one that will play it. There is no board list here: a season's
 # boards are season_maps, uploaded and enabled by an admin, and pair reads them from the database.
 engine_digest = "${SOMA_ENGINE_DIGEST:-}"
+# The rating plugin this node loads (sha256 of tb-rating.wasm, the digest its signature is over),
+# which a season's record pins beside every parameter count passed it. Set by the entrypoint.
+rating_digest = "${SOMA_RATING_DIGEST:-}"
 
 # pair_depth_target is a staleness cap, never the signal -- demand is the signal. It is also why
 # NOTHING THAT SIZES THE RUNNER FLEET MAY READ QUEUE DEPTH: this caps the queue, so depth would cap

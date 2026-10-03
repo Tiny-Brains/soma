@@ -1,178 +1,124 @@
 -- THE VALUES THE NEW SCHEMA DERIVES, FOR ROWS THAT PREDATE IT. Run by cutover.sql inside its one
 -- transaction, after transfer.sql has copied the data and the schemas have swapped (so `public` is
--- the new schema), and before verify.sql. It is not a step of its own: run cutover.sh.
+-- the new schema and `legacy` the release being replaced), and before verify.sql. It is not a step
+-- of its own: run cutover.sh.
 --
--- Every statement is idempotent: a second run writes the same values. It sends no notification --
--- a medal for a season that closed weeks ago is news to nobody. Past matches' last frames are not
--- here: they need each replay decoded, which backfill-frames.sh does once the new node serves. Each value is computed by the function the live path
--- uses (match_sort_keys, season_map_name, podium_of, ladder_at, memory_price), so a backfilled row
--- and a row written tomorrow cannot disagree. This directory goes once production has been cut over.
+-- THIS RELEASE: SEASON RECORDS. A closed season is now read from its record (season_records,
+-- season_standings, season_version_ratings), which the close writes. A season that closed BEFORE
+-- this release has none, so it is written here, once, as reason 'backfill' -- and from what the
+-- release being replaced SERVED, not from this release's code: each ladder is rendered by that
+-- release's own leaderboard statement (legacy-leaderboard.sql, copied verbatim from v0.9.1) run
+-- against `legacy`, so the record is the page as it stood, field for field, special cases and all.
+--
+-- A version's ratings are that release's model_ratings() (legacy.model_ratings, called as pg_temp.legacy_model_ratings) with one
+-- correction: a season closed under per-class ratings kept its class rows, and its class tables
+-- were frozen from them, but 0.9's model_ratings() still answered the class key from Open -- so a
+-- version page disagreed with its own leaderboard. Where a class row exists, the class key is that
+-- row, ranked against the class table just recorded, as 0.7.2 showed it.
+--
+-- A private closed season would render empty (the statement serves the anonymous public), so the
+-- cutover refuses one rather than record nothing. Idempotent: a season that has a record is skipped.
 
-
--- ONE RATED LADDER (this release). Production was copied from the dual-ladder schema, so transfer.sql
--- brought per-class `ratings`, `rating_events` and `ladder_snapshots`, and matches whose `ladders`
--- array still carries a class. A weight class is now a filtered VIEW of Open: normalise every rated
--- match's array to {open} (trials keep {}), so the count clock's priors can never read a class row
--- again, and drop the class snapshots. The class ratings and events of a season that is still LIVE
--- are dropped too -- it goes on under one ladder. A CLOSED season keeps its own: they are its class
--- tables as they stood, which the leaderboard shows for such a season (soma-pub-shared-leaderboard's
--- `fz`), and no clock writes a class row or touches a closed season's ratings. The Open rows -- the
--- real ladder -- are left untouched. Idempotent: a second run finds nothing left to change.
-UPDATE matches SET ladders = ARRAY['open']::ladder[]
- WHERE 'open' = ANY (ladders) AND ladders <> ARRAY['open']::ladder[];
-DELETE FROM rating_events e
- WHERE e.ladder <> 'open'
-   AND NOT EXISTS (SELECT 1 FROM model_versions v JOIN seasons s ON s.id = v.season_id
-                    WHERE v.id = e.version_id AND s.closed_at IS NOT NULL);
-DELETE FROM ratings r
- WHERE r.ladder <> 'open'
-   AND NOT EXISTS (SELECT 1 FROM model_versions v JOIN seasons s ON s.id = v.season_id
-                    WHERE v.id = r.version_id AND s.closed_at IS NOT NULL);
-DELETE FROM ladder_snapshots WHERE ladder <> 'open';
-
--- Who may see a match: what finish and a trial's pass would have set. A trial is public when its
--- candidate went public.
-UPDATE matches m SET listed = true
- WHERE NOT m.listed AND m.status IN ('finished', 'rated')
-   AND (m.trial_version_id IS NULL
-        OR EXISTS (SELECT 1 FROM model_versions c
-                    WHERE c.id = m.trial_version_id AND c.status IN ('active', 'superseded')));
-
--- The sort keys. match_sort_keys() reads each seat's pre-fold rating from rating_events.*_before,
--- which is the number the fold would have read; a trial has no upset.
-UPDATE matches m
-   SET (margin, upset) = (SELECT k.margin, CASE WHEN m.trial_version_id IS NULL THEN k.upset END
-                            FROM match_sort_keys(m.id) k)
- WHERE m.status = 'rated' AND m.margin IS NULL AND m.upset IS NULL;
-
--- Each version's record per ladder, as the fold keeps it: a win is first alone, a draw a shared
--- first, anything else a loss. Set rather than added.
-UPDATE ratings r
-   SET wins = c.w, draws = c.d, losses = c.l
-  FROM (SELECT ms.version_id, l.ladder,
-               count(*) FILTER (WHERE ms.rank = 1 AND f.n = 1) AS w,
-               count(*) FILTER (WHERE ms.rank = 1 AND f.n > 1) AS d,
-               count(*) FILTER (WHERE ms.rank IS DISTINCT FROM 1) AS l
-          FROM matches m
-          JOIN match_seats ms ON ms.match_id = m.id
-          JOIN model_versions v ON v.id = ms.version_id
-         CROSS JOIN LATERAL unnest(m.ladders) AS l (ladder)
-         CROSS JOIN LATERAL (SELECT count(*) AS n FROM match_seats x
-                              WHERE x.match_id = m.id AND x.rank = 1) f
-         WHERE m.status = 'rated' AND m.trial_version_id IS NULL
-           AND (l.ladder = 'open' OR l.ladder = v.weight_class)
-         GROUP BY ms.version_id, l.ladder) c
- WHERE r.version_id = c.version_id AND r.ladder = c.ladder;
-
--- The counts the fold moves: rated matches, trials excluded, per board and per season, and each
--- board's newest. Set rather than added, so a second run writes the same numbers.
-UPDATE season_maps sm
-   SET matches = c.n, latest_match_id = c.latest
-  FROM (SELECT m.season_map_id, count(*) AS n,
-               (array_agg(m.id ORDER BY m.played_at DESC, m.id DESC))[1] AS latest
-          FROM matches m WHERE m.status = 'rated' AND m.trial_version_id IS NULL
-         GROUP BY m.season_map_id) c
- WHERE sm.id = c.season_map_id;
-UPDATE seasons s
-   SET matches_played = c.n
-  FROM (SELECT m.season_id, count(*) AS n
-          FROM matches m WHERE m.status = 'rated' AND m.trial_version_id IS NULL
-         GROUP BY m.season_id) c
- WHERE s.id = c.season_id;
-
--- The board fields, only where the stored file agrees with its name -- the upload's own rule. A
--- board named before the rule keeps null fields, and the query below lists them.
-UPDATE season_maps sm
-   SET size = n.n ->> 'size', terrain = n.n ->> 'terrain', hills = (n.n ->> 'hills')::smallint
-  FROM (SELECT s.id, season_map_name(s.map_id) AS n, season_map_header(s.board) AS h FROM season_maps s) n
- WHERE n.id = sm.id AND sm.size IS NULL
-   AND n.h IS NOT NULL AND season_map_name_problem(n.h) IS NULL;
-
--- What each admitted version's memory costs on the largest board, as admission prices it now: 0 for
--- a manifest that declares none, which should be every one (the query at the end lists the rest).
-UPDATE model_versions v
-   SET memory_bytes = coalesce((SELECT p.bytes_max
-                                  FROM games g, memory_price(v.manifest::jsonb, g.manifest #> '{limits,boards}', NULL) p
-                                 WHERE g.id = v.game_id), 0)
- WHERE v.memory_bytes IS NULL AND v.manifest IS NOT NULL;
-
--- THE CLASS PODIUMS OF A SEASON THAT CLOSED ON THE OLD SCHEMA, AS ITS CLASS LADDERS STOOD. That
--- season was ranked per class by per-class ratings, and its competitors saw those standings; a class
--- is now Open filtered, which would reorder them after the fact. So a closed season's class medals
--- are frozen from `legacy.ratings` -- podium_of()'s own field and order (active versions of the
--- class, humans only, each owner's best, top three), with the class rating where it reads Open's.
--- It reads `legacy`, the old schema as it was, which holds exactly the rows kept above.
-INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
-SELECT k.season_id, k.ladder, k.place, k.version_id, k.owner_id, k.conservative
-  FROM (SELECT b.*, row_number() OVER (PARTITION BY b.season_id, b.ladder
-                                        ORDER BY b.conservative DESC, b.version_id)::smallint AS place
-  FROM (SELECT DISTINCT ON (s.id, v.weight_class, e.owner_id)
-               s.id AS season_id, v.weight_class::text::ladder AS ladder, v.id AS version_id,
-               e.owner_id, r.conservative
-          FROM seasons s
-          JOIN model_versions v ON v.season_id = s.id AND v.status = 'active'
-          JOIN models e         ON e.id = v.model_id
-          JOIN users u          ON u.id = e.owner_id AND u.role <> 'baseline'
-          JOIN legacy.ratings r ON r.version_id = v.id AND r.ladder::text = v.weight_class::text
-         WHERE s.closed_at IS NOT NULL
-         ORDER BY s.id, v.weight_class, e.owner_id, r.conservative DESC, v.id) b) k
- WHERE k.place <= 3
-ON CONFLICT (season_id, ladder, place) DO NOTHING;
-
--- The Open podium of every season already closed, as the close would have written it: Open's
--- ratings came across unchanged, so podium_of() reproduces it. The class podiums are above.
-INSERT INTO season_podium (season_id, ladder, place, version_id, owner_id, rating)
-SELECT s.id, 'open'::ladder, p.place, p.version_id, p.owner_id, p.rating
+SELECT coalesce(string_agg(s.slug, ', '), '') AS private_closed
   FROM seasons s
- CROSS JOIN LATERAL podium_of(s.id, 'open'::ladder) p
- WHERE s.closed_at IS NOT NULL
-ON CONFLICT (season_id, ladder, place) DO NOTHING;
+ WHERE s.closed_at IS NOT NULL AND s.visibility <> 'public'
+   AND NOT EXISTS (SELECT 1 FROM season_records r WHERE r.season_id = s.id) \gset
+SELECT :'private_closed' = '' AS none_private \gset
+\if :none_private
+\else
+  \echo 'REFUSED: closed private season(s) with no record, which the public leaderboard statement cannot render: ' :'private_closed'
+  \quit 3
+\endif
 
--- Every hour of every season's Open ladder, as the withdraw clock would have written it live: from
--- the first hour after it opened to its close, or now. One rated ladder, so one row per hour (a class
--- series filters this Open row); ladder_at() per hour, about 24 calls a day of season, each a few ms.
-INSERT INTO ladder_snapshots (season_id, ladder, at, version_ids, ratings)
-SELECT s.id, 'open'::ladder, h.at, coalesce(f.version_ids, '{}'), coalesce(f.ratings, '{}')
-  FROM seasons s
- CROSS JOIN LATERAL generate_series(date_trunc('hour', s.submissions_open_at) + interval '1 hour',
-                                    date_trunc('hour', coalesce(s.closed_at, now())),
-                                    interval '1 hour') AS h (at)
- CROSS JOIN LATERAL (SELECT array_agg(a.version_id ORDER BY a.rank) AS version_ids,
-                            array_agg(a.conservative::real ORDER BY a.rank) AS ratings
-                       FROM ladder_at(s.id, 'open'::ladder, h.at) a) f
-ON CONFLICT (season_id, ladder, at) DO NOTHING;
+-- The release being replaced's own statement, as a function over `legacy`. Its body is the file
+-- verbatim inside SELECT x.body FROM (...) x; search_path is pinned so every name in it resolves to
+-- what that release served from.
+\set legacy_leaderboard `cat /cut/legacy-leaderboard.sql`
+SET LOCAL check_function_bodies = off;
+SELECT format($f$CREATE FUNCTION pg_temp.legacy_leaderboard(text, text, int, int, float8, text, uuid, uuid)
+                 RETURNS json LANGUAGE sql STABLE SET search_path = legacy, pg_catalog AS %L$f$,
+              'SELECT x.body FROM (' || :'legacy_leaderboard' || E'\n) x') \gexec
+-- And its functions, the same way: called from here, a legacy function's own unqualified names
+-- would resolve against the NEW schema.
+CREATE FUNCTION pg_temp.legacy_season_json(uuid) RETURNS json LANGUAGE sql STABLE
+    SET search_path = legacy, pg_catalog
+    AS 'SELECT season_json(s) FROM seasons s WHERE s.id = $1';
+CREATE FUNCTION pg_temp.legacy_model_ratings(uuid, float8) RETURNS json LANGUAGE sql STABLE
+    SET search_path = legacy, pg_catalog
+    AS 'SELECT model_ratings($1, $2)';
+RESET check_function_bodies;
 
--- THE REFUSALS OF A FLEET THAT NO LONGER EXISTS. `refusal_grace_secs` is the fleet's allowance to
--- register a version it has not seen, counted from a row's first refusal. Every runner is replaced
--- by this cutover and comes up with an empty roster, so a pending row that carries refusals from
--- the old fleet would start the new one's first refusal already inside a spent window and fail it
--- MODEL_UNAVAILABLE within seconds of the runners coming back. The count and the window are about
--- a fleet, so they go with it; nothing else about the row is touched, and a row that has actually
--- failed keeps its history.
-UPDATE matches SET refusals = 0, first_refused_at = NULL
- WHERE status = 'pending' AND (refusals > 0 OR first_refused_at IS NOT NULL);
+-- psql does not substitute a variable inside a DO block's body, so the deploy's settled_sigma rides
+-- a transaction-local setting into it.
+SELECT set_config('soma.cutover_settled_sigma', :'settled_sigma', true) AS settled_sigma;
 
-\echo '--- what the backfill wrote'
-SELECT count(*) FILTER (WHERE margin IS NOT NULL) AS with_margin,
-       count(*) FILTER (WHERE upset IS NOT NULL)  AS with_upset,
-       count(*) FILTER (WHERE listed)             AS listed,
-       count(*) FILTER (WHERE status = 'rated')   AS rated
-  FROM matches;
-SELECT se.slug AS season, se.matches_played, (SELECT count(*) FROM ladder_snapshots x WHERE x.season_id = se.id) AS snapshots
-  FROM seasons se ORDER BY se.slug;
-SELECT se.slug AS season, count(*) AS podium_places
-  FROM season_podium sp JOIN seasons se ON se.id = sp.season_id GROUP BY se.slug ORDER BY se.slug;
-\echo '--- pending rows still carrying the old fleet''s refusals (expect no rows)'
-SELECT count(*) AS still_refused FROM matches WHERE status = 'pending' AND refusals > 0;
-\echo '--- boards that keep null fields: off the name pattern, or disagreeing with their file'
-SELECT se.slug AS season, sm.map_id FROM season_maps sm JOIN seasons se ON se.id = sm.season_id
- WHERE sm.size IS NULL ORDER BY se.slug, sm.map_id;
-\echo '--- versions that declare a memory output (expect no rows: each would gain memory mid-season when the runners carry it)'
-SELECT se.slug AS season, v.id AS version_id, v.status, v.memory_bytes
-  FROM model_versions v JOIN seasons se ON se.id = v.season_id
- WHERE v.memory_bytes > 0 ORDER BY se.slug, v.id;
-\echo '--- the rating chain: a version whose matches_played is below its last event would fail every fold (expect no rows)'
-SELECT r.version_id, r.ladder, r.matches_played, max(e.seq) AS last_seq
-  FROM ratings r JOIN rating_events e ON e.version_id = r.version_id AND e.ladder = r.ladder
- GROUP BY r.version_id, r.ladder, r.matches_played
-HAVING r.matches_played < max(e.seq);
+DO $records$
+DECLARE
+  s       record;
+  l       ladder;
+  cursor_ int;
+  page    json;
+  n       int;
+  deploy_sigma float8 := current_setting('soma.cutover_settled_sigma')::float8;
+BEGIN
+  FOR s IN SELECT se.id, se.slug, g.slug AS game
+             FROM seasons se JOIN games g ON g.id = se.game_id
+            WHERE se.closed_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM season_records r WHERE r.season_id = se.id)
+            ORDER BY se.closed_at
+  LOOP
+    -- What rated it: every season closed before records was rated by the same tb.rating build,
+    -- a962eade, under the same parameters -- soma v0.7.2 through v0.9.1 ship that component byte for
+    -- byte, and the parameters are literals in docker/soma.toml.tmpl that no deployment overrides.
+    INSERT INTO season_records (season_id, revision, format, reason, columns, summary, rating)
+    VALUES (s.id, 1, 1, 'backfill', standings_columns(1), pg_temp.legacy_season_json(s.id),
+            jsonb_build_object('plugin', 'tb.rating',
+                               'digest', 'sha256:a962eade5d2126b7a08104e7b566ed6ff9183da7cfd445414254ba3d74358e23',
+                               'ts_beta', 4.166666666666667, 'ts_tau', 0.08333333333333333,
+                               'ts_draw_probability', 0.10, 'prior_mu', 25.0,
+                               'prior_sigma', 8.333333333333334, 'settled_sigma', deploy_sigma));
+
+    FOREACH l IN ARRAY enum_range(NULL::ladder) LOOP
+      cursor_ := 0;
+      LOOP
+        page := pg_temp.legacy_leaderboard(s.game, l::text, 200, cursor_, deploy_sigma, s.slug, NULL, NULL);
+        INSERT INTO season_standings (season_id, revision, ladder, rank, version_id, owner_id, rating, entry)
+        SELECT s.id, 1, l, (e ->> 'rank')::int, (e ->> 'version_id')::uuid, m.owner_id,
+               (e ->> 'rating')::float8, e
+          FROM json_array_elements(page -> 'entries') AS e
+          JOIN models m ON m.id = (e ->> 'model_id')::uuid;
+        EXIT WHEN page ->> 'next_cursor' IS NULL;
+        cursor_ := (page ->> 'next_cursor')::int;
+      END LOOP;
+    END LOOP;
+
+    INSERT INTO season_version_ratings (season_id, revision, version_id, ratings)
+    SELECT s.id, 1, v.id,
+           CASE WHEN c.version_id IS NULL THEN pg_temp.legacy_model_ratings(v.id, deploy_sigma)
+                ELSE (pg_temp.legacy_model_ratings(v.id, deploy_sigma)::jsonb
+                      || jsonb_build_object(v.weight_class::text, jsonb_build_object(
+                           'rating',      c.conservative,
+                           'mu',          c.mu,
+                           'sigma',       c.sigma,
+                           'provisional', c.sigma > deploy_sigma,
+                           'matches',     c.matches_played,
+                           'rank',  (SELECT count(*) + 1 FROM season_standings st
+                                      WHERE st.season_id = s.id AND st.revision = 1 AND st.ladder = v.weight_class
+                                        AND (st.rating > c.conservative
+                                             OR (st.rating = c.conservative AND st.version_id < v.id))),
+                           'field', (SELECT count(*) FROM season_standings st
+                                      WHERE st.season_id = s.id AND st.revision = 1 AND st.ladder = v.weight_class)
+                                    + CASE WHEN EXISTS (SELECT 1 FROM season_standings st
+                                                         WHERE st.season_id = s.id AND st.revision = 1
+                                                           AND st.ladder = v.weight_class AND st.version_id = v.id)
+                                           THEN 0 ELSE 1 END)))::json END
+      FROM model_versions v
+      LEFT JOIN ratings c ON c.version_id = v.id AND c.ladder = v.weight_class
+     WHERE v.season_id = s.id;
+
+    SELECT count(*) INTO n FROM season_standings st WHERE st.season_id = s.id;
+    RAISE NOTICE 'recorded %: % standings rows, % versions', rpad(s.slug, 24), n,
+      (SELECT count(*) FROM season_version_ratings vr WHERE vr.season_id = s.id);
+  END LOOP;
+END
+$records$;

@@ -11,6 +11,10 @@
 \set VERBOSITY terse
 BEGIN;
 SET LOCAL lock_timeout = '10s';
+-- The copy writes every closed season's ratings, matches and podium into the new schema, whose
+-- seal refuses exactly that to every node; a cutover is the one writer that may, and says so for
+-- this transaction alone.
+SET LOCAL soma.unseal = 'on';
 
 -- Only from the schema this was written for, and only once.
 SELECT (SELECT digest FROM public.soma_schema) = :'from_digest' AS on_expected_schema \gset

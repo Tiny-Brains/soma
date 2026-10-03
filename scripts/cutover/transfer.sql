@@ -3,12 +3,11 @@
 -- names. Nothing here names a table: it walks the catalogue, so a table or column the two schemas
 -- share is copied whatever it is, and anything that would be LOST is refused by name instead.
 --
---   * Every old table must have a new home, and every old column but the ones mapped by hand below
---     (`users.github_id`, which becomes an `identities` row). Anything else missing is an error,
---     not a silent drop.
---   * Tables are copied parents first: a table goes once every table its copied foreign keys point
---     at has gone. A foreign key on a column the old schema did not have is ignored -- the column
---     starts at its default (null for every such key), so it points nowhere yet.
+--   * Every old table must have a new home, and every old column. Anything missing is an error, not
+--     a silent drop. (A release that moves a column says so here, as a hand mapping after the copy.)
+--   * Tables are copied in any order, with the new schema's foreign keys dropped for the copy and
+--     added back after it, which checks every row against them (the schema has key cycles, so no
+--     order would do). A key on a column the old schema did not have starts at its default.
 --   * A column of one of Soma's own types (an enum, an array of one) is cast through text, since
 --     `public.ladder` and `v2.ladder` are different types with the same labels.
 --   * Generated columns are left to compute (`model_versions.artifact_key`, `ratings.conservative`),
@@ -20,10 +19,7 @@
 DO $transfer$
 DECLARE
   pending  text[];
-  done     text[] := '{}';
   t        text;
-  ready    boolean;
-  progress boolean;
   cols     text;
   sel      text;
   n_old    bigint;
@@ -44,7 +40,6 @@ BEGIN
     JOIN pg_attribute o ON o.attrelid = c.oid AND o.attnum > 0 AND NOT o.attisdropped
    WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p')
      AND c.relname <> 'soma_schema'
-     AND (c.relname, o.attname::text) NOT IN (('users', 'github_id'))
      AND NOT EXISTS (SELECT 1 FROM pg_attribute n
                       WHERE n.attrelid = to_regclass(format('v2.%I', c.relname))
                         AND n.attname = o.attname AND NOT n.attisdropped);
@@ -73,57 +68,58 @@ BEGIN
   EXECUTE (SELECT 'TRUNCATE ' || string_agg(format('v2.%I', x), ', ') || ' CASCADE' FROM unnest(pending) x);
   SET LOCAL client_min_messages = notice;
 
-  WHILE cardinality(pending) > 0 LOOP
-    progress := false;
-    FOREACH t IN ARRAY pending LOOP
-      SELECT NOT EXISTS (
-               SELECT 1
-                 FROM pg_constraint k
-                 JOIN pg_class p ON p.oid = k.confrelid
-                WHERE k.conrelid = format('v2.%I', t)::regclass AND k.contype = 'f'
-                  AND k.confrelid <> k.conrelid
-                  AND p.relname::text <> ALL (done)
-                  -- only a key whose every column is copied can point at anything yet
-                  AND NOT EXISTS (
-                        SELECT 1 FROM unnest(k.conkey) AS a (n)
-                          JOIN pg_attribute na ON na.attrelid = k.conrelid AND na.attnum = a.n
-                         WHERE NOT EXISTS (SELECT 1 FROM pg_attribute oa
-                                            WHERE oa.attrelid = format('public.%I', t)::regclass
-                                              AND oa.attname = na.attname AND NOT oa.attisdropped)))
-        INTO ready;
-      CONTINUE WHEN NOT ready;
-
-      SELECT string_agg(quote_ident(na.attname), ', ' ORDER BY na.attnum),
-             string_agg(CASE WHEN nt.typnamespace = 'v2'::regnamespace
-                               OR et.typnamespace = 'v2'::regnamespace
-                             THEN format('%I::text::%s', na.attname, format_type(na.atttypid, na.atttypmod))
-                             ELSE quote_ident(na.attname) END, ', ' ORDER BY na.attnum)
-        INTO cols, sel
-        FROM pg_attribute na
-        JOIN pg_type nt ON nt.oid = na.atttypid
-        LEFT JOIN pg_type et ON et.oid = nt.typelem AND nt.typelem <> 0
-       WHERE na.attrelid = format('v2.%I', t)::regclass
-         AND na.attnum > 0 AND NOT na.attisdropped AND na.attgenerated = ''
-         AND EXISTS (SELECT 1 FROM pg_attribute oa
-                      WHERE oa.attrelid = format('public.%I', t)::regclass
-                        AND oa.attname = na.attname AND NOT oa.attisdropped);
-
-      EXECUTE format('INSERT INTO v2.%I (%s) SELECT %s FROM public.%I', t, cols, sel, t);
-      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n_old;
-      EXECUTE format('SELECT count(*) FROM v2.%I', t) INTO n_new;
-      IF n_old <> n_new THEN
-        RAISE EXCEPTION 'copying %: % rows in the old table, % in the new', t, n_old, n_new;
-      END IF;
-      RAISE NOTICE 'copied %: % rows', rpad(t, 24), n_new;
-
-      done := done || t;
-      pending := array_remove(pending, t);
-      progress := true;
-    END LOOP;
-    IF NOT progress THEN
-      RAISE EXCEPTION 'cannot order these tables by their foreign keys (a cycle, or a key into a new table): %', pending;
-    END IF;
+  -- THE COPY IGNORES ORDER. The schema has foreign-key cycles (a board's latest match, a match's
+  -- board), so no table order satisfies every key. Each new table's keys are dropped, every row is
+  -- copied, and each key is added back exactly as the migration declared it -- which re-checks every
+  -- row, so a dangling reference still fails the cutover, just after the copy instead of during it.
+  -- The new tables' own triggers are off for the copy: a row arriving is not an event (a comment's
+  -- insert would count its thread twice, the seal would refuse a closed season's ratings). The
+  -- definitions are read with an empty search_path so each names its schema.
+  PERFORM set_config('search_path', 'pg_catalog', true);
+  CREATE TEMP TABLE transfer_fks ON COMMIT DROP AS
+    SELECT k.conrelid::regclass::text AS tbl, k.conname, pg_get_constraintdef(k.oid) AS def
+      FROM pg_constraint k
+     WHERE k.contype = 'f' AND k.connamespace = 'v2'::regnamespace;
+  PERFORM set_config('search_path', 'v2', true);
+  FOR t IN SELECT format('ALTER TABLE %s DROP CONSTRAINT %I', f.tbl, f.conname) FROM transfer_fks f LOOP
+    EXECUTE t;
   END LOOP;
+  FOREACH t IN ARRAY pending LOOP
+    EXECUTE format('ALTER TABLE v2.%I DISABLE TRIGGER USER', t);
+  END LOOP;
+
+  FOREACH t IN ARRAY pending LOOP
+    SELECT string_agg(quote_ident(na.attname), ', ' ORDER BY na.attnum),
+           string_agg(CASE WHEN nt.typnamespace = 'v2'::regnamespace
+                             OR et.typnamespace = 'v2'::regnamespace
+                           THEN format('%I::text::%s', na.attname, format_type(na.atttypid, na.atttypmod))
+                           ELSE quote_ident(na.attname) END, ', ' ORDER BY na.attnum)
+      INTO cols, sel
+      FROM pg_attribute na
+      JOIN pg_type nt ON nt.oid = na.atttypid
+      LEFT JOIN pg_type et ON et.oid = nt.typelem AND nt.typelem <> 0
+     WHERE na.attrelid = format('v2.%I', t)::regclass
+       AND na.attnum > 0 AND NOT na.attisdropped AND na.attgenerated = ''
+       AND EXISTS (SELECT 1 FROM pg_attribute oa
+                    WHERE oa.attrelid = format('public.%I', t)::regclass
+                      AND oa.attname = na.attname AND NOT oa.attisdropped);
+
+    EXECUTE format('INSERT INTO v2.%I (%s) SELECT %s FROM public.%I', t, cols, sel, t);
+    EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n_old;
+    EXECUTE format('SELECT count(*) FROM v2.%I', t) INTO n_new;
+    IF n_old <> n_new THEN
+      RAISE EXCEPTION 'copying %: % rows in the old table, % in the new', t, n_old, n_new;
+    END IF;
+    RAISE NOTICE 'copied %: % rows', rpad(t, 24), n_new;
+  END LOOP;
+
+  FOREACH t IN ARRAY pending LOOP
+    EXECUTE format('ALTER TABLE v2.%I ENABLE TRIGGER USER', t);
+  END LOOP;
+  FOR t IN SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s', f.tbl, f.conname, f.def) FROM transfer_fks f LOOP
+    EXECUTE t;
+  END LOOP;
+  RAISE NOTICE 'every foreign key holds over the copied rows (% keys)', (SELECT count(*) FROM transfer_fks);
 
   -- Sequences, where the two schemas share one (none today; this keeps a future one honest).
   FOR t IN SELECT c.relname FROM pg_class c
@@ -134,14 +130,3 @@ BEGIN
   END LOOP;
 END
 $transfer$;
-
--- THE ONE HAND MAPPING. An account's GitHub id was `users.github_id`; it is now the account's
--- `github` identity, keyed (provider, subject) with the subject as text -- exactly what the sign-in
--- upsert looks up, so the next GitHub sign-in finds this row and the same user, never a new one.
--- `login` is the cache of the provider's current username, which the old handle WAS (the old
--- sign-in rewrote it on every visit), so a season's participant list resolves against it at once.
--- Baselines have no GitHub id and get no identity, which `users_baseline_handle_reserved` requires.
-INSERT INTO v2.identities (user_id, provider, subject, login, created_at)
-SELECT u.id, 'github', u.github_id::text, u.handle, u.created_at
-  FROM public.users u
- WHERE u.github_id IS NOT NULL;

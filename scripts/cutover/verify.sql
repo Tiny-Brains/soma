@@ -1,96 +1,166 @@
--- WHAT THE CUTOVER MUST HAVE KEPT. Run by cutover.sql inside its one transaction, after the swap
--- (`legacy` is the old schema, `public` the new one) and the backfill. Every check RAISES, so a
--- failure rolls the whole cutover back and the site comes up on the schema it went down on.
--- It prints counts and ids only -- never a handle, a name or a session.
+-- WHAT MUST HAVE BEEN KEPT. Run by cutover.sql inside its one transaction, last, after backfill.sql.
+-- Every check raises, and a raise rolls the whole cutover back: the database is then exactly as it
+-- was. It prints counts, never values.
+--
+--   1. Every legacy table against its copy, every column the two share, cast to text, both ways
+--      (EXCEPT ALL): this release rewrites no existing value, so any difference is a loss.
+--   2. Every closed season has exactly one record, and every one of its versions a ratings row.
+--   3. THE PAGES. For every season and every ladder, this release's leaderboard statement (the
+--      image's, leaderboard.sql) answers the same `total`, `round` and `entries` as the release
+--      being replaced (legacy-leaderboard.sql over `legacy`): a closed season from its record, a
+--      live one through ladder_standings(). Compared as jsonb, every page.
+--   4. A live season's versions: model_ratings() answers what legacy.model_ratings() did. A closed
+--      season's answers from its record; only a class key backed by a frozen class row may differ.
+--   5. The seal is installed.
+--   6. Every season document (season_json) reads as before.
 
-DO $verify$
+DO $kept$
 DECLARE
-  t       text;
-  n_old   bigint;
-  n_new   bigint;
-  bad     bigint;
-  report  text := '';
+  t     record;
+  diff  bigint;
 BEGIN
-  -- 1. Every row of every old table is still here, but the per-class ladder rows of a season still
-  --    live, which the backfill drops on purpose (one rated ladder: a class is a view of Open). A
-  --    closed season keeps its class rows: they are its class tables as they stood.
-  FOR t IN SELECT c.relname FROM pg_class c
-            WHERE c.relnamespace = 'legacy'::regnamespace AND c.relkind IN ('r', 'p')
-              AND c.relname <> 'soma_schema' ORDER BY c.relname
+  FOR t IN
+    SELECT o.table_name,
+           string_agg(format('%I::text', o.column_name), ', ' ORDER BY o.ordinal_position) AS cols
+      FROM information_schema.columns o
+      JOIN information_schema.columns n
+        ON n.table_schema = 'public' AND n.table_name = o.table_name AND n.column_name = o.column_name
+      JOIN information_schema.tables x
+        ON x.table_schema = 'legacy' AND x.table_name = o.table_name AND x.table_type = 'BASE TABLE'
+     WHERE o.table_schema = 'legacy' AND o.table_name <> 'soma_schema'
+     GROUP BY o.table_name
   LOOP
-    IF t IN ('ratings', 'rating_events') THEN
-      EXECUTE format('SELECT count(*) FROM legacy.%I x WHERE x.ladder::text = ''open''
-                         OR EXISTS (SELECT 1 FROM legacy.model_versions v JOIN legacy.seasons s ON s.id = v.season_id
-                                     WHERE v.id = x.version_id AND s.closed_at IS NOT NULL)', t) INTO n_old;
-    ELSE
-      EXECUTE format('SELECT count(*) FROM legacy.%I', t) INTO n_old;
+    EXECUTE format('SELECT (SELECT count(*) FROM (SELECT %1$s FROM legacy.%2$I EXCEPT ALL SELECT %1$s FROM public.%2$I) a)
+                         + (SELECT count(*) FROM (SELECT %1$s FROM public.%2$I EXCEPT ALL SELECT %1$s FROM legacy.%2$I) b)',
+                   t.cols, t.table_name) INTO diff;
+    IF diff <> 0 THEN
+      RAISE EXCEPTION 'verify: % differs from the release it replaces in % row(s)', t.table_name, diff;
     END IF;
-    EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n_new;
-    IF n_old <> n_new THEN
-      RAISE EXCEPTION 'verify: % has % rows, expected %', t, n_new, n_old;
-    END IF;
-    report := report || format(E'\n  %s %s', rpad(t, 24), n_new);
   END LOOP;
-  RAISE NOTICE 'rows kept:%', report;
+  RAISE NOTICE 'verify: every legacy table is kept cell for cell';
+END
+$kept$;
 
-  -- 2. Every human can sign in as themselves: one github identity each, on their old GitHub id.
-  SELECT count(*) INTO bad
-    FROM legacy.users o
-   WHERE o.github_id IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM public.identities i
-                      WHERE i.user_id = o.id AND i.provider = 'github' AND i.subject = o.github_id::text);
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % account(s) lost their GitHub identity', bad; END IF;
-  SELECT count(*) INTO bad FROM public.users u
-   WHERE (u.role = 'baseline') = EXISTS (SELECT 1 FROM public.identities i WHERE i.user_id = u.id);
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % account(s) have an identity when a baseline, or none when a human', bad; END IF;
+DO $records$
+DECLARE bad text;
+BEGIN
+  SELECT string_agg(s.slug, ', ') INTO bad FROM seasons s
+   WHERE s.closed_at IS NOT NULL
+     AND (SELECT count(*) FROM season_records r WHERE r.season_id = s.id) <> 1;
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'verify: closed season(s) without exactly one record: %', bad;
+  END IF;
+  SELECT string_agg(s.slug, ', ') INTO bad FROM seasons s
+   WHERE s.closed_at IS NOT NULL
+     AND EXISTS (SELECT 1 FROM model_versions v WHERE v.season_id = s.id
+                  AND NOT EXISTS (SELECT 1 FROM season_version_ratings vr
+                                   WHERE vr.season_id = s.id AND vr.version_id = v.id));
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'verify: closed season(s) with a version missing from the record: %', bad;
+  END IF;
+  RAISE NOTICE 'verify: % closed season(s), each with one record', (SELECT count(*) FROM seasons WHERE closed_at IS NOT NULL);
+END
+$records$;
 
-  -- 3. Nobody is renamed, re-roled or signed out.
-  SELECT count(*) INTO bad FROM legacy.users o JOIN public.users n USING (id)
-   WHERE n.handle <> o.handle OR n.role::text <> o.role::text
-      OR n.display_name IS DISTINCT FROM o.display_name;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % account(s) changed handle, role or display name', bad; END IF;
-  SELECT count(*) INTO n_old FROM legacy.live_sessions;
-  SELECT count(*) INTO n_new FROM public.live_sessions;
-  IF n_old <> n_new THEN RAISE EXCEPTION 'verify: % live sessions before, % after', n_old, n_new; END IF;
+-- This release's statement, as a function over the new schema, beside the legacy one backfill.sql made.
+\set new_leaderboard `cat /cut/leaderboard.sql`
+SET LOCAL check_function_bodies = off;
+SELECT format($f$CREATE FUNCTION pg_temp.new_leaderboard(text, text, int, int, float8, text, uuid, uuid)
+                 RETURNS json LANGUAGE sql STABLE SET search_path = public, pg_catalog AS %L$f$,
+              'SELECT x.body FROM (' || :'new_leaderboard' || E'\n) x') \gexec
+RESET check_function_bodies;
 
-  -- 4. Every runner that could claim still can.
-  SELECT count(*) INTO n_old FROM legacy.live_runner_keys;
-  SELECT count(*) INTO n_new FROM public.live_runner_keys;
-  IF n_old <> n_new THEN RAISE EXCEPTION 'verify: % live runner keys before, % after', n_old, n_new; END IF;
-  SELECT count(*) INTO n_old FROM legacy.live_runners;
-  SELECT count(*) INTO n_new FROM public.live_runners;
-  IF n_old <> n_new THEN RAISE EXCEPTION 'verify: % live runners before, % after', n_old, n_new; END IF;
+DO $pages$
+DECLARE
+  s       record;
+  l       ladder;
+  cursor_ int;
+  a       json;
+  b       json;
+  pages   int := 0;
+  deploy_sigma float8 := current_setting('soma.cutover_settled_sigma')::float8;
+BEGIN
+  FOR s IN SELECT se.slug, g.slug AS game FROM seasons se JOIN games g ON g.id = se.game_id
+            WHERE se.visibility = 'public'
+  LOOP
+    FOREACH l IN ARRAY enum_range(NULL::ladder) LOOP
+      cursor_ := 0;
+      LOOP
+        a := pg_temp.legacy_leaderboard(s.game, l::text, 200, cursor_, deploy_sigma, s.slug, NULL, NULL);
+        b := pg_temp.new_leaderboard(s.game, l::text, 200, cursor_, deploy_sigma, s.slug, NULL, NULL);
+        IF (a -> 'entries')::jsonb IS DISTINCT FROM (b -> 'entries')::jsonb
+           OR (a ->> 'total') IS DISTINCT FROM (b ->> 'total')
+           OR (a -> 'round')::jsonb IS DISTINCT FROM (b -> 'round')::jsonb
+           OR (a ->> 'next_cursor') IS DISTINCT FROM (b ->> 'next_cursor') THEN
+          RAISE EXCEPTION 'verify: the % leaderboard of % reads differently from the release it replaces (page at %)',
+            l, s.slug, cursor_;
+        END IF;
+        pages := pages + 1;
+        EXIT WHEN a ->> 'next_cursor' IS NULL;
+        cursor_ := (a ->> 'next_cursor')::int;
+      END LOOP;
+    END LOOP;
+  END LOOP;
+  RAISE NOTICE 'verify: % leaderboard page(s) read the same as the release they replace', pages;
+END
+$pages$;
 
-  -- 5. Every stored object is found where it was: the generated keys agree.
-  SELECT count(*) INTO bad FROM legacy.model_versions o JOIN public.model_versions n USING (id)
-   WHERE n.artifact_key IS DISTINCT FROM o.artifact_key;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % version(s) moved artifact key', bad; END IF;
-  SELECT count(*) INTO bad FROM legacy.ratings o
-    JOIN public.ratings n ON n.version_id = o.version_id AND n.ladder::text = o.ladder::text
-   WHERE n.conservative IS DISTINCT FROM o.conservative OR n.matches_played <> o.matches_played;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % rating(s) changed', bad; END IF;
+DO $versions$
+DECLARE
+  live_bad   bigint;
+  closed_bad bigint;
+  corrected  bigint;
+  deploy_sigma float8 := current_setting('soma.cutover_settled_sigma')::float8;
+BEGIN
+  SELECT count(*) INTO live_bad
+    FROM model_versions v JOIN seasons s ON s.id = v.season_id
+   WHERE s.closed_at IS NULL
+     AND model_ratings(v.id, deploy_sigma)::jsonb IS DISTINCT FROM pg_temp.legacy_model_ratings(v.id, deploy_sigma)::jsonb;
+  IF live_bad <> 0 THEN
+    RAISE EXCEPTION 'verify: % live version(s) whose ratings read differently', live_bad;
+  END IF;
+  -- A closed season's version: every key the old answer had is unchanged, except a class key that a
+  -- frozen class row now backs.
+  SELECT count(*) INTO closed_bad
+    FROM model_versions v JOIN seasons s ON s.id = v.season_id
+    CROSS JOIN LATERAL jsonb_each(pg_temp.legacy_model_ratings(v.id, deploy_sigma)::jsonb) o (k, val)
+   WHERE s.closed_at IS NOT NULL
+     AND (model_ratings(v.id, deploy_sigma)::jsonb -> o.k) IS DISTINCT FROM o.val
+     AND NOT (o.k = v.weight_class::text
+              AND EXISTS (SELECT 1 FROM ratings c WHERE c.version_id = v.id AND c.ladder = v.weight_class));
+  IF closed_bad <> 0 THEN
+    RAISE EXCEPTION 'verify: % closed-season rating key(s) changed that no frozen class row explains', closed_bad;
+  END IF;
+  SELECT count(*) INTO corrected
+    FROM model_versions v JOIN seasons s ON s.id = v.season_id
+   WHERE s.closed_at IS NOT NULL
+     AND model_ratings(v.id, deploy_sigma)::jsonb IS DISTINCT FROM pg_temp.legacy_model_ratings(v.id, deploy_sigma)::jsonb;
+  RAISE NOTICE 'verify: live versions'' ratings unchanged; % closed-season version(s) now show their frozen class row', corrected;
+END
+$versions$;
 
-  -- 6. The season a visitor lands on is the one they landed on yesterday: the live one, else the
-  --    newest. current_season() is what every public read resolves "no season named" through.
-  SELECT count(*) INTO bad
-    FROM public.games g
-    JOIN LATERAL (SELECT s.id FROM legacy.seasons s WHERE s.game_id = g.id
-                   ORDER BY (s.closed_at IS NULL) DESC, s.number DESC LIMIT 1) o ON true
-    LEFT JOIN LATERAL current_season(g.id) n ON true
-   WHERE n.id IS DISTINCT FROM o.id;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % game(s) would open on a different season', bad; END IF;
+-- 6. The season document: a closed season's is its record's summary, which must read as the season
+--    read before; a live one's is computed as before.
+DO $seasons$
+DECLARE bad text;
+BEGIN
+  SELECT string_agg(s.slug, ', ') INTO bad FROM seasons s
+   WHERE season_json(s)::jsonb IS DISTINCT FROM pg_temp.legacy_season_json(s.id)::jsonb;
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'verify: the season document of % reads differently', bad;
+  END IF;
+  RAISE NOTICE 'verify: every season document reads as before';
+END
+$seasons$;
 
-  -- 7. The rating chain (ratings.matches_played is the rating_events seq): a break fails every fold.
-  SELECT count(*) INTO bad FROM (
-    SELECT 1 FROM public.ratings r JOIN public.rating_events e USING (version_id, ladder)
-     GROUP BY r.version_id, r.ladder, r.matches_played HAVING r.matches_played < max(e.seq)) x;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % rating(s) behind their last event', bad; END IF;
-
-  -- 8. What a clock resumes from: fences and epochs as they were.
-  SELECT count(*) INTO bad FROM legacy.clocks o FULL JOIN public.clocks n USING (key)
-   WHERE row(n.*)::text IS DISTINCT FROM row(o.*)::text;
-  IF bad > 0 THEN RAISE EXCEPTION 'verify: % clock row(s) differ', bad; END IF;
-
+DO $seal$
+DECLARE n int;
+BEGIN
+  SELECT count(*) INTO n FROM pg_trigger
+   WHERE NOT tgisinternal AND tgname LIKE '%\_sealed' AND tgrelid::regclass::text NOT LIKE 'legacy.%';
+  IF n <> 10 THEN
+    RAISE EXCEPTION 'verify: % seal trigger(s) installed, expected 10', n;
+  END IF;
   RAISE NOTICE 'verify: every check passed';
 END
-$verify$;
+$seal$;

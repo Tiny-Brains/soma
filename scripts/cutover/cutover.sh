@@ -18,7 +18,9 @@
 #
 # Environment:
 #   SOMA_IMAGE       the new soma image (recommended: the release being deployed)
-#   FROM_DIGEST      the schema digest the database must be on (default: v0.7.x's)
+#   FROM_DIGEST      the schema digest the database must be on (default: v0.9.x's, 41279af0)
+#   SETTLED_SIGMA    the deploy's settled_sigma [var] (default 3.0, docker/soma.toml.tmpl's), which a
+#                    closed season's backfilled record and the page comparison are rendered under
 #   DOCKER_NETWORK   where psql runs from (default: host; `container:<db>` for a local container)
 #   PSQL_IMAGE       default postgres:16-alpine, the major version the platform runs
 #
@@ -35,7 +37,8 @@ cd "$(dirname "$0")"
 URL="${1:?usage: cutover.sh <database url> [--commit]}"
 COMMIT=false
 [ "${2:-}" = "--commit" ] && COMMIT=true
-FROM_DIGEST="${FROM_DIGEST:-a7d597d5f58756a906d6d49b5ec3fd6941459944fb86bf231a0f48c6d64af9a8}"
+FROM_DIGEST="${FROM_DIGEST:-41279af010519d5ebb829b78349b16e268c8635a0d57be3ff8d083968275bf22}"
+SETTLED_SIGMA="${SETTLED_SIGMA:-3.0}"
 DOCKER_NETWORK="${DOCKER_NETWORK:-host}"
 PSQL_IMAGE="${PSQL_IMAGE:-postgres:16-alpine}"
 
@@ -47,10 +50,12 @@ if [ -n "${SOMA_IMAGE:-}" ]; then
   echo "==> migrations from $SOMA_IMAGE"
   cid=$(docker create "$SOMA_IMAGE")
   docker cp "$cid:/pkg/soma/migrations/." "$work/raw/" > /dev/null
+  docker cp "$cid:/pkg/soma/sql/soma-pub-shared-leaderboard.sql" "$work/leaderboard.sql" > /dev/null
   docker rm "$cid" > /dev/null
 else
   echo "==> migrations from this checkout ($(git -C .. rev-parse --short HEAD 2>/dev/null || echo '?'))"
   cp ../../migrations/*.sql "$work/raw/"
+  cp ../../sql/soma-pub-shared-leaderboard.sql "$work/leaderboard.sql"
 fi
 
 # The digest exactly as entrypoint.sh's schema_digest() computes it: the content, concatenated in
@@ -77,10 +82,11 @@ for f in $files; do
   echo "\\echo '    $b'" >> "$work/apply.sql"
   echo "\\i /cut/migrations/$b" >> "$work/apply.sql"
 done
-cp cutover.sql transfer.sql backfill.sql verify.sql "$work/"
+cp cutover.sql transfer.sql backfill.sql verify.sql legacy-leaderboard.sql "$work/"
 
 echo "==> $( $COMMIT && echo 'CUTOVER (commit)' || echo 'dry run (rolls back)' ): from sha256:${FROM_DIGEST:0:12}... to sha256:${TO_DIGEST:0:12}..."
 docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/cut:ro" "$PSQL_IMAGE" \
   psql "$URL" -X -q -v ON_ERROR_STOP=1 \
        -v from_digest="$FROM_DIGEST" -v to_digest="$TO_DIGEST" -v commit="$COMMIT" \
+       -v settled_sigma="$SETTLED_SIGMA" \
        -f /cut/cutover.sql

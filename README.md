@@ -79,11 +79,12 @@ channels add a per-principal quota.
 | GET | `/v1/admin-check` | Session | **204** admin, **401** no or revoked session, **403** signed-in non-admin; no body |
 | GET | `/v1/status` | Public | Queue, throughput, how far each clock is behind, and `admitters`: how many machines could serve the admission queue |
 | GET | `/v1/games` · `/v1/games/{game}` | Public | Games with their current season · one game: `about`, effective limits (`limits.boards`), weight classes with their memory numbers |
-| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor`. A class is Open filtered to it, except in a season that closed under per-class ratings: its class table is that class's own rating, events and field as they stood, kept by the cutover |
+| GET | `/v1/games/{game}/leaderboard` | Public | `ladder`, `season`, `limit` ≤ 200, `cursor`. A live season is ranked by `ladder_standings()` (a class is Open filtered to it); a closed one is read from its record, never ranked again. `columns` describes a row's fields |
 | GET | `/v1/private/...` | Session | The member's copy of every season-scoped public read -- seasons, leaderboard and series, podium, maps, playing, matches (list, one, frame, related), a match's thread (`/v1/private/threads`), versions, models -- with the same shapes: the same statement with the session's claims, so a private season answers to whoever `season_visible()` lets see it. Uncached |
 | GET | `/v1/games/{game}/leaderboard/series` | Public | `ladder` (open), `since` (season open), `points` (60, 2..200), `season`: per version the rating and rank at each edge, from the hourly snapshots |
 | GET | `/v1/games/{game}/picks` | Public | Live picks as cards in order, with `pick_id` and `position` |
 | GET | `.../seasons/{slug}/podium` | Public | The frozen podium per ladder, each place with its owner's latest match |
+| GET | `.../seasons/{slug}/record` | Public | A closed season's whole record as one document: the season as it closed, what rated it (plugin digest and parameters), the columns, every ladder's standings, the podium and every version's ratings · `409 season_open` for a live one |
 | GET · POST | `/v1/games/{game}/seasons` | Public · Admin | Seasons with counts (public seasons to a stranger) · create `{name, submissions_open_at, submissions_close_at, visibility?, entry?, fleet?, providers?, admins?, rules?, weight_classes?}` (private forces restricted) |
 | PATCH | `/v1/games/{game}/seasons/{slug}` | Season admin | Edit window, rules, weight classes before open; name and slug are refused |
 | POST | `/v1/games/{game}/seasons/{slug}/featured` | Admin | Make a public season the game's featured one; a private season is refused |
@@ -163,9 +164,12 @@ channels add a per-principal quota.
 | POST | `/v1/runner/admissions/claim` | Runner | `{orion_version}` → one prepared submission (registration, key, digest, budget, reference observations) and its claim, or `200 {"idle": true}`; 409 `orion_version_differs` |
 | POST | `/v1/runner/admissions/{id}/report` | Runner | `{claim_token, admission, stats, probe}` (`probe.round_trip` `{checked, failed}` for a model with memory) → `200 {applied: true}` · `200 {applied: false}` duplicate · `409` claim lost |
 
-Every admin write inserts its `audit_log` line in the same statement. A season's close freezes its
-podium into `season_podium` (one place per owner, no baselines) and sends each placed owner a
-`medal`.
+Every admin write inserts its `audit_log` line in the same statement. A season's close writes its
+**record** in the same statement: the podium into `season_podium` (one place per owner, no
+baselines), every ladder's standings into `season_standings`, every version's ratings into
+`season_version_ratings`, and a header (`season_records`: revision, format, the columns, the season
+as it closed). From then on the leaderboard, podium and every version's ratings read the record and
+nothing recomputes them. Each placed owner is sent a `medal`.
 
 `/v1/admin-check` exists for nginx `auth_request` (web puts the Orion console behind it): 2xx allows,
 401 sends the caller to sign in, 403 refuses. Keep the 401/403 split. The port also serves Orion's
@@ -229,7 +233,7 @@ judged by `worldgen`.
 | `model_stories`, `posts`, `announcements`, `picks`, `notify_sends` | the story route and the admin desks |
 | `audit_log` | every admin write, inside its own statement |
 | `watch_events` | `POST /v1/events` |
-| `season_podium` | withdraw's close |
+| `season_podium`, `season_records`, `season_standings`, `season_version_ratings` | withdraw's close (and, for a season closed before records, the cutover's backfill); never updated or deleted |
 
 ## Development
 
@@ -243,6 +247,7 @@ judged by `worldgen`.
 | `./scripts/check-sql.sh` | `orion-server sql check`: prepare every shipped statement against a scratch schema built from `migrations/`, each as its connector's role, and plan it to prove that role's grants | docker, or `SQLCHECK_DATABASE` |
 | `./scripts/verify/run.sh` | What the statements mean: the scenario walk, both fence races, that the migrations seed nothing an admin makes, the `runner_gate` grants. It reads each shipped statement out of the workflow that ships it, so there is no copy to drift | a postgres container (`DB_CONTAINER`) |
 | `./scripts/smoke.sh` | Every route's status code with a minted session, against the newest season (create one first); an admin handle adds a runner-key → token → claim round trip | the running stack, package loaded |
+| `./scripts/archive-records.sh <dir> [--r2 <bucket>]` | Every closed season's record, fetched through its public route, kept as served with a canonical sha256 in `SHA256SUMS`; a record already kept is compared, never overwritten, and a moved one fails the run | a deployment's URL; `wrangler` for `--r2` |
 | `./scripts/load-package.sh [--prune]` | Compile a working copy and `package apply` it into a running node; `--prune` retires what the applied version carried and this one does not. A node applies its own package at boot without this | `orion-server`, the admin API |
 | `docker build -t tinybrains/soma:dev .` | The node image | Docker |
 
@@ -251,10 +256,15 @@ Script env: `DB_CONTAINER` (default `tinybrains-db-1`), `DB_USER`, `BASE`,
 `ORION_ADMIN_API_KEY` (load-package), `TB_ANTS_PLUGIN_DIR` (check-tests).
 
 **The cutover** (`scripts/cutover/`) is not a check but this release's one-time migration of an
-existing database, and its order is the whole of it: `cutover.sh` builds the new schema beside the
-old one, copies every row across, swaps the names and commits or rolls back whole, keeping the old
-schema as `legacy`; `retire.sh` archives, in Orion's state, the definitions this release renamed;
-`backfill-frames.sh` fills in the last frame of every older match once the new node serves. The
+existing database (here: from v0.9.x's schema, `41279af0`), and its order is the whole of it:
+`cutover.sh` builds the new schema beside the old one, copies every row across (keys dropped for the
+copy and re-added after it, which re-checks every row), writes a record for every season that closed
+before records existed -- rendered by the replaced release's own leaderboard statement,
+`legacy-leaderboard.sql`, so it is what that release served -- proves every old table kept cell for
+cell and every leaderboard page unchanged, then swaps the names and commits or rolls back whole,
+keeping the old schema as `legacy`; `retire.sh` archives, in Orion's state, the definitions this
+release no longer ships; `backfill-frames.sh` fills in the last frame of every older match once the
+new node serves (a no-op from v0.9.x). The
 first two run **with every node stopped**, and `retire.sh` before the new node boots: a boot apply
 never prunes, and Orion refuses a channel on a route another active channel still claims, so a
 renamed channel stops the node in a loop — and once a boot apply has succeeded, `--prune` finds
@@ -484,6 +494,15 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 
 ## Invariants
 
+- **A closed season is read from its record and its facts are sealed.** The close writes the record
+  in the statement that closes; a closed season is never ranked again, so a release may change
+  ranking, rating or caps for later seasons without a branch for earlier ones. The database refuses
+  any write to a closed season's ratings, rating events, snapshots, finished matches and seats, the
+  row (its visibility too: a closed season made private would vanish), and any update or delete of
+  a record (`SEASON_SEALED`); only a cutover's own transaction sets `soma.unseal`. The record pins
+  what rated the season (`rating`: the plugin's digest, from `[vars] rating_digest`, and every
+  parameter count passed it), as `seasons.engine_digest` pins what played it. Count folds no match of a closed season, and a close
+  request waits until nothing is `finished` and uncounted.
 - **Only count writes a rating**, and every ladder write re-reads count's run fence `FOR SHARE`.
   Routes and clocks share the owner role, so this is a review boundary, not a grant.
 - **Pair's insert derives everything and trusts nothing**: it checks the roster epoch, takes the
@@ -553,6 +572,15 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 
 ## Known gaps
 
+- A season's record is kept outside the database only when an operator runs
+  `scripts/archive-records.sh` (a directory, and the bucket with `--r2`): Orion has no storage write a
+  clock could make at the close, so nothing exports a record by itself.
+- A closed season's revision 2 (a correction) has no route: it would be written by hand, as an
+  admin's deliberate SQL, with `soma.unseal` refused by every node.
+- A cutover refuses a closed PRIVATE season with no record: the replaced release's statement serves
+  the anonymous public and would record it empty.
+- A match that finishes after its season closed (claimed or running at an admin's close request)
+  stays `finished`: played, never counted, and not in the record.
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
 - Push notification settings are stored, but nothing delivers them.
 - A refused row is claimed after the fresh rows of its kind, which spreads the refusals; trials

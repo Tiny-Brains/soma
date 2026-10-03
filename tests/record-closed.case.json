@@ -1,0 +1,30 @@
+{
+  "name": "record-closed: a closed season answers its record, read and not recomputed",
+  "workflow": "../workflows/soma-pub-record.json",
+  "input": {},
+  "metadata": { "params": { "game": "ants", "slug": "nuptial-flight" } },
+  "stubs": {
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "season": "nuptial-flight",
+            "season_name": "Nuptial Flight",
+            "closed": true,
+            "record": {
+              "format": 1,
+              "revision": 1,
+              "reason": "backfill",
+              "ladders": { "open": [] }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.record.format": 1,
+    "data.body.record.reason": "backfill"
+  }
+}

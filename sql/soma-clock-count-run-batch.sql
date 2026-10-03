@@ -2,6 +2,10 @@ WITH folds AS (
     SELECT json_build_object('kind', 'fold', 'id', m.id) AS item, 0 AS grp, m.played_at AS ord, m.id
       FROM matches m
      WHERE m.status = 'finished' AND m.trial_version_id IS NULL
+       -- A CLOSED SEASON FOLDS NOTHING: its ratings are its record's facts and the seal refuses the
+       -- write, which would stop this run and every ladder behind it. A match that finishes after
+       -- its season closed stays `finished`: played, never counted.
+       AND NOT EXISTS (SELECT 1 FROM seasons s WHERE s.id = m.season_id AND s.closed_at IS NOT NULL)
      ORDER BY m.played_at, m.id
      LIMIT ($1)::int
 ), verdicts AS (

@@ -306,7 +306,10 @@ UPDATE seasons SET closed_at = now();
 EXECUTE p_insert (1, '50000000-0000-0000-0000-000000000001', 48, '70000000-0000-0000-0000-000000000001',
   '{20000000-0000-0000-0000-000000000002,10000000-0000-0000-0000-000000000001}', NULL, gen_random_uuid(), 5);
 EXECUTE w_sweep;
+-- A FIXTURE reopens it: the seal refuses that to every node, so the harness says it is a fixture.
+SET soma.unseal = 'on';
 UPDATE seasons SET closed_at = NULL;
+RESET soma.unseal;
 
 \echo '--- reject path: v3 verified; its only trial fails LEASE_LAPSED under a one-trial ceiling; verdict read; reject (expect UPDATE 1, epoch 2)'
 INSERT INTO model_versions (id, model_id, game_id, season_id, version, status,
@@ -426,10 +429,47 @@ INSERT INTO ratings (version_id, ladder, mu, sigma) VALUES
   ('20000000-0000-0000-0000-0000000000a2', 'open', 40, 2),
   ('20000000-0000-0000-0000-0000000000c1', 'open', 28, 2);
 UPDATE seasons SET close_requested_at = now() WHERE id = '50000000-0000-0000-0000-000000000001';
-EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 2.0, 3);
+\echo '    a request waits while a match is finished and uncounted (expect a count above 0, then UPDATE 0); once it is folded the season closes (expect UPDATE 1)'
+SELECT count(*) AS finished_uncounted FROM matches
+ WHERE season_id = '50000000-0000-0000-0000-000000000001' AND status = 'finished';
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 2.0, 3, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
+UPDATE matches SET status = 'rated', rated_at = now(), rated_seq = nextval('rating_seq')
+ WHERE season_id = '50000000-0000-0000-0000-000000000001' AND status = 'finished';
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 2.0, 3, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT sp.ladder, sp.place, u.handle, e.name, sp.rating FROM season_podium sp
   JOIN users u ON u.id = sp.owner_id JOIN model_versions v ON v.id = sp.version_id JOIN models e ON e.id = v.model_id
  ORDER BY sp.ladder, sp.place;
+\echo '    the same statement wrote the record: revision 1 from the close, summary closed; standings on nano and open, alice, carol, alice, the baseline, each entry agreeing with its columns; every version''s ratings; the season document and the whole-record document read it (expect 1 close 1 closed 13 0 sha256:rating, eight rows, t 4, 6 = 6)'
+SELECT r.revision, r.reason, r.format, r.summary ->> 'state' AS state, jsonb_array_length(r.columns) AS columns,
+       r.summary ->> 'in_flight_versions' AS in_flight, r.rating ->> 'digest' AS rated_by
+  FROM season_records r WHERE r.season_id = '50000000-0000-0000-0000-000000000001';
+SELECT (SELECT season_json(s)::jsonb FROM seasons s WHERE s.id = '50000000-0000-0000-0000-000000000001')
+       = (SELECT r.summary::jsonb FROM season_records r WHERE r.season_id = '50000000-0000-0000-0000-000000000001') AS document_is_the_record,
+       json_array_length(season_record_document('50000000-0000-0000-0000-000000000001') -> 'ladders' -> 'open') AS record_open_rows;
+SELECT st.ladder, st.rank, u.handle, st.entry ->> 'model' AS model, (st.entry ->> 'rating')::float8 = st.rating AS entry_agrees
+  FROM season_standings st JOIN users u ON u.id = st.owner_id
+ WHERE st.season_id = '50000000-0000-0000-0000-000000000001' ORDER BY st.ladder, st.rank;
+SELECT (SELECT count(*) FROM season_version_ratings WHERE season_id = '50000000-0000-0000-0000-000000000001') AS recorded,
+       (SELECT count(*) FROM model_versions WHERE season_id = '50000000-0000-0000-0000-000000000001') AS versions;
+\echo '    the leaderboard reads the record, not the live ranking: a rating moved by hand after the close (unsealed, a fixture) does not move the page (expect alice 1st at 34, total 4, 13 columns)'
+SET soma.unseal = 'on';
+UPDATE ratings SET mu = 1 WHERE version_id = '20000000-0000-0000-0000-0000000000a2' AND ladder = 'open';
+RESET soma.unseal;
+EXECUTE x_leaderboard ('ants', 'open', 10, 0, 2.0, 'summer-2026', NULL, NULL) \gset lbc_
+SELECT :'lbc_body'::json -> 'entries' -> 0 ->> 'owner' AS first, round((:'lbc_body'::json -> 'entries' -> 0 ->> 'rating')::numeric) AS rating,
+       :'lbc_body'::json ->> 'total' AS total, json_array_length(:'lbc_body'::json -> 'columns') AS columns;
+\echo '    and so does a version''s own page (expect 34, not the moved rating)'
+SELECT round((model_ratings('20000000-0000-0000-0000-0000000000a2', 2.0) -> 'open' ->> 'rating')::numeric) AS version_page_rating;
+\echo '    the seal: a closed season''s ratings, its record and its row refuse a write (expect four SEASON_SEALED errors: its rating, its record, its count, its visibility -- a closed season made private would vanish from the record it is)'
+SAVEPOINT seal;
+UPDATE ratings SET mu = 2 WHERE version_id = '20000000-0000-0000-0000-0000000000c1' AND ladder = 'open';
+ROLLBACK TO SAVEPOINT seal;
+UPDATE season_standings SET rating = 0 WHERE season_id = '50000000-0000-0000-0000-000000000001';
+ROLLBACK TO SAVEPOINT seal;
+UPDATE seasons SET matches_played = matches_played + 1 WHERE id = '50000000-0000-0000-0000-000000000001';
+ROLLBACK TO SAVEPOINT seal;
+UPDATE seasons SET visibility = 'private' WHERE id = '50000000-0000-0000-0000-000000000001';
+ROLLBACK TO SAVEPOINT seal;
 EXECUTE n_medal ('00000000-0000-0000-0000-00000000000a');
 EXECUTE n_medal ('00000000-0000-0000-0000-00000000000a');
 SELECT u.handle, n.category, n.subject, n.data, n.dedupe_key FROM notifications n JOIN users u ON u.id = n.user_id
@@ -1523,7 +1563,7 @@ INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash
   ('11111111-1111-1111-1111-1111111111e2', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
   ('11111111-1111-1111-1111-1111111111e2', 1, '20000000-0000-0000-0000-0000000000d2', 'sha256:wd2', 'sha256:md2', 2, 1, 0);
 SELECT entries, complete, done FROM season_finals('50000000-0000-0000-0000-0000000000e1');
-EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
 \echo '--- the leaderboard counts the round beside the season (expect round finals 2, each entry''s round_matches 1, the wall 0)'
 EXECUTE x_leaderboard ('ants', 'open', 10, 0, 3.0, 'rounds-2026', NULL, NULL) \gset lb_
@@ -1547,11 +1587,11 @@ INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id,
 VALUES ('11111111-1111-1111-1111-1111111111e4', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 905,
         '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'running', gen_random_uuid(), now() + interval '5 minutes', 3);
 SELECT done FROM season_finals('50000000-0000-0000-0000-0000000000e1');
-EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
 \echo '--- it finishes and is rated: the close takes the season, the podium is frozen from the finals (expect closed t; open places 1 and 2, the two entries)'
 UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9004 WHERE seed = 905;
-EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8);
+EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
 SELECT ladder, place FROM season_podium WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND ladder = 'open';
 \echo '--- the admin''s rounds document reads it all back (expect state closed, policy finals, current 3, 3 rounds, finals done, 3 versions)'

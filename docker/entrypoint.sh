@@ -130,6 +130,12 @@ serve() {
   SOMA_ENGINE_DIGEST=$(cat "$CARTRIDGE/engine-digest" 2>/dev/null || true)
   export SOMA_ENGINE_DIGEST
 
+  # The rating plugin this node loads, which [vars] rating_digest names so a season's record can pin
+  # what rated it -- the same sha256 its signature is over.
+  SOMA_RATING_DIGEST=$(sha256sum /pkg/soma/plugins/tb-rating/tb-rating.wasm 2>/dev/null | cut -d' ' -f1)
+  SOMA_RATING_DIGEST=${SOMA_RATING_DIGEST:+sha256:$SOMA_RATING_DIGEST}
+  export SOMA_RATING_DIGEST
+
   # Doubles as the readiness probe for Postgres. soma.toml.tmpl sets auto_migrate = false, because a
   # cluster may not migrate at boot from every node at once; this is the step that satisfies it.
   #

@@ -1,0 +1,59 @@
+{
+  "workflow_id": "soma-pub-record",
+  "name": "Season record",
+  "description": "A closed season's whole record as one document: the season as it closed, what rated it (the plugin's digest and its parameters), the columns, every ladder's standings in rank order, the podium and every version's ratings -- written by the close and never recomputed, so an archive of it is the season for ever. season_cache: a record never changes. 404 for an unknown game or season; 409 season_open for a live one, which has no record yet.",
+  "tags": ["soma", "pub", "ladder"],
+  "tasks": [
+    {
+      "id": "query",
+      "name": "Query",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "soma-db",
+          "query": { "$sql": "../sql/soma-pub-shared-record.sql" },
+          "params": [
+            { "var": "metadata.params.game" },
+            { "var": "metadata.params.slug" },
+            null,
+            null
+          ],
+          "output": "temp_data.rows"
+        }
+      }
+    },
+    {
+      "id": "missing",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "status": 404,
+        "body": { "error": "unknown_season" },
+        "name": "No such season"
+      }
+    },
+    {
+      "id": "open",
+      "use": "refuse",
+      "with": {
+        "when": { "!": { "var": "temp_data.rows.0.body.closed" } },
+        "status": 409,
+        "body": { "error": "season_open" },
+        "name": "A live season has no record yet"
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
+          ]
+        }
+      }
+    }
+  ]
+}

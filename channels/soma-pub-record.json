@@ -1,0 +1,18 @@
+{
+  "channel_id": "soma-pub-record",
+  "name": "soma-pub-record",
+  "description": "A closed season's whole record. season_cache.",
+  "tags": ["soma", "pub", "ladder"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/games/{game}/seasons/{slug}/record",
+  "workflow_id": "soma-pub-record",
+  "config": {
+    "request": { "$from": "constants.payload_body" },
+    "response": { "$from": "constants.shaped" },
+    "timeout_ms": 10000,
+    "rate_limit": { "$from": "constants.public_rate" },
+    "cache": { "$from": "constants.season_cache", "namespaces": ["season", "ladder"] }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "record-open: a live season has no record yet, and says so with 409 season_open",
+  "workflow": "../workflows/soma-pub-record.json",
+  "input": {},
+  "metadata": { "params": { "game": "ants", "slug": "hive-minds" } },
+  "stubs": {
+    "db_read": {
+      "soma-db": [
+        {
+          "body": {
+            "season": "hive-minds",
+            "season_name": "Hive Minds",
+            "closed": false,
+            "record": null
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data._orion.response.status": 409,
+    "data.body.error": "season_open"
+  }
+}
