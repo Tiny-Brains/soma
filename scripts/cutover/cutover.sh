@@ -4,7 +4,7 @@
 # ladder, same seasons, same runner keys, and the season they land on unchanged.
 #
 #   scripts/cutover/cutover.sh "$SOMA_DB_URL"            # dry run: every step, then ROLLBACK
-#   scripts/cutover/cutover.sh "$SOMA_DB_URL" --commit   # the real one
+#   scripts/cutover/cutover.sh "$SOMA_DB_URL" --commit   # the real one, then ANALYZE
 #
 # `bootstrap` refuses a database built from other migration bytes, and this release rewrote them, so
 # the database cannot simply be re-bootstrapped. Instead cutover.sql builds the new schema as `v2`
@@ -90,3 +90,12 @@ docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/cut:ro" "$PSQL_IMAGE" 
        -v from_digest="$FROM_DIGEST" -v to_digest="$TO_DIGEST" -v commit="$COMMIT" \
        -v settled_sigma="$SETTLED_SIGMA" \
        -f /cut/cutover.sql
+
+# THE PLANNER'S STATISTICS. The copy leaves every new table unanalyzed, and until autovacuum's first
+# pass (a minute or more later) Postgres plans the matches list and the ladders as if the tables
+# were empty: a list that answers in milliseconds then runs for minutes, and the first visitors fill
+# the pool. A node must not serve the new schema before this.
+if $COMMIT; then
+  echo "==> ANALYZE (the new tables have no statistics yet)"
+  docker run --rm --network "$DOCKER_NETWORK" "$PSQL_IMAGE" psql "$URL" -X -q -v ON_ERROR_STOP=1 -c 'ANALYZE'
+fi

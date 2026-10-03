@@ -421,6 +421,14 @@ listed account is restored by its next sign-in, so removing someone for good mea
   be deleted or overwritten by anyone. That is safe because an attempt's replay key is its own (match
   and claim token) and is written once; a runner's retry of a PUT that did land is refused 4xx, which
   `http_call` records and carries on past, so the finish still goes out.
+- **`jit = off` on the database** (`ALTER DATABASE soma SET jit = off`, as its owner). Several
+  statements run inside SQL functions, which Postgres plans for generic parameters; those cost
+  estimates cross `jit_above_cost`, and each call then spends seconds compiling. `rating_series()`
+  takes about 4 s with JIT and 0.2 s without, and it is read on every home, leaderboard, model and
+  profile page: a few cold visitors fill the pool. Postgres's default is on.
+- **`ANALYZE` after a cutover, before any node serves.** The copy leaves every new table without
+  statistics until autovacuum's first pass, and a node serving then plans the matches list as if
+  `matches` were empty -- minutes per call. `scripts/cutover/cutover.sh --commit` runs it.
 - **One bucket for uploads and nodes.** A node reading a different bucket from the one Soma signed
   the upload for rejects every submission `ARTIFACT_MISSING`.
 - **Cluster mode whenever N > 1**: two nodes on two state databases are two schedulers, so each
@@ -593,10 +601,6 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
   the anonymous public and would record it empty.
 - A match that finishes after its season closed (claimed or running at an admin's close request)
   stays `finished`: played, never counted, and not in the record.
-- A season's rating series (`/leaderboard/series`) takes about 5 s cold on a `db-f1-micro`:
-  `rating_series()` is a SQL function, so Postgres plans its body for generic parameters, and that
-  plan is about 40 times slower than the same body planned for one season. The response cache holds
-  it after the first read. The fix is in the function, which is a schema rewrite.
 - Notifications are never pruned. No clock may delete, so pruning needs a writer that is not a clock.
 - Push notification settings are stored, but nothing delivers them.
 - A refused row is claimed after the fresh rows of its kind, which spreads the refusals; trials
