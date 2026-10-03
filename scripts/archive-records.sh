@@ -28,7 +28,11 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -z "$R2" ] || command -v wrangler > /dev/null || { echo "--r2 needs wrangler on PATH" >&2; exit 1; }
+WRANGLER=(wrangler)
+if [ -n "$R2" ] && ! command -v wrangler > /dev/null; then
+  command -v npx > /dev/null || { echo "--r2 needs wrangler (or npx to run it)" >&2; exit 1; }
+  WRANGLER=(npx -y wrangler@4)
+fi
 mkdir -p "$DIR"
 
 canon() { python3 -c 'import json,sys,hashlib; d=json.load(open(sys.argv[1])); print(hashlib.sha256(json.dumps(d["record"],sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest())' "$1"; }
@@ -57,7 +61,7 @@ for slug in $slugs; do
   echo "$sum  $rel" >> "$DIR/SHA256SUMS"
   echo "  archived $rel  sha256:${sum:0:12}"
   if [ -n "$R2" ]; then
-    wrangler r2 object put "$R2/records/$rel" --file "$DIR/$rel" --content-type application/json --remote > /dev/null
+    "${WRANGLER[@]}" r2 object put "$R2/records/$rel" --file "$DIR/$rel" --content-type application/json --remote > /dev/null
     echo "           r2://$R2/records/$rel"
   fi
 done
