@@ -8,6 +8,14 @@ WITH season AS (
     AND g.slug = ($1)::text ),
 lim AS (
     SELECT least(greatest(coalesce(($8)::int, 25), 1), 60) AS n ),
+-- THE SEASONS THIS VIEWER MAY SEE, decided once. A match is visible when it is listed and its season
+-- is (match_visible()); asking that per row rebuilt every match and re-ran season_visible() for
+-- each of them, twice -- the page and its total -- which took seconds on a season of ten thousand
+-- matches. This is the same test, with the season half answered once per season.
+visible AS (
+    SELECT s.id
+    FROM seasons s
+    WHERE season_visible(s, session_viewer(($18)::uuid, ($19)::uuid)) ),
 cur AS (
     SELECT CASE
         WHEN coalesce(($14)::text, 'newest') = 'newest' THEN try_timestamptz(split_part(($7)::text, '|', 1))
@@ -40,7 +48,9 @@ matched AS NOT MATERIALIZED (
     -- drive a model's, a version's or an owner's listing (and its total) from their seats.
     SELECT mt AS m, mt.id, mt.played_at, mt.margin, mt.upset, mt.turns
     FROM matches mt
-    WHERE match_visible(mt, session_viewer(($18)::uuid, ($19)::uuid))
+    WHERE mt.listed
+    AND mt.season_id IN (SELECT id
+        FROM visible)
     AND (($15)::timestamptz IS NULL
         OR ($14)::text = 'discussed'
         OR mt.played_at >= ($15)::timestamptz)
@@ -80,17 +90,15 @@ matched AS NOT MATERIALIZED (
     -- always {open}. ($4, the legacy ?class=, is kept below for old links -- the same test.)
     AND (($3)::text IS NULL
         OR ($3)::ladder = 'open'
-        OR EXISTS (SELECT 1
+        OR mt.id IN (SELECT ms.match_id
             FROM match_seats ms
             JOIN model_versions mv ON mv.id = ms.version_id
-            WHERE ms.match_id = mt.id
-            AND mv.weight_class = ($3)::ladder))
+            WHERE mv.weight_class = ($3)::ladder))
     AND (($4)::text IS NULL
-        OR EXISTS (SELECT 1
+        OR mt.id IN (SELECT ms.match_id
             FROM match_seats ms
             JOIN model_versions mv ON mv.id = ms.version_id
-            WHERE ms.match_id = mt.id
-            AND mv.weight_class = ($4)::ladder))
+            WHERE mv.weight_class = ($4)::ladder))
     AND (($5)::text IS NULL
         OR EXISTS (SELECT 1
             FROM season_maps sm
