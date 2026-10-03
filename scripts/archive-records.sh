@@ -13,6 +13,8 @@
 # a record whose canonical digest changed is reported and the run fails, since a record that moved
 # is the one thing that must never happen. --r2 uploads each new file with `wrangler r2 object put`
 # to records/<game>/<slug>/record-r<revision>.json (wrangler must be signed in to the account).
+# Production's `records/` is under an indefinite R2 lock, so an object already there is never
+# replaced: keep <dir> (it is how this script knows what it uploaded), or a re-upload is refused.
 # Reads only public routes; a private season is not archived here.
 set -euo pipefail
 DIR="${1:?usage: archive-records.sh <dir> [--base URL] [--game SLUG] [--r2 BUCKET]}"

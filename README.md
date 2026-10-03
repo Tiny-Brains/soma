@@ -391,7 +391,15 @@ season through its `rules` document (`season_rule_spec()` in
    pending rows are re-stamped and the roster epoch bumps. `ENGINE_RELEASE=1` declares a **release**,
    refused while any season is unclosed: a rules change waits for the next season. A runner on any other digest claims nothing.
 7. **After the close**, push the season's boards and recipes from `tinybrains/maps/` to the backup
-   repository. They are in no repository or release while the season runs.
+   repository. They are in no repository or release while the season runs. Then archive its record:
+   `scripts/archive-records.sh <dir> --base <site> --r2 <replays bucket>`.
+8. **Correcting a closed season** is a new revision of its record, never an edit: no route does it,
+   and every node refuses it. An admin writes it by hand, in one transaction that says so and logs
+   itself: `BEGIN; SET LOCAL soma.unseal = 'on';`, insert `season_records` revision n+1 with
+   `reason = 'correction'` and its standings, version ratings (and podium rows, if they change),
+   insert an `audit_log` line naming the season and why, `COMMIT;`. Readers take the newest revision;
+   the old one stays, and so does its archived copy. A deleted account, when deletion exists, is the
+   same: a correction revision with a placeholder handle, its rows and scores kept.
 
 Admins are `users.role = 'admin'`. The first is the deployment's: `SOMA_ADMIN_IDS` lists
 `provider:subject` pairs (a GitHub id is `github:<id>`; web's `scripts/setup/admin-user.sh <login>`
@@ -408,7 +416,11 @@ listed account is restored by its next sign-in, so removing someone for good mea
   from the browser. MinIO answers preflights by default, and R2 and S3 do not. Verify from a browser,
   because `curl` sends no `Origin`.
 - **`models/*` public-read, replays private**, and **no lifecycle rule that expires either**:
-  a replay is the match, kept for ever like its row, and no route or clock deletes one.
+  a replay is the match, kept for ever like its row, and no route or clock deletes one. Production's
+  replays bucket also carries **indefinite R2 lock rules on `replays/` and `records/`**, so neither can
+  be deleted or overwritten by anyone. That is safe because an attempt's replay key is its own (match
+  and claim token) and is written once; a runner's retry of a PUT that did land is refused 4xx, which
+  `http_call` records and carries on past, so the finish still goes out.
 - **One bucket for uploads and nodes.** A node reading a different bucket from the one Soma signed
   the upload for rejects every submission `ARTIFACT_MISSING`.
 - **Cluster mode whenever N > 1**: two nodes on two state databases are two schedulers, so each
