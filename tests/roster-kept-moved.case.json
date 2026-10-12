@@ -1,0 +1,66 @@
+{
+  "name": "roster-kept-moved: the roster moved since the kept copy, so the statement's new body is the answer and is kept",
+  "workflow": "../workflows/soma-gate-roster.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": { "model_prefix": "tb.v", "cache_entry_ttl_secs": 600 }
+  },
+  "stubs": {
+    "cache_read": { "soma-cache": { "sig": "s0", "body": { "n": 0, "items": [] } } },
+    "db_read": {
+      "soma-db-gate": [
+        {
+          "sig": "s1",
+          "body": {
+            "n": 1,
+            "items": [
+              {
+                "model": "tb.v1",
+                "version_id": "v1",
+                "digest": "sha256:w1",
+                "key": "models/v1",
+                "manifest": { "abi": "x" },
+                "status": "active"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } },
+    "cache_write": { "soma-cache": {} }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.n": 1,
+    "data.body.items.0.model": "tb.v1"
+  },
+  "expect_calls": {
+    "db_read": [{ "params": ["tb.v", "r1", "s0"] }],
+    "cache_write": [
+      {
+        "key": "roster:r1",
+        "value": {
+          "sig": "s1",
+          "body": {
+            "n": 1,
+            "items": [
+              {
+                "model": "tb.v1",
+                "version_id": "v1",
+                "digest": "sha256:w1",
+                "key": "models/v1",
+                "manifest": { "abi": "x" },
+                "status": "active"
+              }
+            ]
+          }
+        },
+        "ttl_secs": 600
+      }
+    ]
+  },
+  "expect_tasks": ["probe", "known", "query", "seen", "keep", "respond"]
+}

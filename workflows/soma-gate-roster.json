@@ -1,13 +1,49 @@
 {
   "workflow_id": "soma-gate-roster",
   "name": "The roster this runner should carry",
-  "description": "Every version this node should be able to play, with the manifest it was admitted under and where its bytes are. `verified` as well as `active`, because a verified version's trial is a real match paired before promotion, and a runner that waited for `active` could never play the trial that produces it.\n\nTHE MANIFEST IS REBUILT FIELD BY FIELD, and that is a safety property rather than tidiness. A competitor's manifest can name a `reference` -- the one field that could point outside their own version -- and rebuilding the document key by key leaves it nowhere to survive. `name` becomes the platform's model id for the same reason: Orion takes a model's id from the manifest and a competitor's name is not the platform's. This rebuild MUST stay at the centre; moving it to the edge would put a competitor's bytes back on the path to a node's registration.",
+  "description": "Every version this node should be able to play, with the manifest it was admitted under and where its bytes are. `verified` as well as `active`, because a verified version's trial is a real match paired before promotion, and a runner that waited for `active` could never play the trial that produces it.\n\nTHE MANIFEST IS REBUILT FIELD BY FIELD, and that is a safety property rather than tidiness. A competitor's manifest can name a `reference` -- the one field that could point outside their own version -- and rebuilding the document key by key leaves it nowhere to survive. `name` becomes the platform's model id for the same reason: Orion takes a model's id from the manifest and a competitor's name is not the platform's. This rebuild MUST stay at the centre; moving it to the edge would put a competitor's bytes back on the path to a node's registration.\n\nASKED ON EVERY ROSTER TICK, ANSWERED FROM A COPY WHILE IT HOLDS. The route keeps its last answer for this runner on soma-cache as {sig, body}, and passes `sig` to the statement, which always reads the rows and checks the runner but builds the JSON only when the signature it computes differs. So revocation is still decided by the statement on every call, and a changed roster is seen on the very next tick; only the JSON build is saved. A Redis that cannot answer leaves no copy, and the route builds the body every time, as before.",
   "tags": ["soma", "gate", "models"],
   "tasks": [
     {
+      "id": "probe",
+      "name": "Read this runner's kept roster",
+      "description": "Soft: {sig, body} as this route last answered this runner, or null. Its `sig` goes to the statement, which then builds no body if nothing moved.",
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_read",
+        "input": {
+          "connector": "soma-cache",
+          "key": { "cat": ["roster:", { "var": "metadata.auth.claims.sub" }] },
+          "output": "temp_data.kept"
+        }
+      }
+    },
+    {
+      "id": "known",
+      "name": "The kept copy's signature, if it can answer",
+      "description": "A copy without its body cannot answer, so its signature is passed only alongside a body; otherwise null, and the statement builds the body.",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.known",
+              "logic": {
+                "if": [
+                  { "!!": { "var": "temp_data.kept.body" } },
+                  { "var": "temp_data.kept.sig" },
+                  null
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "query",
       "name": "Query",
-      "description": "live_runners is the statement's outer FROM, so this read is also the liveness check: no row is a revoked runner, answered 401 by `gone` before anything is stamped.",
+      "description": "live_runners is the statement's outer FROM, so this read is also the liveness check: no row is a revoked runner, answered 401 by `gone` before anything is stamped. The kept copy's signature is passed only with its body, so a copy that lost its body is rebuilt.",
       "function": {
         "name": "db_read",
         "input": {
@@ -15,7 +51,8 @@
           "query": { "$sql": "../sql/soma-gate-roster-query.sql" },
           "params": [
             { "var": "metadata.vars.model_prefix" },
-            { "var": "metadata.auth.claims.sub" }
+            { "var": "metadata.auth.claims.sub" },
+            { "var": "temp_data.known" }
           ],
           "output": "temp_data.rows"
         }
@@ -25,7 +62,7 @@
       "id": "gone",
       "use": "refuse",
       "with": {
-        "when": { "!": { "var": "temp_data.rows.0.body" } },
+        "when": { "!": { "var": "temp_data.rows.0.sig" } },
         "status": 401,
         "body": { "error": "runner_revoked" },
         "name": "No live runner",
@@ -47,13 +84,41 @@
       }
     },
     {
+      "id": "keep",
+      "name": "Keep the roster just built",
+      "description": "Only when the statement built a body, which is when the signature moved or there was no copy. Soft: a copy that cannot be kept costs the next tick a rebuild, nothing else. cache_entry_ttl_secs is the ceiling on any entry a workflow keeps.",
+      "condition": { "!!": { "var": "temp_data.rows.0.body" } },
+      "continue_on_error": true,
+      "function": {
+        "name": "cache_write",
+        "input": {
+          "connector": "soma-cache",
+          "key": { "cat": ["roster:", { "var": "metadata.auth.claims.sub" }] },
+          "value": {
+            "sig": { "var": "temp_data.rows.0.sig" },
+            "body": { "var": "temp_data.rows.0.body" }
+          },
+          "ttl_secs": { "var": "metadata.vars.cache_entry_ttl_secs" }
+        }
+      }
+    },
+    {
       "id": "respond",
       "name": "Respond",
       "function": {
         "name": "map",
         "input": {
           "mappings": [
-            { "path": "data.body", "logic": { "var": "temp_data.rows.0.body" } },
+            {
+              "path": "data.body",
+              "logic": {
+                "if": [
+                  { "!!": { "var": "temp_data.rows.0.body" } },
+                  { "var": "temp_data.rows.0.body" },
+                  { "var": "temp_data.kept.body" }
+                ]
+              }
+            },
             { "path": "data._orion.response", "logic": { "$from": "constants.ok" } }
           ]
         }

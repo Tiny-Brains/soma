@@ -1,20 +1,31 @@
 {
-  "name": "roster-live-idle: a live runner with nothing to register is an empty roster, and is seen",
+  "name": "roster-live-idle: a live runner with nothing to register is an empty roster, is seen, and the answer is kept",
   "workflow": "../workflows/soma-gate-roster.json",
   "input": {},
   "metadata": {
     "auth": { "claims": { "sub": "r1", "sid": "s1" } },
     "params": {},
-    "vars": { "model_prefix": "tb.v" }
+    "vars": { "model_prefix": "tb.v", "cache_entry_ttl_secs": 600 }
   },
   "stubs": {
-    "db_read": { "soma-db-gate": [{ "body": { "n": 0, "items": [] } }] },
-    "db_write": { "soma-db-gate": { "rows_affected": 1 } }
+    "cache_read": { "soma-cache": null },
+    "db_read": { "soma-db-gate": [{ "sig": "s0", "body": { "n": 0, "items": [] } }] },
+    "db_write": { "soma-db-gate": { "rows_affected": 1 } },
+    "cache_write": { "soma-cache": {} }
   },
   "expect": {
     "data._orion.response.status": 200,
     "data.body.n": 0,
     "data.body.items": []
   },
-  "expect_tasks": ["query", "seen", "respond"]
+  "expect_calls": {
+    "cache_write": [
+      {
+        "key": "roster:r1",
+        "value": { "sig": "s0", "body": { "n": 0, "items": [] } },
+        "ttl_secs": 600
+      }
+    ]
+  },
+  "expect_tasks": ["probe", "known", "query", "seen", "keep", "respond"]
 }

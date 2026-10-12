@@ -379,6 +379,12 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   difference: a lapsed lease makes a row claimable again with no write, so its marker is written
   only when no admission waits at all, leased or not, which one `EXISTS` read (`waiting`) decides
   after a claim that moved nothing.
+- **The roster is answered from a kept copy while its signature holds.** The route keeps
+  `{sig, body}` per runner under `roster:<runner>` and passes `sig` to the statement, which always
+  reads the rows and checks the runner (so revocation is still decided on every call) but builds
+  the JSON only when its own signature differs. The signature is an md5 over everything the body
+  is built from; a column the body starts to read must join it, or a change to that column is
+  served stale until the copy's TTL.
 - `finish` writes, then reads back under the same token: `200 {applied: false}` is a duplicate
   delivery, and `409` is a lost claim. Never conflate them.
 - **`auth.source.scheme` is a scheme NAME, parsed as RFC 9110 defines it.** `"Bearer"` and

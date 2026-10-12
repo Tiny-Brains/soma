@@ -1,0 +1,39 @@
+{
+  "name": "roster-kept-unchanged: the kept copy's signature still holds, so the statement builds no body and the copy is the answer",
+  "workflow": "../workflows/soma-gate-roster.json",
+  "input": {},
+  "metadata": {
+    "auth": { "claims": { "sub": "r1", "sid": "s1" } },
+    "params": {},
+    "vars": { "model_prefix": "tb.v", "cache_entry_ttl_secs": 600 }
+  },
+  "stubs": {
+    "cache_read": {
+      "soma-cache": {
+        "sig": "s1",
+        "body": {
+          "n": 1,
+          "items": [
+            {
+              "model": "tb.v1",
+              "version_id": "v1",
+              "digest": "sha256:w1",
+              "key": "models/v1",
+              "manifest": { "abi": "x" },
+              "status": "active"
+            }
+          ]
+        }
+      }
+    },
+    "db_read": { "soma-db-gate": [{ "sig": "s1", "body": null }] },
+    "db_write": { "soma-db-gate": { "rows_affected": 0 } }
+  },
+  "expect": {
+    "data._orion.response.status": 200,
+    "data.body.n": 1,
+    "data.body.items.0.model": "tb.v1"
+  },
+  "expect_calls": { "db_read": [{ "params": ["tb.v", "r1", "s1"] }], "cache_write": [] },
+  "expect_tasks": ["probe", "known", "query", "seen", "respond"]
+}
