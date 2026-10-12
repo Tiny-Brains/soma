@@ -1,7 +1,7 @@
 {
   "channel_id": "soma-pub-podium",
   "name": "soma-pub-podium",
-  "description": "A season's frozen podium. hot_cache.",
+  "description": "A season's frozen podium. season_cache under `season` alone: the close writes it and bumps `season`, and a live season has none, so no fold changes it.",
   "tags": ["soma", "pub", "ladder"],
   "channel_type": "sync",
   "protocol": "rest",
@@ -13,6 +13,6 @@
     "response": { "$from": "constants.shaped" },
     "timeout_ms": 10000,
     "rate_limit": { "$from": "constants.public_rate" },
-    "cache": { "$from": "constants.season_cache", "namespaces": ["season", "ladder"] }
+    "cache": { "$from": "constants.season_cache", "namespaces": ["season"] }
   }
 }
