@@ -1,16 +1,19 @@
 -- live_runners is the outer FROM: a revoked key, a revoked runner or a demoted owner gets no row,
 -- which the route answers 401, and a live idle runner gets {n: 0, items: []}. The aggregate sits in
 -- a subquery so the two cases stay apart -- json_agg without GROUP BY would answer a row regardless.
+-- The manifest is stored as text and every `::jsonb` parses it again, so it is parsed once a row
+-- (`j.m`): this runs for every runner on every roster tick, and the parsing was half of it.
 SELECT (SELECT json_build_object('n', count(*), 'items', coalesce(json_agg(json_build_object('model', ($1)::text
                     || v.id::text, 'version_id', v.id, 'digest', v.weights_hash, 'key', v.artifact_key,
-                    'manifest', jsonb_build_object('abi', v.manifest::jsonb -> 'abi', 'name', to_jsonb(($1)::text
-                            || v.id::text), 'version', coalesce(v.manifest::jsonb -> 'version', '"1"'::jsonb),
-                        'format', coalesce(v.manifest::jsonb -> 'format', '"onnx"'::jsonb), 'description',
-                        coalesce(v.manifest::jsonb -> 'description', '""'::jsonb), 'inputs', v.manifest::jsonb
-                        -> 'inputs', 'outputs', v.manifest::jsonb -> 'outputs', 'probe_dims', coalesce(v.manifest::jsonb
+                    'manifest', jsonb_build_object('abi', j.m -> 'abi', 'name', to_jsonb(($1)::text
+                            || v.id::text), 'version', coalesce(j.m -> 'version', '"1"'::jsonb),
+                        'format', coalesce(j.m -> 'format', '"onnx"'::jsonb), 'description',
+                        coalesce(j.m -> 'description', '""'::jsonb), 'inputs', j.m
+                        -> 'inputs', 'outputs', j.m -> 'outputs', 'probe_dims', coalesce(j.m
                             -> 'probe_dims', '{}'::jsonb)), 'status', v.status)
             ORDER BY v.created_at), '[]'::json)) AS body
     FROM model_versions v
+    CROSS JOIN LATERAL (SELECT v.manifest::jsonb AS m) j
     WHERE v.status IN ('verified', 'active')
 AND v.manifest IS NOT NULL
 AND v.artifact_key IS NOT NULL

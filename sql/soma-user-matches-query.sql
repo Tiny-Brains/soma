@@ -1,23 +1,28 @@
-WITH mine AS NOT MATERIALIZED (
-    SELECT mt AS m, mt.id, coalesce(mt.played_at, mt.created_at) AS at
+-- THE OWNER'S MATCHES, DRIVEN FROM THEIR SEATS: every match one of their versions sat in, through
+-- match_seats_version_idx, rather than a test of every match on the platform. `mine` holds only
+-- the id and the sort key and is read twice (the page and the total), so it is materialized once;
+-- the whole row is fetched for the page alone.
+WITH mine AS MATERIALIZED (
+    SELECT mt.id, coalesce(mt.played_at, mt.created_at) AS at
     FROM matches mt
-    WHERE EXISTS (SELECT 1
+    WHERE mt.id IN (SELECT ms.match_id
         FROM match_seats ms
         JOIN model_versions mv ON mv.id = ms.version_id
         JOIN models me ON me.id = mv.model_id
-        WHERE ms.match_id = mt.id
-        AND me.owner_id = ($1)::uuid)
+        WHERE me.owner_id = ($1)::uuid)
     AND (($3)::text IS NULL
         OR mt.game_id = (SELECT g.id
             FROM games g
             WHERE g.slug = ($3)::text)) ),
 page AS (
-    SELECT m, id, at
-    FROM mine
-    WHERE ($4)::text IS NULL
-    OR (at, id) < (try_timestamptz(split_part(($4)::text, '|', 1)), try_uuid(split_part(($4)::text, '|', 2)))
-    ORDER BY at DESC, id DESC
-    LIMIT ($5)::int )
+    SELECT mt AS m, mt.id, p.at
+    FROM (SELECT id, at
+        FROM mine
+        WHERE ($4)::text IS NULL
+        OR (at, id) < (try_timestamptz(split_part(($4)::text, '|', 1)), try_uuid(split_part(($4)::text, '|', 2)))
+        ORDER BY at DESC, id DESC
+        LIMIT ($5)::int) p
+    JOIN matches mt ON mt.id = p.id )
 SELECT ls.sid AS session_ok, json_build_object( 'total', CASE
     WHEN ($4)::text IS NULL THEN (SELECT count(*)
         FROM mine)

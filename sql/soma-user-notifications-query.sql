@@ -5,11 +5,14 @@ WITH me AS (
     AND ls.user_id = ($1)::uuid ),
 lim AS (
     SELECT least(greatest(($7)::int, 1), 100) AS n ),
+-- The feed names the user itself rather than joining `me`: the session is still the gate (the outer
+-- FROM me answers nothing without one), and a constant user is what lets notifications_feed_idx
+-- give the page in order and stop at it, instead of reading and sorting every notification held.
 feed AS NOT MATERIALIZED (
     SELECT n.*
     FROM notifications n
-    JOIN me ON n.user_id = me.user_id
-    WHERE (($3)::text IS NULL
+    WHERE n.user_id = ($1)::uuid
+    AND (($3)::text IS NULL
         OR n.category = ($3)::text)
     AND (($4)::text IS DISTINCT
         FROM 'true'
