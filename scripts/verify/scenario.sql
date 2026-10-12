@@ -1479,13 +1479,36 @@ EXECUTE p_insert (:rep, '50000000-0000-0000-0000-0000000000e1', 901, '70000000-0
   '{20000000-0000-0000-0000-0000000000d2,10000000-0000-0000-0000-0000000000d3}', NULL, gen_random_uuid(), 5);
 SELECT seed, round FROM matches WHERE seed = 901;
 \echo '--- a rated round-1 game for dora and the wall: round_games counts it; the queued 901 is in flight for eve and the wall (expect dora 3 of 4, eve 3, wall 2 -- least-played first among equal wants)'
-INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, round)
 VALUES ('11111111-1111-1111-1111-1111111111e1', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 902,
-        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9001, 1);
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'pending', 1);
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
   ('11111111-1111-1111-1111-1111111111e1', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
   ('11111111-1111-1111-1111-1111111111e1', 1, '10000000-0000-0000-0000-0000000000d3', 'sha256:wd3', 'sha256:md3', 2, 1, 0);
+UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9001 WHERE id = '11111111-1111-1111-1111-1111111111e1';
 SELECT version_id, games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) ORDER BY 1;
+\echo '    the tally is the count, moved by the rating itself: a match that seats dora twice adds two when it is rated and nothing before, and every round of every season equals its rated seats (expect dora 1, then 3, then differing 0; all rolled back)'
+SAVEPOINT tally;
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, round)
+VALUES ('11111111-1111-1111-1111-1111111111e9', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 909,
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'pending', 1);
+INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
+  ('11111111-1111-1111-1111-1111111111e9', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
+  ('11111111-1111-1111-1111-1111111111e9', 1, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0);
+SELECT games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) WHERE version_id = '20000000-0000-0000-0000-0000000000d1';
+UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9009 WHERE id = '11111111-1111-1111-1111-1111111111e9';
+SELECT games FROM round_games('50000000-0000-0000-0000-0000000000e1', 1) WHERE version_id = '20000000-0000-0000-0000-0000000000d1';
+SELECT count(*) AS differing FROM (
+  (SELECT m.season_id, m.round, s.version_id, count(*) AS games
+     FROM matches m JOIN match_seats s ON s.match_id = m.id
+    WHERE m.status = 'rated' AND m.round IS NOT NULL GROUP BY 1, 2, 3
+   EXCEPT SELECT season_id, round, version_id, games FROM round_tallies)
+  UNION ALL
+  (SELECT season_id, round, version_id, games FROM round_tallies
+   EXCEPT SELECT m.season_id, m.round, s.version_id, count(*)
+     FROM matches m JOIN match_seats s ON s.match_id = m.id
+    WHERE m.status = 'rated' AND m.round IS NOT NULL GROUP BY 1, 2, 3)) d;
+ROLLBACK TO SAVEPOINT tally;
 EXECUTE p_demand_doc ('50000000-0000-0000-0000-0000000000e1', 8, 2, 3.0, 64, 0.2) \gset
 SELECT e ->> 'model_id' AS model_id, e ->> 'want' AS want, e ->> 'played' AS played
   FROM json_array_elements((:'body')::json -> 'wants') e;
@@ -1576,12 +1599,13 @@ SELECT e ->> 'model_id' AS model_id, e ->> 'state' AS state, e ->> 'want' AS wan
 SELECT r ->> 'model_id' AS model_id, r ->> 'room' AS room FROM json_array_elements((:'body')::json -> 'rooms') r ORDER BY 1;
 SELECT (:'body')::json -> 'limits' ->> 'strict_rooms' AS strict, (:'body')::json -> 'spare' AS spare;
 \echo '--- one finals game each: not done, and the season stays open whatever its policy says (expect entries 2, complete 0, done f; closed f)'
-INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, round)
 VALUES ('11111111-1111-1111-1111-1111111111e2', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 903,
-        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9002, 3);
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'pending', 3);
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
   ('11111111-1111-1111-1111-1111111111e2', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 1, 5, 0),
   ('11111111-1111-1111-1111-1111111111e2', 1, '20000000-0000-0000-0000-0000000000d2', 'sha256:wd2', 'sha256:md2', 2, 1, 0);
+UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9002 WHERE id = '11111111-1111-1111-1111-1111111111e2';
 SELECT entries, complete, done FROM season_finals('50000000-0000-0000-0000-0000000000e1');
 EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
@@ -1597,12 +1621,13 @@ EXECUTE r_update_why ('ants', 'rounds-2026', 3, now() + interval '1 hour', NULL,
 SELECT (:'us_body')::json ->> 'started' AS started;
 EXECUTE r_update ('ants', 'rounds-2026', 3, NULL, 2, NULL, NULL, NULL, NULL, '00000000-0000-0000-0000-0000000000ad');
 \echo '--- the second game each, with one match still running: done, but nothing folds after the podium, so the close waits (expect done t; closed f)'
-INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, played_at, rated_at, rated_seq, round)
+INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, round)
 VALUES ('11111111-1111-1111-1111-1111111111e3', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 904,
-        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'rated', now(), now(), 9003, 3);
+        '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'pending', 3);
 INSERT INTO match_seats (match_id, seat, version_id, weights_hash, manifest_hash, rank, score, strikes) VALUES
   ('11111111-1111-1111-1111-1111111111e3', 0, '20000000-0000-0000-0000-0000000000d1', 'sha256:wd1', 'sha256:md1', 2, 1, 0),
   ('11111111-1111-1111-1111-1111111111e3', 1, '20000000-0000-0000-0000-0000000000d2', 'sha256:wd2', 'sha256:md2', 1, 5, 0);
+UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_seq = 9003 WHERE id = '11111111-1111-1111-1111-1111111111e3';
 INSERT INTO matches (id, game_id, season_id, engine_digest, seed, season_map_id, seat_count, ladders, status, claim_token, lease_expires_at, round)
 VALUES ('11111111-1111-1111-1111-1111111111e4', '00000000-0000-0000-0000-00000000000a', '50000000-0000-0000-0000-0000000000e1', 'sha256:e1', 905,
         '70000000-0000-0000-0000-0000000000e1', 2, ARRAY['open']::ladder[], 'running', gen_random_uuid(), now() + interval '5 minutes', 3);
@@ -1614,6 +1639,20 @@ UPDATE matches SET status = 'rated', played_at = now(), rated_at = now(), rated_
 EXECUTE w_close ('00000000-0000-0000-0000-00000000000a', 3.0, 8, 'sha256:rating', 4.1667, 0.0833, 0.10, 25.0, 8.3333);
 SELECT closed_at IS NOT NULL AS closed FROM seasons WHERE id = '50000000-0000-0000-0000-0000000000e1';
 SELECT ladder, place FROM season_podium WHERE season_id = '50000000-0000-0000-0000-0000000000e1' AND ladder = 'open';
+\echo '    the closed season''s tallies are the count of every round it played, and sealed with it (expect differing 0; then one SEASON_SEALED error)'
+SELECT count(*) AS differing FROM (
+  (SELECT m.season_id, m.round, s.version_id, count(*) AS games
+     FROM matches m JOIN match_seats s ON s.match_id = m.id
+    WHERE m.status = 'rated' AND m.round IS NOT NULL GROUP BY 1, 2, 3
+   EXCEPT SELECT season_id, round, version_id, games FROM round_tallies)
+  UNION ALL
+  (SELECT season_id, round, version_id, games FROM round_tallies
+   EXCEPT SELECT m.season_id, m.round, s.version_id, count(*)
+     FROM matches m JOIN match_seats s ON s.match_id = m.id
+    WHERE m.status = 'rated' AND m.round IS NOT NULL GROUP BY 1, 2, 3)) d;
+SAVEPOINT tally_seal;
+UPDATE round_tallies SET games = games + 1 WHERE season_id = '50000000-0000-0000-0000-0000000000e1';
+ROLLBACK TO SAVEPOINT tally_seal;
 \echo '--- the admin''s rounds document reads it all back (expect state closed, policy finals, current 3, 3 rounds, finals done, 3 versions)'
 EXECUTE r_doc ('ants', 'rounds-2026') \gset rd_
 SELECT (:'rd_body')::json ->> 'state' AS state, (:'rd_body')::json ->> 'policy' AS policy,

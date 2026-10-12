@@ -234,6 +234,7 @@ judged by `worldgen`.
 | `audit_log` | every admin write, inside its own statement |
 | `watch_events` | `POST /v1/events` |
 | `season_podium`, `season_records`, `season_standings`, `season_version_ratings` | withdraw's close (and, for a season closed before records, the cutover's backfill); never updated or deleted |
+| `round_tallies` | the trigger `matches_round_rated`, as count rates a match that carries a round (and the cutover's backfill, for the rows it copies); never by a statement |
 
 ## Development
 
@@ -256,12 +257,13 @@ Script env: `DB_CONTAINER` (default `tinybrains-db-1`), `DB_USER`, `BASE`,
 `ORION_ADMIN_API_KEY` (load-package), `TB_ANTS_PLUGIN_DIR` (check-tests).
 
 **The cutover** (`scripts/cutover/`) is not a check but this release's one-time migration of an
-existing database (here: from v0.9.x's schema, `41279af0`), and its order is the whole of it:
-`cutover.sh` builds the new schema beside the old one, copies every row across (keys dropped for the
-copy and re-added after it, which re-checks every row), writes a record for every season that closed
-before records existed -- rendered by the replaced release's own leaderboard statement,
-`legacy-leaderboard.sql`, so it is what that release served -- proves every old table kept cell for
-cell and every leaderboard page unchanged, then swaps the names and commits or rolls back whole,
+existing database (here: from v0.9.2's and v0.9.3's schema, `f3926661`), and its order is the whole
+of it: `cutover.sh` builds the new schema beside the old one, copies every row across (keys dropped
+for the copy and re-added after it, which re-checks every row), derives what the new schema keeps
+that the old one counted (`round_tallies`) and a record for any closed season without one --
+rendered by the replaced release's own leaderboard statement, `legacy-leaderboard.sql`, so it is what
+that release served -- proves every old table kept cell for cell, every tally equal to its count and
+every leaderboard page unchanged, then swaps the names and commits or rolls back whole,
 keeping the old schema as `legacy`; `retire.sh` archives, in Orion's state, the definitions this
 release no longer ships; `backfill-frames.sh` fills in the last frame of every older match once the
 new node serves (a no-op from v0.9.x). The

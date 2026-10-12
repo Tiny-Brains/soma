@@ -13,6 +13,8 @@
 --      season's answers from its record; only a class key backed by a frozen class row may differ.
 --   5. The seal is installed.
 --   6. Every season document (season_json) reads as before.
+--   7. Every round's tallies are its rated seats, counted: for every season, round and version, the
+--      same number both ways (the leaderboard pages above already read the live round through them).
 
 DO $kept$
 DECLARE
@@ -153,13 +155,33 @@ BEGIN
 END
 $seasons$;
 
+DO $tallies$
+DECLARE diff bigint;
+BEGIN
+  WITH counted AS (
+      SELECT m.season_id, m.round, s.version_id, count(*) AS games
+        FROM matches m JOIN match_seats s ON s.match_id = m.id
+       WHERE m.status = 'rated' AND m.round IS NOT NULL
+       GROUP BY m.season_id, m.round, s.version_id),
+  kept AS (
+      SELECT season_id, round, version_id, games::bigint AS games FROM round_tallies)
+  SELECT (SELECT count(*) FROM (SELECT * FROM counted EXCEPT ALL SELECT * FROM kept) a)
+       + (SELECT count(*) FROM (SELECT * FROM kept EXCEPT ALL SELECT * FROM counted) b)
+    INTO diff;
+  IF diff <> 0 THEN
+    RAISE EXCEPTION 'verify: % round tally row(s) differ from the rated seats they count', diff;
+  END IF;
+  RAISE NOTICE 'verify: % round tally row(s), each equal to its count', (SELECT count(*) FROM round_tallies);
+END
+$tallies$;
+
 DO $seal$
 DECLARE n int;
 BEGIN
   SELECT count(*) INTO n FROM pg_trigger
    WHERE NOT tgisinternal AND tgname LIKE '%\_sealed' AND tgrelid::regclass::text NOT LIKE 'legacy.%';
-  IF n <> 10 THEN
-    RAISE EXCEPTION 'verify: % seal trigger(s) installed, expected 10', n;
+  IF n <> 11 THEN
+    RAISE EXCEPTION 'verify: % seal trigger(s) installed, expected 11', n;
   END IF;
   RAISE NOTICE 'verify: every check passed';
 END

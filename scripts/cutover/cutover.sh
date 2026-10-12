@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# THE REDESIGN'S DATABASE CUTOVER: a v0.7.x database onto this branch's schema, in place, in one
+# THE DATABASE CUTOVER: a v0.9.2 or v0.9.3 database onto this release's schema, in place, in one
 # transaction, with nothing a signed-in competitor would notice -- same accounts and sessions, same
 # ladder, same seasons, same runner keys, and the season they land on unchanged.
 #
@@ -18,7 +18,7 @@
 #
 # Environment:
 #   SOMA_IMAGE       the new soma image (recommended: the release being deployed)
-#   FROM_DIGEST      the schema digest the database must be on (default: v0.9.x's, 41279af0)
+#   FROM_DIGEST      the schema digest the database must be on (default: v0.9.2's and v0.9.3's, f3926661)
 #   SETTLED_SIGMA    the deploy's settled_sigma [var] (default 3.0, docker/soma.toml.tmpl's), which a
 #                    closed season's backfilled record and the page comparison are rendered under
 #   DOCKER_NETWORK   where psql runs from (default: host; `container:<db>` for a local container)
@@ -37,7 +37,7 @@ cd "$(dirname "$0")"
 URL="${1:?usage: cutover.sh <database url> [--commit]}"
 COMMIT=false
 [ "${2:-}" = "--commit" ] && COMMIT=true
-FROM_DIGEST="${FROM_DIGEST:-41279af010519d5ebb829b78349b16e268c8635a0d57be3ff8d083968275bf22}"
+FROM_DIGEST="${FROM_DIGEST:-f3926661775c668409975e59e0c1aef9731d8e9c70f88c9562b108bffbb3c28b}"
 SETTLED_SIGMA="${SETTLED_SIGMA:-3.0}"
 DOCKER_NETWORK="${DOCKER_NETWORK:-host}"
 PSQL_IMAGE="${PSQL_IMAGE:-postgres:16-alpine}"

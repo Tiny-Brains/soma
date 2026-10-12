@@ -1727,6 +1727,48 @@ CREATE TABLE match_seats (
                                                  OR infer_us_max <= infer_us_total)
 );
 
+-- -------------------------------------------------------------- round_tallies
+
+-- EACH VERSION'S RATED GAMES IN EACH ROUND, kept as its matches are rated rather than counted when
+-- read. Pair reads the current round's on every run, and the leaderboard, the finals' close and the
+-- admin's rounds page read them too, so a count at read time walks every seat the platform ever
+-- played, every season's, as often as the busiest of them. One row per version per round it has a
+-- rated game in; `games` is seats, not matches, so a version seated twice in one match has two.
+--
+-- KEPT BY THE TRIGGER `matches_round_rated`, on the one transition that adds a game: a match that
+-- carries a round becoming 'rated', with its seats already written. Nothing takes one away: rated is
+-- terminal, a match's round and seats are written by pair and never changed, and no match is
+-- deleted. So no writer touches this table, and a fixture that wants a round's game rates its match
+-- by UPDATE, never by inserting it already rated. A cutover derives it for the rows it copies
+-- (scripts/cutover/backfill.sql), and its verify proves it equal to the count.
+CREATE TABLE round_tallies (
+    season_id  uuid NOT NULL,
+    round      int  NOT NULL,
+    version_id uuid NOT NULL REFERENCES model_versions (id),
+    games      int  NOT NULL,
+    PRIMARY KEY (season_id, round, version_id),
+    FOREIGN KEY (season_id, round) REFERENCES season_rounds (season_id, n),
+    CONSTRAINT round_tallies_games CHECK (games >= 1)
+);
+
+-- SECURITY DEFINER, because the transition can be any writer's whose UPDATE names `status`, and the
+-- table is no role's to write but the owner's.
+CREATE FUNCTION round_tallies_add() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    INSERT INTO round_tallies AS t (season_id, round, version_id, games)
+    SELECT NEW.season_id, NEW.round, s.version_id, count(*)
+      FROM match_seats s
+     WHERE s.match_id = NEW.id
+     GROUP BY s.version_id
+        ON CONFLICT (season_id, round, version_id) DO UPDATE SET games = t.games + EXCLUDED.games;
+    RETURN NULL;
+END
+$$;
+CREATE TRIGGER matches_round_rated AFTER UPDATE OF status ON matches
+    FOR EACH ROW WHEN (NEW.status = 'rated' AND OLD.status <> 'rated' AND NEW.round IS NOT NULL)
+    EXECUTE FUNCTION round_tallies_add();
+
 -- -------------------------------------------------------------- rating_events
 
 -- One row per seat per ladder per counted match, plus a seed row at promotion (seq = 0).
@@ -2381,19 +2423,21 @@ CREATE INDEX matches_trial_history_idx
 CREATE INDEX matches_runner_in_flight_idx
     ON matches (played_by) WHERE status IN ('claimed', 'running');
 
--- A round's games: pair's demand, the finals' close and the leaderboard count them per version.
-CREATE INDEX matches_season_round_idx
-    ON matches (season_id, round) WHERE round IS NOT NULL;
+-- THE LIVE SET: what a season still has to play or to fold. Pair's demand counts it per version, per
+-- owner and, by engine, against the fleet's lanes; the admin's rounds page and the close's wait read
+-- it too. Partial on exactly those four statuses, so it holds the queue and never the history, and
+-- each of those reads stays the size of the queue however long the ladder has run. Like
+-- matches_in_flight_idx it leaves `lease_expires_at` out, so a renew stays heap-only.
+CREATE INDEX matches_live_idx
+    ON matches (season_id) WHERE status IN ('pending', 'claimed', 'running', 'finished');
 
--- EACH VERSION'S RATED GAMES IN ONE ROUND of a season: the rated matches pair stamped with it. One
--- function, so pair's quota, the finals' close, the leaderboard and the admin's progress count the
--- same thing.
+-- EACH VERSION'S RATED GAMES IN ONE ROUND of a season, as round_tallies keeps them. One function, so
+-- pair's quota, the finals' close, the leaderboard and the admin's progress count the same thing.
 CREATE FUNCTION round_games(p_season uuid, p_round int)
 RETURNS TABLE (version_id uuid, games bigint) LANGUAGE sql STABLE AS $$
-    SELECT s.version_id, count(*)
-      FROM matches m JOIN match_seats s ON s.match_id = m.id
-     WHERE m.season_id = p_season AND m.round = p_round AND m.status = 'rated'
-     GROUP BY s.version_id;
+    SELECT t.version_id, t.games::bigint
+      FROM round_tallies t
+     WHERE t.season_id = p_season AND t.round = p_round;
 $$;
 
 -- WHERE A SEASON'S FINALS STAND: null with none (or one cancelled), else how many entries are in
@@ -3781,7 +3825,7 @@ $$;
 
 -- A CLOSED SEASON'S FACTS DO NOT CHANGE, and the database refuses the write rather than trusting
 -- every writer's `closed_at IS NULL`. Refused once its season has closed: any write to a version's
--- `ratings` or `rating_events` or to `ladder_snapshots`; an update or delete of a match that has
+-- `ratings` or `rating_events`, to `ladder_snapshots` or to `round_tallies`; an update or delete of a match that has
 -- finished for good (rated, cancelled, failed) or of such a match's seats; and any change at all to
 -- the season row -- its visibility too, since a closed season made private would vanish from the
 -- record it is. A record (season_records and its two tables, season_podium) is never updated or
@@ -3820,18 +3864,20 @@ CREATE TRIGGER ratings_sealed BEFORE INSERT OR UPDATE OR DELETE ON ratings
 CREATE TRIGGER rating_events_sealed BEFORE INSERT OR UPDATE OR DELETE ON rating_events
     FOR EACH ROW EXECUTE FUNCTION seal_version_rows();
 
-CREATE FUNCTION seal_snapshots() RETURNS trigger
+CREATE FUNCTION seal_season_rows() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE r record := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 BEGIN
     IF sealed_season(r.season_id) THEN
-        PERFORM seal_refuse('ladder_snapshots');
+        PERFORM seal_refuse(TG_TABLE_NAME);
     END IF;
     RETURN r;
 END
 $$;
 CREATE TRIGGER ladder_snapshots_sealed BEFORE INSERT OR UPDATE OR DELETE ON ladder_snapshots
-    FOR EACH ROW EXECUTE FUNCTION seal_snapshots();
+    FOR EACH ROW EXECUTE FUNCTION seal_season_rows();
+CREATE TRIGGER round_tallies_sealed BEFORE INSERT OR UPDATE OR DELETE ON round_tallies
+    FOR EACH ROW EXECUTE FUNCTION seal_season_rows();
 
 CREATE FUNCTION seal_matches() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$

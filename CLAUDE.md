@@ -288,6 +288,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   one as a literal predicate: a write and its diagnosis then disagree about why a request failed.
 - **`threads.comments` is kept by the trigger `comments_count_live`**, on every INSERT or UPDATE OF
   `state` on `comments`. A writer never adjusts it by hand, or the count moves twice.
+- **`round_tallies` is kept by the trigger `matches_round_rated`**, when a match that carries a
+  round becomes `rated`; `round_games()` reads it, never a count of `match_seats`. No writer touches
+  the table, and a fixture that needs a round's game inserts its match unrated and rates it by
+  UPDATE -- one inserted already `rated` is never counted. A cutover derives it for the rows it
+  copies (`backfill.sql`) and proves it equal to the count (`verify.sql`).
 - Constraints carry the rules no writer is trusted with: partial unique indexes, the deferrable
   one-active exclusion, `matches_status_shape`.
 - **Grants are the boundary with Kalam.** `runner_gate` gets SELECT on a few tables and UPDATE on

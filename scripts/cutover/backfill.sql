@@ -3,21 +3,36 @@
 -- the new schema and `legacy` the release being replaced), and before verify.sql. It is not a step
 -- of its own: run cutover.sh.
 --
--- THIS RELEASE: SEASON RECORDS. A closed season is now read from its record (season_records,
--- season_standings, season_version_ratings), which the close writes. A season that closed BEFORE
--- this release has none, so it is written here, once, as reason 'backfill' -- and from what the
--- release being replaced SERVED, not from this release's code: each ladder is rendered by that
--- release's own leaderboard statement (legacy-leaderboard.sql, copied verbatim from v0.9.1) run
--- against `legacy`, so the record is the page as it stood, field for field, special cases and all.
+-- THIS RELEASE: ROUND TALLIES. A round's games are kept in `round_tallies` as each match is rated
+-- (the trigger `matches_round_rated`), and a copy rates nothing, so every rated match that carries a
+-- round is counted into it here, once: the count round_games() made on every read before. verify.sql
+-- proves the two equal for every round of every season, and every leaderboard page unchanged.
 --
--- A version's ratings are that release's model_ratings() (legacy.model_ratings, called as pg_temp.legacy_model_ratings) with one
--- correction: a season closed under per-class ratings kept its class rows, and its class tables
--- were frozen from them, but 0.9's model_ratings() still answered the class key from Open -- so a
--- version page disagreed with its own leaderboard. Where a class row exists, the class key is that
--- row, ranked against the class table just recorded, as 0.7.2 showed it.
+-- AND A RECORD FOR ANY CLOSED SEASON THAT HAS NONE, which from v0.9.2 on is none: the close writes
+-- one, and the cutover onto v0.9.2 wrote one for every season closed before. It is written as reason
+-- 'backfill', from what the release being replaced SERVED: each ladder rendered by that release's own
+-- leaderboard statement (legacy-leaderboard.sql) run against `legacy`, so the record is the page as
+-- it stood, field for field. A version's ratings are that release's model_ratings() (called as
+-- pg_temp.legacy_model_ratings), with a class key answered from a frozen class row where one exists.
+-- verify.sql reads the same three legacy functions to hold this release to the one it replaces.
 --
 -- A private closed season would render empty (the statement serves the anonymous public), so the
 -- cutover refuses one rather than record nothing. Idempotent: a season that has a record is skipped.
+
+DO $tallies$
+DECLARE n bigint;
+BEGIN
+  INSERT INTO round_tallies (season_id, round, version_id, games)
+  SELECT m.season_id, m.round, s.version_id, count(*)
+    FROM matches m JOIN match_seats s ON s.match_id = m.id
+   WHERE m.status = 'rated' AND m.round IS NOT NULL
+   GROUP BY m.season_id, m.round, s.version_id;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE NOTICE 'round tallies: % row(s), % seat(s) over % round(s)', n,
+    (SELECT coalesce(sum(games), 0) FROM round_tallies),
+    (SELECT count(DISTINCT (season_id, round)) FROM round_tallies);
+END
+$tallies$;
 
 SELECT coalesce(string_agg(s.slug, ', '), '') AS private_closed
   FROM seasons s
