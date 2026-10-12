@@ -270,6 +270,15 @@ never prunes, and Orion refuses a channel on a route another active channel stil
 renamed channel stops the node in a loop — and once a boot apply has succeeded, `--prune` finds
 nothing left to remove. Both scripts dry-run until `--commit`.
 
+**`drop-legacy.sh` ends the rollback**, a week or so after a cutover nobody rolled back: it drops
+`legacy` (with a chained window's `legacy_072` and any `*_rolled_back`) from the soma database and
+`orion_state_pre_cutover` from the cluster. It refuses unless `public` is on the served schema,
+every closed season reads the same from `public` as from `legacy` (`fingerprint.sql`; once `legacy`
+is gone, only a recorded `FINGERPRINT` can), no closed season has an unfinished match, missing podium
+or fresh rating event, and nothing outside the schemas depends on them. Its dry run performs each
+schema drop and rolls it back; `--commit` wants `BACKUP_ID`, an on-demand Cloud SQL backup taken for
+the run.
+
 ## Configuration
 
 Environment is read by [`docker/entrypoint.sh`](docker/entrypoint.sh), the instance template

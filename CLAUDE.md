@@ -48,6 +48,11 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   release that RENAMES a channel onto a route an active one still claims stops the new node's boot
   apply, and once a boot apply has succeeded the receipt's current version is already the new one,
   so `--prune` then finds nothing. Both scripts dry-run without `--commit`.
+- **`drop-legacy.sh` is a cutover's last step, and it ends the rollback.** Its gate is `legacy`
+  itself -- every closed season must read the same from `public` -- so once `legacy` is gone only a
+  recorded `FINGERPRINT` proves a closed season, and it must be given. A refusal in its SQL is a
+  raised ERROR, never `\quit <n>`: psql ignores the code and exits 0, so the caller would carry on
+  past it.
 
 ## Rules
 
