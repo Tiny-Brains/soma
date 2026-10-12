@@ -2467,10 +2467,6 @@ $$;
 CREATE INDEX match_seats_version_idx
     ON match_seats (version_id, match_id);
 
--- the claim's affinity fill: rows whose models a replica already holds
-CREATE INDEX match_seats_weights_idx
-    ON match_seats (weights_hash, match_id);
-
 -- rating_events -------------------------------------------------------------
 
 -- the rating change a given match produced, for the Version screen
