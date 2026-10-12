@@ -199,6 +199,13 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
   choose 404, 409 or 422, and every refusal here is the `refuse` fragment with its own status.
   Response caching of a signed-in route through `key_logic`: a hit would skip the session JOIN
   that is the fence, so `/v1/me` is served from its own session entry instead (above).
+- **A clock's read is sized by what its consumer reads, never by the season's history.** It runs
+  every tick for ever, so a read that grows with matches played is a cost that only rises. Pair's
+  `played` counts only the WANTING versions' seats, and only when there is room, because that is
+  all `tb.pairing` looks up (`map_for`); a field added to the demand document must be one the plugin
+  reads, or every run carries it through the message, the plugin input and the trace. Prove a change
+  to it with the plugin itself: old and new documents from one snapshot, the same plans for the same
+  seeds.
 - **Only count writes a ladder**, and no clock deletes (`soma-db` sets `operations.delete = false`).
   That a clock never reads `sessions` or rewrites an entry is enforced by review, not by a grant.
 - `tb.pairing` decides quality, never correctness. It must stay pure and seeded by the occurrence

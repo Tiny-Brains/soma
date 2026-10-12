@@ -171,11 +171,6 @@ WITH live AS (
       JOIN models e ON e.id = vv.model_id
       JOIN live     ON live.id = vv.season_id
      WHERE vv.status = 'active' AND e.retired_at IS NULL
-), played AS (
-    SELECT s.version_id AS model_id, m.season_map_id AS map, count(*) AS n
-      FROM match_seats s JOIN matches m ON m.id = s.match_id
-     WHERE m.season_id = (SELECT id FROM live) AND m.status IN ('finished', 'rated')
-     GROUP BY s.version_id, m.season_map_id
 ), depth AS (
     SELECT count(*) AS pending FROM matches WHERE season_id = (SELECT id FROM live) AND status = 'pending'
 ), lanes AS (
@@ -200,19 +195,44 @@ WITH live AS (
              - lim.headroom, 0) AS spare
       FROM live CROSS JOIN lim
      WHERE lim.fill_games IS NOT NULL
+), room AS (
+    -- THE ROOM: what the season asks for, up to the depth target; or, when the idle fill has
+    -- more to give, as much of it as there are free lanes -- whichever is larger, and never past
+    -- the depth target, which stays a staleness cap on every queue. Its own CTE because `played`
+    -- below is read only when it is above zero.
+    SELECT greatest(least(
+               greatest(least((SELECT coalesce(sum(least(base, want)), 0) FROM wants),
+                              ($5)::int - (SELECT pending FROM depth)),
+                        least((SELECT coalesce(sum(want), 0) FROM wants),
+                              coalesce((SELECT spare FROM lanes), 0))),
+               ($5)::int - (SELECT pending FROM depth)), 0) AS n
+), played AS (
+    -- ONLY WHAT THE PLUGIN CAN READ. `tb.pairing` looks a count up in one place, `map_for`: the
+    -- games the version it is serving -- a want above zero -- has played on each enabled board, so
+    -- it can give that version its least-played map. It reads none of it when the room is zero,
+    -- because it seats nothing. So this counts the wanting versions' seats, through
+    -- `match_seats_version_idx`, and only when there is room. A count on a board since disabled is
+    -- carried and never looked up; filtering the boards here instead let the planner drive the join
+    -- from `maps` and re-read every seat once per board.
+    --
+    -- It used to count every version the season ever had, on every board, on every run: every
+    -- finished seat of the season hashed against the whole of `match_seats`, every 15 s, whether
+    -- or not anything was seated. That grew with the season's history, made this read the largest
+    -- part of pair's cost, and made `played` nearly all of the document the run carries and traces.
+    -- The plan is unchanged: for every key the plugin reads, the count is the same.
+    SELECT s.version_id AS model_id, m.season_map_id AS map, count(*) AS n
+      FROM wants w
+      JOIN match_seats s ON s.version_id = w.model_id
+      JOIN matches m     ON m.id = s.match_id
+     WHERE (SELECT n FROM room) > 0
+       AND w.want > 0
+       AND m.season_id = (SELECT id FROM live) AND m.status IN ('finished', 'rated')
+     GROUP BY s.version_id, m.season_map_id
 )
 SELECT json_build_object(
          'demand', (SELECT coalesce(sum(want), 0) FROM wants),
          'depth',  (SELECT pending FROM depth),
-         -- THE ROOM: what the season asks for, up to the depth target; or, when the idle fill has
-         -- more to give, as much of it as there are free lanes -- whichever is larger, and never past
-         -- the depth target, which stays a staleness cap on every queue.
-         'room',   greatest(least(
-                       greatest(least((SELECT coalesce(sum(least(base, want)), 0) FROM wants),
-                                      ($5)::int - (SELECT pending FROM depth)),
-                                least((SELECT coalesce(sum(want), 0) FROM wants),
-                                      coalesce((SELECT spare FROM lanes), 0))),
-                       ($5)::int - (SELECT pending FROM depth)), 0),
+         'room',   (SELECT n FROM room),
          'spare',  (SELECT spare FROM lanes),
          'round',  (SELECT json_build_object('n', lim.round, 'games', lim.quota, 'finals', lim.finals)
                       FROM lim WHERE lim.round IS NOT NULL),

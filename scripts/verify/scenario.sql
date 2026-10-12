@@ -758,6 +758,26 @@ SELECT o ->> 'owner_id' AS owner_id, o ->> 'in_flight' AS in_flight, o ->> 'room
   FROM json_array_elements((:'body')::json -> 'owners') o ORDER BY 1;
 UPDATE seasons SET rules = :'saved_rules'::jsonb WHERE id = '50000000-0000-0000-0000-000000000001';
 
+\echo '--- played carries only what the plugin reads: the games each WANTING version has played on each board, counted as a direct count would (expect has_room t, only_wanting t, complete t, counts_match t)'
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
+WITH doc AS (SELECT (:'body')::json AS b),
+     wanting AS (SELECT (w ->> 'model_id')::uuid AS v FROM doc, json_array_elements(b -> 'wants') w
+                  WHERE (w ->> 'want')::int > 0),
+     played AS (SELECT (p ->> 'model_id')::uuid AS v, (p ->> 'map')::uuid AS map, (p ->> 'n')::bigint AS n
+                  FROM doc, json_array_elements(b -> 'played') p),
+     direct AS (SELECT s.version_id AS v, m.season_map_id AS map, count(*) AS n
+                  FROM match_seats s JOIN matches m ON m.id = s.match_id
+                 WHERE m.season_id = '50000000-0000-0000-0000-000000000001' AND m.status IN ('finished', 'rated')
+                   AND s.version_id IN (SELECT v FROM wanting)
+                 GROUP BY 1, 2)
+SELECT (SELECT (b ->> 'room')::int > 0 FROM doc) AS has_room,
+       NOT EXISTS (SELECT 1 FROM played WHERE v NOT IN (SELECT v FROM wanting)) AS only_wanting,
+       (SELECT count(*) FROM direct) = (SELECT count(*) FROM played) AS complete,
+       NOT EXISTS (SELECT * FROM direct EXCEPT SELECT * FROM played) AS counts_match;
+\echo '--- and with no room it carries none: a depth target of 0 leaves no room, and the plugin seats nothing (expect room 0, played 0)'
+EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 0, 0.2) \gset
+SELECT (:'body')::json ->> 'room' AS room, json_array_length((:'body')::json -> 'played') AS played;
+
 \echo '===== season maps: the one part of a live season that changes ====='
 \echo '--- the demand read lists the season''s enabled boards, each with its seats (expect 3: default 2, other-map 2, melee 4)'
 EXECUTE p_demand_doc ('50000000-0000-0000-0000-000000000001', 8, 2, 3.0, 64, 0.2) \gset
