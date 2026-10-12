@@ -85,7 +85,9 @@ done
 cp cutover.sql transfer.sql backfill.sql verify.sql legacy-leaderboard.sql "$work/"
 
 echo "==> $( $COMMIT && echo 'CUTOVER (commit)' || echo 'dry run (rolls back)' ): from sha256:${FROM_DIGEST:0:12}... to sha256:${TO_DIGEST:0:12}..."
-docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/cut:ro" "$PSQL_IMAGE" \
+# PGOPTIONS: the node's roles carry a statement timeout (bootstrap sets it), and the cutover is one
+# transaction that runs for minutes on a small instance. Maintenance opts out.
+docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/cut:ro" -e PGOPTIONS='-c statement_timeout=0' "$PSQL_IMAGE" \
   psql "$URL" -X -q -v ON_ERROR_STOP=1 \
        -v from_digest="$FROM_DIGEST" -v to_digest="$TO_DIGEST" -v commit="$COMMIT" \
        -v settled_sigma="$SETTLED_SIGMA" \
@@ -97,5 +99,5 @@ docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/cut:ro" "$PSQL_IMAGE" 
 # the pool. A node must not serve the new schema before this.
 if $COMMIT; then
   echo "==> ANALYZE (the new tables have no statistics yet)"
-  docker run --rm --network "$DOCKER_NETWORK" "$PSQL_IMAGE" psql "$URL" -X -q -v ON_ERROR_STOP=1 -c 'ANALYZE'
+  docker run --rm --network "$DOCKER_NETWORK" -e PGOPTIONS='-c statement_timeout=0' "$PSQL_IMAGE" psql "$URL" -X -q -v ON_ERROR_STOP=1 -c 'ANALYZE'
 fi

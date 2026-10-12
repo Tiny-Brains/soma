@@ -39,7 +39,8 @@ else
 fi
 cp backfill-frames.mjs "$work/"
 
-psql_() { docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/w" "$PSQL_IMAGE" psql "$DB" -X -q -At -v ON_ERROR_STOP=1 "$@"; }
+# PGOPTIONS: maintenance opts out of the statement timeout the node's roles carry (see bootstrap).
+psql_() { docker run --rm -i --network "$DOCKER_NETWORK" -v "$work:/w" -e PGOPTIONS='-c statement_timeout=0' "$PSQL_IMAGE" psql "$DB" -X -q -At -v ON_ERROR_STOP=1 "$@"; }
 
 if [ "$MODE" = "--check" ]; then
   which="EXISTS (SELECT 1 FROM match_frames f WHERE f.match_id = m.id)"

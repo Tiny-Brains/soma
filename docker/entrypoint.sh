@@ -175,7 +175,8 @@ serve() {
 #                 setting, and a rewrite that has not reached this database is REFUSED by name
 #                 rather than surfacing as a missing relation on a clock tick hours later.
 #   the roles     runner_gate, created by the migration with LOGIN
-#                 and no password, so the committed schema ships no secret
+#                 and no password, so the committed schema ships no secret; and a statement timeout
+#                 on both roles that connect to this database for the node (below)
 #   the engine    the digest of the cartridge component this image was built with, declared as a
 #                 patch (the live season takes it) or, with ENGINE_RELEASE=1, a release (refused
 #                 while a season is live). A runner whose digest differs claims nothing, for ever.
@@ -243,6 +244,8 @@ SQL
 bootstrap() {
   [ -n "$DB" ] || { echo "SOMA_DB_URL is required -- the platform database, as its owner" >&2; exit 1; }
   [ -n "$ADMIN_DB" ] || { echo "SOMA_ADMIN_DB_URL is required -- the maintenance database (.../postgres), for CREATE DATABASE" >&2; exit 1; }
+  # This is maintenance, not the node: the statement timeout set on the roles below is not ours.
+  export PGOPTIONS="${PGOPTIONS:-} -c statement_timeout=0"
 
   echo "==> waiting for postgres"
   i=0
@@ -293,6 +296,30 @@ SQL
   # Through stdin rather than -c: psql expands :'var' in a script, not in a -c string.
   psql_db -v pw="${RUNNER_GATE_DB_PASSWORD:?RUNNER_GATE_DB_PASSWORD is required -- the role the runner gate runs as}" <<'SQL'
 ALTER ROLE runner_gate WITH LOGIN PASSWORD :'pw';
+SQL
+
+  # A STATEMENT THE NODE HAS ABANDONED MUST NOT KEEP RUNNING. Every db connector gives up on a
+  # query at its `query_timeout_ms` and drops the connection, but PostgreSQL does not notice a
+  # client that has gone until it tries to answer it, so the statement runs on. A clock that fires
+  # faster than that -- pair, every 15 s -- then starts a new copy beside the old one on every tick,
+  # and on a small instance the copies are what take the database down: each one slows the next, and
+  # none of them is ever cancelled. So both roles that serve the node carry a server-side
+  # statement_timeout a little longer than the longest connector timeout: the node always gives up
+  # first and sees its own error, and the database then frees the work nobody is waiting for. It is
+  # read from the connectors in this image, so the two cannot drift apart, and set per role IN this
+  # database only: orion_state and the maintenance database are Orion's and the operator's.
+  #
+  # A maintenance session -- this one, a cutover, a backfill -- connects as the same owner and must
+  # opt out with `PGOPTIONS='-c statement_timeout=0'`, as bootstrap does at its top.
+  query_ms=$(jq -s '[.[] | select(.config.type == "db") | .config.query_timeout_ms | numbers] | max // empty' \
+    "$PKG"/connectors/*.json)
+  [ -n "$query_ms" ] || { echo "no db connector in $PKG/connectors declares a numeric query_timeout_ms" >&2; exit 1; }
+  timeout_ms=$((query_ms + ${SOMA_STATEMENT_TIMEOUT_GRACE_MS:-5000}))
+  echo "==> statement timeout ${timeout_ms} ms (the connectors give up at ${query_ms})"
+  psql_db -v t="${timeout_ms}ms" <<'SQL'
+SELECT format('ALTER ROLE %I IN DATABASE %I SET statement_timeout = %L', r, current_database(), :'t')
+  FROM unnest(ARRAY[current_user::text, 'runner_gate']) AS r
+\gexec
 SQL
 
   digest=$(cat "$CARTRIDGE/engine-digest")

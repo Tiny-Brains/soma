@@ -426,6 +426,19 @@ listed account is restored by its next sign-in, so removing someone for good mea
   estimates cross `jit_above_cost`, and each call then spends seconds compiling. `rating_series()`
   takes about 4 s with JIT and 0.2 s without, and it is read on every home, leaderboard, model and
   profile page: a few cold visitors fill the pool. Postgres's default is on.
+- **A statement timeout on the node's two roles**, which `bootstrap` sets on every bring-up:
+  `ALTER ROLE <owner> | runner_gate IN DATABASE <soma> SET statement_timeout`, to the longest db
+  connector's `query_timeout_ms` plus `SOMA_STATEMENT_TIMEOUT_GRACE_MS` (5 s): 20 s. A connector
+  abandons a query at 15 s by dropping the connection, and PostgreSQL runs the statement to its end
+  anyway; pair fires every 15 s, so once its read is slower than that, every tick leaves another copy
+  running, and the copies are what take a small database down. The node gives up first and the
+  server then frees the work. Anything that connects as the owner for maintenance opts out with
+  `PGOPTIONS='-c statement_timeout=0'` -- bootstrap itself and `scripts/cutover/` do.
+- **A database with a dedicated core and room for the hot tables.** A shared-core instance (Cloud
+  SQL's `db-f1-micro` and `db-g1-small`) is throttled to a fraction of a CPU, and once `matches`,
+  `match_seats` and Orion's state outgrow its memory it pages its own buffer cache: every query then
+  slows by one or two orders of magnitude at once, with the same plan and the same buffers, rather
+  than degrading gradually. Alert on the instance's swap and CPU, not only on the node.
 - **`ANALYZE` after a cutover, before any node serves.** The copy leaves every new table without
   statistics until autovacuum's first pass, and a node serving then plans the matches list as if
   `matches` were empty -- minutes per call. `scripts/cutover/cutover.sh --commit` runs it.
@@ -665,6 +678,10 @@ scripts/verify/             run.sh (reads the shipped statements), statements.sq
 - A malformed uuid, timestamp or cursor in a query string fails its cast and answers 500, not 400.
 - The admit and pair clocks still tick against Postgres when idle: admit cannot tell nothing
   waiting from waiting but leased without a read, and pair's demand moves with time.
+- A db connector's `query_timeout_ms` abandons a statement without cancelling it (Orion drops the
+  future; no CancelRequest, no session `statement_timeout`), so the roles' statement timeout is what
+  frees the server. The fix is an Orion ask, not yet filed: derive the session's `statement_timeout`
+  from `query_timeout_ms` when a connection is opened.
 - A round's reset writes no `rating_events` row (its seq is `matches_played`, and a reset is not a
   match), so a version's history shows the reset only at its next match.
 - Finals can stall for an entry nobody is left to play (every other entry at its number, no enabled

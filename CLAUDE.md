@@ -447,6 +447,10 @@ docker run --rm --entrypoint orion-server ghcr.io/tiny-brains/soma clippy /pkg/s
 - orion-server allocates through glibc, whose per-thread arenas keep freed memory: the image sets
   `MALLOC_ARENA_MAX=2`, which took an idle node from ~910 MB to ~70 MB.
 - `models.max_timeout_ms` clamps a longer `model_infer` timeout **silently**.
+- **`query_timeout_ms` abandons a statement; it does not cancel it.** Orion drops the future and the
+  statement runs on in PostgreSQL. The node's roles carry a `statement_timeout` (`bootstrap` derives
+  it from the connectors) so the server frees it; a script that connects as the owner for
+  maintenance sets `PGOPTIONS='-c statement_timeout=0'`, or its long statements are cancelled too.
 - **Only a failed run keeps a trace**: `[trace_storage] errors_only = true` is the default for every
   route, and the gate's poll routes carry `task_details: false`, so a hot route never builds one.
 - A cron channel always writes a trace row per occurrence: `errors_only` drops only the result, and
