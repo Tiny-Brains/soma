@@ -438,6 +438,14 @@ public_keys = ["${TB_TRUST_PUBLIC_KEY:?the Ed25519 trust root; web/scripts/setup
 # An INNER deadline under server.shutdown_force_timeout_secs, so it can only make the wait shorter.
 shutdown_timeout_secs = ${ORION_CRON_SHUTDOWN_SECS:-60}
 
+# HOW OFTEN THE SCHEDULER ASKS THE STATE DATABASE WHAT IS DUE. Each poll is four statements whether or
+# not anything is due, so Orion's 1 s default is four a second -- most of what an idle node costs
+# Postgres. The finest clock here is reap at 5 s, so a 5 s poll costs a fifth of those statements and
+# lets a run start up to 5 s late. misfire_grace_secs must cover the poll: under it, every late start
+# would be called a misfire and skipped.
+poll_interval_ms   = 5000
+misfire_grace_secs = 10
+
 # HOW MANY CLOCKS MAY RUN AT ONCE, and the one number here that must not be tuned down to save a
 # small machine. Five clocks are declared, each a `forbid` singleton, and soma-clock-admit holds its
 # worker for as long as its 600 s timeout allows -- so fewer workers than clocks that can be due
