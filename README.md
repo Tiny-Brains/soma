@@ -187,7 +187,7 @@ the singleton buys order, and the SQL fences buy correctness.
 | `soma-clock-pair` | 15 s | 60 s | Read demand (a round's quota, else the settling rule, plus the idle fill into free lanes), fill the room with the plugin's plan, insert trials first, stamp each match's round; halts quietly while no board is in play | roster epoch, checked `FOR SHARE` per insert |
 | `soma-clock-count` | 10 s | 60 s | Start each round that is due (the reset, and the old round's queue cancelled `ROUND_ENDED`); fold finished matches in finish order (moving each board's and season's counts), decide trials, promote | run fence on `clocks.count` |
 | `soma-clock-withdraw` | 60 s | 30 s | Cancel queue rows that can no longer be played; keep a season played in rounds one reset ahead; post each round's countdown and tell its entrants; close each live season whose finals are done, that settled or was asked to; snapshot every live season's Open ladder once an hour | none: idempotent |
-| `soma-clock-reap-run` | 5 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
+| `soma-clock-reap-run` | 15 s | 10 s | Return lapsed leases to `pending`; the third lapse fails the row | none: idempotent |
 
 **Version life cycle:** `testing` → admit → `verified` → trial (count) → `active` → `superseded`,
 or `rejected` at either step.

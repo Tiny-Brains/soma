@@ -1,13 +1,13 @@
 {
   "channel_id": "soma-clock-reap",
   "name": "soma-clock-reap",
-  "description": "Returns lapsed leases to the queue. Every 5 seconds, the fastest clock, because a crashed runner's rows are unplayable until it runs. Three lapses fail the row.",
+  "description": "Returns lapsed leases to the queue. Every 15 seconds: a crashed runner's rows are unplayable until it runs, but no lease is shorter than 300 s, so a faster tick saves seconds on a five-minute wait while every tick costs Orion its cron and trace rows. Three lapses fail the row.",
   "tags": ["soma", "clock", "matches"],
   "channel_type": "async",
   "protocol": "cron",
   "workflow_id": "soma-clock-reap-run",
   "transport_config": {
-    "schedule": "*/5 * * * * *",
+    "schedule": "*/15 * * * * *",
     "timezone": "UTC",
     "misfire_policy": "latest",
     "concurrency": { "policy": "forbid", "key": "runner-reap" }

@@ -440,7 +440,7 @@ shutdown_timeout_secs = ${ORION_CRON_SHUTDOWN_SECS:-60}
 
 # HOW OFTEN THE SCHEDULER ASKS THE STATE DATABASE WHAT IS DUE. Each poll is four statements whether or
 # not anything is due, so Orion's 1 s default is four a second -- most of what an idle node costs
-# Postgres. The finest clock here is reap at 5 s, so a 5 s poll costs a fifth of those statements and
+# Postgres. The finest clock here is count at 10 s, so a 5 s poll costs a fifth of those statements and
 # lets a run start up to 5 s late. misfire_grace_secs must cover the poll: under it, every late start
 # would be called a misfire and skipped.
 poll_interval_ms   = 5000
