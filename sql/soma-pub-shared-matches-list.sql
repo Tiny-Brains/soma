@@ -35,8 +35,10 @@ top10 AS (
     WHERE ($16)::text IN ('true', '1')
     ORDER BY f.conservative DESC, f.version_id
     LIMIT 10 ),
-top_matches AS (
+top_matches AS MATERIALIZED (
     -- Driven from the top ten's own seats, so `top` costs their matches, not a count per match.
+    -- MATERIALIZED, because `matched` is inlined into the page and the total alike, and an inlined
+    -- set is built again for each of them.
     SELECT ms.match_id
     FROM match_seats ms
     WHERE ms.version_id IN (SELECT version_id
@@ -138,56 +140,79 @@ ranked AS NOT MATERIALIZED (
     FROM discussed d
     JOIN matched x ON x.id = d.match_id ),
 page AS (
-    (SELECT x.m, x.id, x.played_at, row_number() OVER (ORDER BY x.played_at DESC, x.id DESC) AS ord,
-            (to_json(x.played_at) #>> '{}') || '|' || x.id::text AS cur
-        FROM matched x
-        WHERE coalesce(($14)::text, 'newest') = 'newest'
-        AND (($7)::text IS NULL
-            OR (x.played_at, x.id) < ((SELECT at
-                    FROM cur), (SELECT id
-                    FROM cur)))
-        ORDER BY x.played_at DESC, x.id DESC
-        LIMIT (SELECT n
-            FROM lim))
+    -- THE PAGE IS SORTED ON ITS KEYS, AND ONLY ITS OWN ROWS ARE READ WHOLE. Each keyed branch orders
+    -- and limits (key, id) in a subquery whose LIMIT sits on the sort itself, so the sort keeps the
+    -- page alone (a top-N heapsort, or a season's index read in order), and row_number() and the
+    -- whole row come after it, one primary-key read per row. With both above the sort, every match
+    -- the filters passed was built whole and sorted to keep 25: an unscoped page spilled 14 MB to
+    -- disk. The row is a subquery, not a join, because the page size comes from `lim`, which the
+    -- planner cannot see -- a join it sized at a tenth of the table read all of `matches` to hash.
+    (SELECT (SELECT mt
+            FROM matches mt
+            WHERE mt.id = k.id) AS m, k.id, k.played_at,
+            row_number() OVER (ORDER BY k.played_at DESC, k.id DESC) AS ord,
+            (to_json(k.played_at) #>> '{}') || '|' || k.id::text AS cur
+        FROM (SELECT x.id, x.played_at
+            FROM matched x
+            WHERE coalesce(($14)::text, 'newest') = 'newest'
+            AND (($7)::text IS NULL
+                OR (x.played_at, x.id) < ((SELECT at
+                        FROM cur), (SELECT id
+                        FROM cur)))
+            ORDER BY x.played_at DESC, x.id DESC
+            LIMIT (SELECT n
+                FROM lim)) k)
     UNION ALL
-    (SELECT x.m, x.id, x.played_at, row_number() OVER (ORDER BY x.margin, x.id) AS ord, x.margin::text || '|'
-            || x.id::text AS cur
-        FROM matched x
-        WHERE ($14)::text = 'closest'
-        AND x.margin IS NOT NULL
-        AND (($7)::text IS NULL
-            OR (x.margin, x.id) > ((SELECT ki
-                    FROM cur), (SELECT id
-                    FROM cur)))
-        ORDER BY x.margin, x.id
-        LIMIT (SELECT n
-            FROM lim))
+    (SELECT (SELECT mt
+            FROM matches mt
+            WHERE mt.id = k.id) AS m, k.id, k.played_at,
+            row_number() OVER (ORDER BY k.margin, k.id) AS ord,
+            k.margin::text || '|' || k.id::text AS cur
+        FROM (SELECT x.id, x.played_at, x.margin
+            FROM matched x
+            WHERE ($14)::text = 'closest'
+            AND x.margin IS NOT NULL
+            AND (($7)::text IS NULL
+                OR (x.margin, x.id) > ((SELECT ki
+                        FROM cur), (SELECT id
+                        FROM cur)))
+            ORDER BY x.margin, x.id
+            LIMIT (SELECT n
+                FROM lim)) k)
     UNION ALL
-    (SELECT x.m, x.id, x.played_at, row_number() OVER (ORDER BY x.upset DESC, x.id DESC) AS ord,
-            x.upset::text || '|' || x.id::text AS cur
-        FROM matched x
-        WHERE ($14)::text = 'upset'
-        AND x.upset IS NOT NULL
-        AND (($7)::text IS NULL
-            OR (x.upset, x.id) < ((SELECT kf
-                    FROM cur), (SELECT id
-                    FROM cur)))
-        ORDER BY x.upset DESC, x.id DESC
-        LIMIT (SELECT n
-            FROM lim))
+    (SELECT (SELECT mt
+            FROM matches mt
+            WHERE mt.id = k.id) AS m, k.id, k.played_at,
+            row_number() OVER (ORDER BY k.upset DESC, k.id DESC) AS ord,
+            k.upset::text || '|' || k.id::text AS cur
+        FROM (SELECT x.id, x.played_at, x.upset
+            FROM matched x
+            WHERE ($14)::text = 'upset'
+            AND x.upset IS NOT NULL
+            AND (($7)::text IS NULL
+                OR (x.upset, x.id) < ((SELECT kf
+                        FROM cur), (SELECT id
+                        FROM cur)))
+            ORDER BY x.upset DESC, x.id DESC
+            LIMIT (SELECT n
+                FROM lim)) k)
     UNION ALL
-    (SELECT x.m, x.id, x.played_at, row_number() OVER (ORDER BY x.turns DESC, x.id DESC) AS ord,
-            x.turns::text || '|' || x.id::text AS cur
-        FROM matched x
-        WHERE ($14)::text = 'longest'
-        AND x.turns IS NOT NULL
-        AND (($7)::text IS NULL
-            OR (x.turns, x.id) < ((SELECT ki
-                    FROM cur), (SELECT id
-                    FROM cur)))
-        ORDER BY x.turns DESC, x.id DESC
-        LIMIT (SELECT n
-            FROM lim))
+    (SELECT (SELECT mt
+            FROM matches mt
+            WHERE mt.id = k.id) AS m, k.id, k.played_at,
+            row_number() OVER (ORDER BY k.turns DESC, k.id DESC) AS ord,
+            k.turns::text || '|' || k.id::text AS cur
+        FROM (SELECT x.id, x.played_at, x.turns
+            FROM matched x
+            WHERE ($14)::text = 'longest'
+            AND x.turns IS NOT NULL
+            AND (($7)::text IS NULL
+                OR (x.turns, x.id) < ((SELECT ki
+                        FROM cur), (SELECT id
+                        FROM cur)))
+            ORDER BY x.turns DESC, x.id DESC
+            LIMIT (SELECT n
+                FROM lim)) k)
     UNION ALL
     (SELECT mt AS m, mt.id, mt.played_at, p.ord, ((SELECT off
                     FROM cur) + (SELECT n
